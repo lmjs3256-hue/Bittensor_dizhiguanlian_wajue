@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Bittensor 地址关联挖掘</title>
+  <link rel="icon" href="data:,">
+  <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
+  <link rel="stylesheet" href="/static/styles.css?v=0.5.0">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="mark">WL</div><div><b>Wallet Link</b><span>Bittensor Intelligence</span></div></div>
+      <nav>
+        <button class="nav active" data-nav="scan">地址扫描</button>
+        <button class="nav" data-nav="library">已知地址库</button>
+        <button class="nav" data-nav="method">方法说明</button>
+      </nav>
+      <div class="aside-status">
+        <span class="dot" id="health-dot"></span>
+        <span id="health-text">扫描服务连接中</span>
+      </div>
+    </aside>
+    <main>
+      <header>
+        <div><div class="eyebrow">EVIDENCE-BASED ADDRESS GRAPH</div><h1>Bittensor 地址关联挖掘</h1></div>
+        <div class="header-actions">
+          <label class="theme-select"><span>主题</span><select id="theme-select" aria-label="界面主题"><option value="system">跟随系统</option><option value="warm">护眼 · 暖色</option><option value="darkgray">护眼 · 深灰</option></select></label>
+          <div class="live-pill"><span class="dot" id="index-dot"></span><span id="index-status">本地索引加载中</span></div>
+        </div>
+      </header>
+
+      <section class="panel hero">
+          <div><span class="label">数据口径</span><h2 id="hero-title">本地索引或 Taostats 历史转账</h2><p>只把 <code>Balances.Transfer</code> 的 from → to 当作资金边。结果只显示关联钱包、层级、金额和地址库标签。</p></div>
+        <div class="metrics">
+          <div><span>本地索引转账</span><b id="metric-transfers">-</b></div>
+          <div><span>区块范围</span><b id="metric-range">-</b></div>
+          <div><span>索引水位</span><b id="metric-cursor">-</b></div>
+        </div>
+      </section>
+
+      <div id="view-scan">
+        <section class="panel controls">
+          <div class="control-grid">
+            <label class="wide">起始地址<input id="seed" placeholder="输入 Bittensor SS58 地址" autocomplete="off" spellcheck="false"></label>
+            <label>最大层级<select id="depth"><option value="1">1 级</option><option value="2">2 级</option><option value="3" selected>3 级</option></select></label>
+            <label>单边最低 TAO<input id="min-edge" value="0.1" inputmode="decimal"></label>
+            <label>累计最低 TAO<input id="min-total" value="0.1" inputmode="decimal"></label>
+            <label>方向<select id="direction"><option value="both" selected>流入 + 流出</option><option value="outgoing">仅流出</option><option value="incoming">仅流入</option></select></label>
+          </div>
+          <div class="source-choice"><label><input id="taostats-source" type="checkbox" checked> 使用 Taostats 历史索引</label><span id="taostats-status">密钥状态读取中</span><div class="filter-choice"><label><input id="filter-exchanges" type="checkbox"> 过滤交易所地址</label><label><input id="filter-validators" type="checkbox"> 过滤验证者地址</label><small>交易所来自地址库中的 EXCHANGE 分类；验证者优先使用地址库中的 VALIDATOR 分类，并在有 Taostats key 时尝试读取当前验证者名单。</small></div><div class="api-key-settings"><label for="taostats-api-key">Taostats API key<input id="taostats-api-key" type="password" autocomplete="new-password" placeholder="粘贴 API key"></label><div class="api-key-actions"><button class="secondary" id="save-taostats-key" type="button">保存 API key</button><button class="ghost" id="clear-taostats-key" type="button">清除</button></div><span id="taostats-key-status" aria-live="polite"></span></div><small>密码框内容只在保存请求时发送到本机服务；服务只将 key 保存在运行进程内存，不写入数据库、文件或浏览器存储。服务重启后需重新填写。免费档额度以<a href="https://taostats.io/zh/pro" target="_blank" rel="noopener">官方套餐说明</a>为准；接口字段见<a href="https://taostats.io/zh/docs/new/transfers/get-transfers" target="_blank" rel="noopener">转账 API 文档</a>。查询每次最多发起 5 个 API 请求；部分结果会显示提示。</small></div>
+          <div class="actions"><button class="primary" id="run-scan">扫描关联</button><button class="secondary" id="export-json">导出 JSON</button></div>
+        </section>
+
+        <section class="panel scan-ops">
+          <div><span class="label">INDEX CONTROL</span><h3>更新链上索引</h3><p>扫描只取最新已最终确定区块附近的范围，写入本地 SQLite。公开入口节点的历史状态会被裁剪；全链历史需要归档节点或外部可靠数据源。</p></div>
+          <div class="inline-form"><label>区块数<input id="scan-blocks" type="number" min="1" max="16" value="2"></label><button class="secondary" id="scan-latest">扫描最新</button><button class="ghost" id="scan-advance">继续水位</button></div>
+        </section>
+
+        <section id="result" class="hidden">
+          <div class="result-heading"><div><span class="label">ASSOCIATION RESULT</span><h2>扫描结果</h2><p id="result-subtitle"></p></div><div class="badges" id="result-badges"></div></div>
+          <div class="stats stats-three">
+            <div><span>关联地址</span><b id="count-related">0</b></div>
+            <div><span>截止区块</span><b id="cutoff">-</b></div>
+          </div>
+          <section class="panel"><div class="section-title"><h3>关联地址</h3><span class="tag">金额过滤后</span></div><div id="related" class="table-wrap"></div></section>
+          <section class="panel notes"><h3>数据范围与限制</h3><ul id="warnings"></ul></section>
+        </section>
+        <div id="empty" class="empty"><div class="empty-icon">3D</div><h2>输入地址，开始三跳关联</h2><p>默认使用 Taostats 历史索引；也可以关闭上方选项，只查本地采集区间。</p></div>
+      </div>
+
+      <div id="view-library" class="hidden">
+        <section class="panel library-top">
+          <div><span class="label">KNOWN ADDRESS LIBRARY</span><h2>地址库</h2><p>支持 TXT、CSV、JSON 人工导入。EXCHANGE 是交易所地址库，VALIDATOR 是验证者地址库；查询时可分别勾选过滤。SEED 可作为扫描默认地址，WATCH 和 BLACKLIST 用于命中提示。</p></div>
+          <div class="inline-form"><label>名称<input id="lib-label" placeholder="标签名称"></label><label>分类<select id="lib-category"><option value="WATCH">WATCH</option><option value="SEED">SEED</option><option value="BLACKLIST">BLACKLIST</option><option value="EXCHANGE">EXCHANGE · 交易所</option><option value="VALIDATOR">VALIDATOR · 验证者</option></select></label><label>地址<input id="lib-address" placeholder="SS58 地址" spellcheck="false"></label><label>备注<input id="lib-note" placeholder="可选备注"></label><button class="secondary" id="add-address">添加地址</button><button class="primary" id="choose-file">导入文件</button><button class="secondary" id="sync-exchanges">同步官方交易所地址</button><input type="file" id="library-file" accept=".txt,.csv,.json" hidden></div>
+        </section>
+        <section class="panel"><div class="section-title"><div><h3>地址库清单</h3><span class="tag" id="library-count">0 条</span></div><div class="library-actions"><label class="select-all-control"><input type="checkbox" id="select-all-addresses" aria-label="全选地址">全选</label><button class="danger" id="delete-selected" disabled>删除所选 (0)</button></div></div><div id="library-table" class="table-wrap"></div></section>
+      </div>
+
+      <div id="view-method" class="hidden">
+        <section class="panel prose"><span class="label">DESIGN NOTES</span><h2>什么算关联</h2><p>本工具将 Bittensor 的普通转账事件视为一条行为关系。第一跳支持低于阈值的金额，以保留小额试探路径；第二、三跳必须达到单边金额门槛，且最终地址累计金额达到累计门槛。公共系统账户默认排除。</p><h3>证据边界</h3><ul><li><b>已验证：</b>RPC 能读取最新块的交易与事件，<code>Balances.Transfer</code> 包含 from、to、amount。</li><li><b>已验证：</b>金额过滤、三级上限、去重、地址库命中可由确定性程序完成。</li><li><b>限制：</b>一次转账不能证明同一所有者。工具表达“发生资金关联”，不表达“同一人”或身份。</li><li><b>限制：</b>本地索引只管实际采集到的区块。公开节点旧状态可能已裁剪，不能据此宣称全历史完整性。</li></ul><h3>后续扩展</h3><p>可接入归档节点、补充质押与代理关系、加入时间窗和交易次数阈值，以及地址库命中审计日志。</p></section>
+      </div>
+      <div id="toast" class="toast"></div>
+    </main>
+  </div>
+  <script src="/static/app.js?v=0.5.0"></script>
+</body>
+</html>

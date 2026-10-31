@@ -1,0 +1,329 @@
+"""Deterministic breadth-first address relation traversal."""
+
+from __future__ import annotations
+
+from collections import defaultdict, deque
+from decimal import Decimal
+from typing import Iterable
+
+from .relation_config import (
+    Edge,
+    LibraryEntry,
+    LinkPolicy,
+    RelationResult,
+    ScanReport,
+    TransferRecord,
+)
+
+
+def _is_system(address: str, prefix: str) -> bool:
+    return bool(prefix) and address.startswith(prefix)
+
+
+def _role_for_address(
+    address: str,
+    entry: LibraryEntry | None,
+    activity: list[TransferRecord],
+) -> tuple[str, str]:
+    """Return a conservative public label from available address evidence.
+
+    The current index contains transfer events, not a complete balance or
+    subnet purchase ledger. Automatic labels therefore remain explicitly
+    qualified and never claim ownership or identity.
+    """
+
+    if entry and entry.category == "EXCHANGE":
+        label = entry.label.strip() or "交易所地址"
+        return label, "地址库明确标记为交易所地址。"
+    if entry and entry.category == "VALIDATOR":
+        label = entry.label.strip() or "验证者地址"
+        return label, "地址库明确标记为验证者地址。"
+
+    if not activity:
+        return "", ""
+    counterparties = {
+        (row.to_address if row.from_address == address else row.from_address)
+        for row in activity
+        if address in {row.from_address, row.to_address}
+    }
+    gross_tao = sum((row.amount_tao for row in activity), Decimal("0"))
+    transfer_count = len(activity)
+    # This is deliberately conservative because Taostats queries and local
+    # indexes are often partial. Balance data is not available in this graph.
+    if transfer_count >= 10 and len(counterparties) >= 8 and gross_tao >= Decimal("100"):
+        return (
+            "疑似交易所",
+            f"当前数据范围内观察到 {transfer_count} 笔转账、{len(counterparties)} 个对手方；未接入余额全量查询。",
+        )
+    if transfer_count >= 2 and len(counterparties) >= 2:
+        return (
+            "疑似中转钱包",
+            "当前数据范围内仅观察到转账记录，未发现子网购买记录；需要更完整的链上数据复核。",
+        )
+    return "", ""
+
+
+def _canonical_dedupe(transfers: Iterable[TransferRecord]) -> list[TransferRecord]:
+    """Collapse exact repeated versions of a public transfer record."""
+
+    seen: set[tuple[str, str, str, str, int]] = set()
+    result: list[TransferRecord] = []
+    for transfer in transfers:
+        normalized = TransferRecord(
+            tx_hash=transfer.tx_hash.strip(),
+            block_number=transfer.block_number,
+            from_address=transfer.from_address.strip(),
+            to_address=transfer.to_address.strip(),
+            amount_tao=transfer.amount_tao,
+            block_hash=transfer.block_hash.strip(),
+            timestamp=transfer.timestamp.strip(),
+        )
+        if normalized.tx_hash:
+            identity = (
+                normalized.tx_hash.lower(),
+                normalized.from_address,
+                normalized.to_address,
+                str(normalized.amount_tao),
+                normalized.block_number,
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+        result.append(normalized)
+    return result
+
+
+def discover(
+    seed: str,
+    transfers: Iterable[TransferRecord],
+    *,
+    library: Iterable[LibraryEntry] = (),
+    max_depth: int = 3,
+    policy: LinkPolicy | None = None,
+    data_cutoff_block: int | None = None,
+    freshness: str = "UNKNOWN_EXPORT",
+    warnings: Iterable[str] = (),
+    excluded_addresses: Iterable[str] = (),
+) -> ScanReport:
+    """Traverse transfer edges at most ``max_depth`` hops from the seed.
+
+    Traversal follows every non-system transfer so a low first hop is not
+    silently dropped. The displayed graph only contains first-hop transfers
+    and subsequent transfers above the edge amount threshold. Every relation
+    must meet the aggregate threshold; low-amount direct transfers are counted
+    but omitted from the reported graph.    """
+
+    seed = seed.strip()
+    if not seed:
+        raise ValueError("seed must not be empty")
+    if max_depth < 0 or max_depth > 3:
+        raise ValueError("max_depth must be between 0 and 3")
+    policy = policy or LinkPolicy()
+    transfer_rows = _canonical_dedupe(transfers)
+    excluded = {address.strip() for address in excluded_addresses if address.strip()}
+    library_map: dict[str, LibraryEntry] = {}
+    for entry in library:
+        address = entry.address.strip()
+        current = library_map.get(address)
+        if current is None or entry.category == "BLACKLIST":
+            library_map[address] = LibraryEntry(
+                address=address,
+                label=entry.label,
+                category=entry.category,
+                note=entry.note,
+                source=entry.source,
+            )
+
+    if seed in excluded:
+        return ScanReport(
+            seed=seed,
+            max_depth=max_depth,
+            data_cutoff_block=data_cutoff_block,
+            freshness=freshness,
+            policy=policy,
+            seed_is_in_library=seed in library_map,
+            warnings=list(dict.fromkeys([
+                *warnings,
+                "起始地址命中当前过滤地址库，已停止从该地址扩展。",
+            ])),
+        )
+
+    graph: dict[str, list[TransferRecord]] = defaultdict(list)
+    activity: dict[str, list[TransferRecord]] = defaultdict(list)
+    for transfer in transfer_rows:
+        graph[transfer.from_address].append(transfer)
+        activity[transfer.from_address].append(transfer)
+        activity[transfer.to_address].append(transfer)
+        if transfer.to_address != transfer.from_address:
+            graph[transfer.to_address].append(transfer)
+
+    distances: dict[str, int] = {seed: 0}
+    paths: dict[str, list[TransferRecord]] = {seed: []}
+    queue: deque[str] = deque([seed])
+    retained: dict[tuple[str, str, str, int], Edge] = {}
+    missing_hash_rows = 0
+
+    def retained_edge(transfer: TransferRecord, depth: int, neighbor: str, transitive: bool = False) -> Edge:
+        return Edge(
+            tx_hash=transfer.tx_hash,
+            block_number=transfer.block_number,
+            from_address=transfer.from_address,
+            to_address=transfer.to_address,
+            amount_tao=transfer.amount_tao,
+            block_hash=transfer.block_hash,
+            timestamp=transfer.timestamp,
+            depth=depth,
+            reason="transit_edge" if transitive else ("direct_seed" if depth == 1 else "qualified_edge"),
+            related_address=neighbor,
+        )
+
+    while queue:
+        current = queue.popleft()
+        depth = distances[current]
+        if depth >= max_depth:
+            continue
+        for transfer in graph.get(current, []):
+            if policy.exclude_system_accounts and (
+                _is_system(transfer.from_address, policy.system_prefix)
+                or _is_system(transfer.to_address, policy.system_prefix)
+            ):
+                continue
+            if transfer.from_address == current:
+                if not policy.include_outgoing:
+                    continue
+                neighbor = transfer.to_address
+            elif transfer.to_address == current:
+                if not policy.include_incoming:
+                    continue
+                neighbor = transfer.from_address
+            else:
+                continue
+            if neighbor == current:
+                continue
+            if neighbor in excluded:
+                continue
+            material = depth == 0 or transfer.amount_tao >= policy.min_edge_tao
+            # Small indirect transfers are exploration hints only; they do not
+            # become retained graph edges and cannot introduce a new path layer.
+            if not material and depth > 0:
+                continue
+            if not transfer.tx_hash:
+                missing_hash_rows += 1
+                qualifier = f"row:{missing_hash_rows}"
+            else:
+                qualifier = transfer.tx_hash
+            key = (transfer.from_address, transfer.to_address, qualifier, transfer.block_number)
+            if material and key not in retained:
+                retained[key] = retained_edge(transfer, depth + 1, neighbor)
+            if neighbor not in distances and neighbor not in excluded:
+                distances[neighbor] = depth + 1
+                paths[neighbor] = paths[current] + [transfer]
+                queue.append(neighbor)
+
+    # A low transfer can create a candidate but not carry a path. Every retained
+    # edge is therefore above the threshold, unless it starts directly at seed.
+    # Direct low transfers remain visible so they can be explicitly reviewed.
+    frontier = [seed]
+    visible: dict[str, int] = {seed: 0}
+    depth = 0
+    while frontier and depth < max_depth:
+        depth += 1
+        next_frontier: list[str] = []
+        for current in frontier:
+            for edge in retained.values():
+                if edge.depth != depth:
+                    continue
+                if current not in {edge.from_address, edge.to_address}:
+                    continue
+                target = edge.to_address if edge.from_address == current else edge.from_address
+                if target == seed or target in visible:
+                    continue
+                visible[target] = depth
+                next_frontier.append(target)
+        frontier = next_frontier
+
+    edges = [
+        edge
+        for edge in retained.values()
+        if edge.depth <= max_depth and (edge.depth == 1 or edge.amount_tao >= policy.min_edge_tao)
+    ]
+    by_relation: dict[str, list[Edge]] = defaultdict(list)
+    for edge in edges:
+        for endpoint in (edge.from_address, edge.to_address):
+            if endpoint != seed:
+                by_relation[endpoint].append(edge)
+
+    related: list[RelationResult] = []
+    for address, edge_rows in by_relation.items():
+        total = sum((edge.amount_tao for edge in edge_rows), Decimal("0"))
+        if total < policy.min_total_tao:
+            continue
+        if address not in visible:
+            continue
+        path = paths.get(address)
+        if not path:
+            continue
+        entry = library_map.get(address)
+        address_role, role_reason = _role_for_address(
+            address,
+            entry,
+            activity.get(address, []),
+        )
+        unique_tx = {edge.tx_hash for edge in edge_rows if edge.tx_hash}
+        incoming = [edge for edge in edge_rows if edge.to_address == address]
+        outgoing = [edge for edge in edge_rows if edge.from_address == address]
+        related.append(
+            RelationResult(
+                address=address,
+                depth=visible.get(address, len(path)),
+                incoming_tao=sum((edge.amount_tao for edge in incoming), Decimal("0")),
+                outgoing_tao=sum((edge.amount_tao for edge in outgoing), Decimal("0")),
+                total_tao=total,
+                incoming_count=len(incoming),
+                outgoing_count=len(outgoing),
+                tx_count=len(unique_tx) or len(edge_rows),
+                first_block=min(edge.block_number for edge in edge_rows),
+                last_block=max(edge.block_number for edge in edge_rows),
+                match=entry is not None,
+                library_label=entry.label if entry else "",
+                library_category=entry.category if entry else "",
+                library_note=entry.note if entry else "",
+                library_source=entry.source if entry else "",
+                address_role=address_role,
+                role_reason=role_reason,
+            )
+        )
+    related.sort(key=lambda row: (row.depth, -row.total_tao, row.address))
+    seed_entry = library_map.get(seed)
+    final_warnings = list(warnings)
+    if missing_hash_rows:
+        final_warnings.append(
+            f"{missing_hash_rows} matching rows have no tx_hash; exact deduplication was limited."
+        )
+    if not transfer_rows:
+        final_warnings.append("No transfer records supplied; no relations can be discovered.")
+    if any(not row.tx_hash for row in edges):
+        final_warnings.append("Some displayed edges have no tx_hash and are not independently auditable.")
+    return ScanReport(
+        seed=seed,
+        max_depth=max_depth,
+        data_cutoff_block=data_cutoff_block,
+        freshness=freshness,
+        policy=policy,
+        edges=sorted(
+            edges,
+            key=lambda e: (e.depth, e.block_number, e.tx_hash, e.from_address),
+        ),
+        related=related,
+        library_matches=[row for row in related if row.match],
+        seed_is_in_library=seed_entry is not None,
+        warnings=list(dict.fromkeys(final_warnings)),
+    )
+
+
+def relation_edges(report: ScanReport, address: str) -> list[Edge]:
+    return [
+        edge
+        for edge in report.edges
+        if address in {edge.from_address, edge.to_address}
+    ]
