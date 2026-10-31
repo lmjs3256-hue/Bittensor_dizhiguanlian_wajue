@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.5.0">
+  <link rel="stylesheet" href="/static/styles.css?v=0.5.2">
 </head>
 <body>
   <div class="shell">
@@ -46,11 +46,11 @@
           <div class="control-grid">
             <label class="wide">起始地址<input id="seed" placeholder="输入 Bittensor SS58 地址" autocomplete="off" spellcheck="false"></label>
             <label>最大层级<select id="depth"><option value="1">1 级</option><option value="2">2 级</option><option value="3" selected>3 级</option></select></label>
-            <label>单边最低 TAO<input id="min-edge" value="0.1" inputmode="decimal"></label>
-            <label>累计最低 TAO<input id="min-total" value="0.1" inputmode="decimal"></label>
+            <label>单边最低 TAO<input id="min-edge" value="1" inputmode="decimal"></label>
+            <label>累计最低 TAO<input id="min-total" value="1" inputmode="decimal"></label>
             <label>方向<select id="direction"><option value="both" selected>流入 + 流出</option><option value="outgoing">仅流出</option><option value="incoming">仅流入</option></select></label>
           </div>
-          <div class="source-choice"><label><input id="taostats-source" type="checkbox" checked> 使用 Taostats 历史索引</label><span id="taostats-status">密钥状态读取中</span><div class="filter-choice"><label><input id="filter-exchanges" type="checkbox"> 过滤交易所地址</label><label><input id="filter-validators" type="checkbox"> 过滤验证者地址</label><small>交易所来自地址库中的 EXCHANGE 分类；验证者优先使用地址库中的 VALIDATOR 分类，并在有 Taostats key 时尝试读取当前验证者名单。</small></div><div class="api-key-settings"><label for="taostats-api-key">Taostats API key<input id="taostats-api-key" type="password" autocomplete="new-password" placeholder="粘贴 API key"></label><div class="api-key-actions"><button class="secondary" id="save-taostats-key" type="button">保存 API key</button><button class="ghost" id="clear-taostats-key" type="button">清除</button></div><span id="taostats-key-status" aria-live="polite"></span></div><small>密码框内容只在保存请求时发送到本机服务；服务只将 key 保存在运行进程内存，不写入数据库、文件或浏览器存储。服务重启后需重新填写。免费档额度以<a href="https://taostats.io/zh/pro" target="_blank" rel="noopener">官方套餐说明</a>为准；接口字段见<a href="https://taostats.io/zh/docs/new/transfers/get-transfers" target="_blank" rel="noopener">转账 API 文档</a>。查询每次最多发起 5 个 API 请求；部分结果会显示提示。</small></div>
+          <div class="source-choice"><label><input id="taostats-source" type="checkbox" checked> 使用 Taostats 历史索引</label><span id="taostats-status">密钥状态读取中</span><div class="filter-choice"><label><input id="filter-exchanges" type="checkbox"> 过滤交易所地址</label><label><input id="filter-validators" type="checkbox"> 过滤验证者地址</label><small>只有地址库中“已人工确认”的 EXCHANGE 地址才允许过滤；“疑似交易所（待确认）”会保留在结果中。验证者优先使用地址库中的 VALIDATOR 分类，并在有 Taostats key 时尝试读取当前验证者名单。</small></div><div class="api-key-settings"><label for="taostats-api-key">Taostats API key<input id="taostats-api-key" type="password" autocomplete="new-password" placeholder="粘贴 API key"></label><div class="api-key-actions"><button class="secondary" id="save-taostats-key" type="button">保存 API key</button><button class="ghost" id="clear-taostats-key" type="button">清除</button></div><span id="taostats-key-status" aria-live="polite"></span></div><div class="usage-card"><div class="section-title"><b>Taostats 查询次数</b><span class="tag">本机持久统计</span></div><div class="usage-grid"><div><span>今日查询</span><b id="usage-today">-</b></div><div><span>本月查询</span><b id="usage-month">-</b></div><div><span>累计查询</span><b id="usage-total">-</b></div><div><span>本月参考上限</span><b id="usage-limit">-</b></div><div><span>本月剩余参考</span><b id="usage-remaining">-</b></div></div><small id="usage-note">统计本机实际发起的 Taostats 网络请求；缓存命中不计数。公开免费档按 credits 计费，参考上限不等同账号精确剩余次数。</small></div><small>密码框内容只在保存请求时发送到本机服务；服务只将 key 保存在运行进程内存，不写入数据库、文件或浏览器存储。服务重启后需重新填写。免费档额度以<a href="https://taostats.io/zh/pro" target="_blank" rel="noopener">官方套餐说明</a>为准；接口字段见<a href="https://taostats.io/zh/docs/new/transfers/get-transfers" target="_blank" rel="noopener">转账 API 文档</a>。单次关联最多发起 5 个 API 请求；部分结果会显示提示。</small></div>
           <div class="actions"><button class="primary" id="run-scan">扫描关联</button><button class="secondary" id="export-json">导出 JSON</button></div>
         </section>
 
@@ -65,7 +65,8 @@
             <div><span>关联地址</span><b id="count-related">0</b></div>
             <div><span>截止区块</span><b id="cutoff">-</b></div>
           </div>
-          <section class="panel"><div class="section-title"><h3>关联地址</h3><span class="tag">金额过滤后</span></div><div id="related" class="table-wrap"></div></section>
+          <section id="seed-library-hit" class="panel library-hit hidden"><h3>起始地址已命中地址库</h3><div id="seed-library-hit-content"></div></section>
+          <section class="panel"><div class="section-title"><div><h3>关联地址</h3><span class="tag">金额过滤后</span></div><label class="result-filter">层级筛选<select id="related-depth-filter" aria-label="关联地址层级筛选"><option value="all">全部层级</option><option value="1">只看 1 级</option><option value="2">只看 2 级</option><option value="3">只看 3 级</option></select></label></div><div id="related" class="table-wrap"></div></section>
           <section class="panel notes"><h3>数据范围与限制</h3><ul id="warnings"></ul></section>
         </section>
         <div id="empty" class="empty"><div class="empty-icon">3D</div><h2>输入地址，开始三跳关联</h2><p>默认使用 Taostats 历史索引；也可以关闭上方选项，只查本地采集区间。</p></div>
@@ -85,6 +86,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.5.0"></script>
+  <script src="/static/app.js?v=0.5.2"></script>
 </body>
 </html>

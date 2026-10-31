@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from .collector import RPCCollector
+from .collector import RPCCollector, query_account_balances
 from .db import (
     AddressLibrary,
     ChainCursor,
@@ -20,9 +20,10 @@ from .db import (
     to_relation_records,
 )
 from .inputs import InputError, parse_plain_addresses, read_addresses
-from .relation import discover
+from .relation import discover, exchange_balance_candidates
 from .relation_config import LibraryEntry, LinkPolicy
 from .taostats import (
+    LOCAL_REQUESTS_PER_MINUTE,
     TaostatsAuthError,
     TaostatsRateLimitError,
     TaostatsUnavailableError,
@@ -35,6 +36,8 @@ from .validation import is_valid_ss58
 
 MAX_MANUAL_SCAN_BLOCKS = 16
 MAX_TAOSTATS_REQUESTS_PER_QUERY = 5
+MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY = 5
+PUBLIC_MONTHLY_CREDIT_REFERENCE = 10_000
 
 
 class ScanBusyError(RuntimeError):
@@ -73,6 +76,8 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
         "category": row.category,
         "note": row.note,
         "source": row.source,
+        "exchange_confirmed": bool(row.exchange_confirmed),
+        "exchange_rejected": bool(row.exchange_rejected),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -142,13 +147,19 @@ class LinkService:
                     select(AddressLibrary).where(AddressLibrary.address == address)
                 )
                 if current is None:
+                    category = row.get("category", "WATCH").upper()
                     db.add(
                         AddressLibrary(
                             address=address,
                             label=row.get("label", ""),
-                            category=row.get("category", "WATCH").upper(),
+                            category=category,
                             note=row.get("note", ""),
                             source=source,
+                            exchange_confirmed=(
+                                category == "EXCHANGE"
+                                and not bool(row.get("exchange_rejected", False))
+                            ),
+                            exchange_rejected=bool(row.get("exchange_rejected", False)),
                         )
                     )
                     inserted += 1
@@ -158,6 +169,17 @@ class LinkService:
                     incoming = row.get(field, "")
                     if incoming and getattr(current, field) != incoming:
                         setattr(current, field, incoming)
+                        changed = True
+                if current.category == "EXCHANGE":
+                    rejected = bool(row.get("exchange_rejected", current.exchange_rejected))
+                    confirmed = bool(row.get("exchange_confirmed", current.exchange_confirmed))
+                    if rejected:
+                        confirmed = False
+                    if current.exchange_confirmed != confirmed:
+                        current.exchange_confirmed = confirmed
+                        changed = True
+                    if current.exchange_rejected != rejected:
+                        current.exchange_rejected = rejected
                         changed = True
                 incoming_source = row.get("source", "")
                 if incoming_source and incoming_source.startswith("taostats:"):
@@ -223,10 +245,93 @@ class LinkService:
             current.note = note.strip()
             return {"saved": True, "item": address_dict(current)}
 
+    def decide_exchange(self, row_id: int, decision: str) -> dict[str, Any]:
+        with self.database.session() as db:
+            current = db.get(AddressLibrary, row_id)
+            if current is None:
+                raise InputError("address not found")
+            if current.category != "EXCHANGE":
+                raise InputError("只有 EXCHANGE 分类地址可以确认交易所身份")
+            if decision not in {"confirm", "reject", "reset"}:
+                raise InputError("交易所状态只能是 confirm、reject 或 reset")
+            current.exchange_confirmed = decision == "confirm"
+            current.exchange_rejected = decision == "reject"
+            return {"saved": True, "item": address_dict(current)}
+
+    def confirm_exchange(self, row_id: int, confirmed: bool = True) -> dict[str, Any]:
+        # Backward-compatible endpoint behavior: false clears a prior
+        # confirmation and returns the row to the pending state.
+        return self.decide_exchange(row_id, "confirm" if confirmed else "reset")
+
+    def decide_exchange_address(
+        self,
+        address: str,
+        decision: str,
+        label: str = "人工确认交易所",
+    ) -> dict[str, Any]:
+        address = address.strip()
+        if not is_valid_ss58(address):
+            raise InputError("invalid SS58 address")
+        with self.database.session() as db:
+            current = db.scalar(select(AddressLibrary).where(AddressLibrary.address == address))
+            if decision not in {"confirm", "reject", "reset"}:
+                raise InputError("交易所状态只能是 confirm、reject 或 reset")
+            if current is None and decision == "reset":
+                return {"saved": True, "item": None}
+            if current is None:
+                current = AddressLibrary(
+                    address=address,
+                    label=(label.strip() or (
+                        "人工确认交易所" if decision == "confirm" else "人工否定交易所"
+                    )),
+                    category="EXCHANGE",
+                    note=(
+                        "由关联扫描结果人工确认"
+                        if decision == "confirm"
+                        else "由关联扫描结果人工否定交易所候选"
+                    ),
+                    source=(
+                        "manual:exchange-confirmation"
+                        if decision == "confirm"
+                        else "manual:exchange-rejection"
+                    ),
+                    exchange_confirmed=decision == "confirm",
+                    exchange_rejected=decision == "reject",
+                )
+                db.add(current)
+                db.flush()
+            else:
+                current.category = "EXCHANGE"
+                current.label = label.strip() or current.label or (
+                    "人工确认交易所" if decision == "confirm" else "人工否定交易所"
+                )
+                current.source = (
+                    "manual:exchange-confirmation"
+                    if decision == "confirm"
+                    else "manual:exchange-rejection"
+                )
+                current.exchange_confirmed = decision == "confirm"
+                current.exchange_rejected = decision == "reject"
+            return {"saved": True, "item": address_dict(current)}
+
+    def confirm_exchange_address(self, address: str, label: str = "人工确认交易所") -> dict[str, Any]:
+        return self.decide_exchange_address(address, "confirm", label)
+
     def sync_exchange_addresses(self) -> dict[str, Any]:
         """Import the provider's public exchange directory into the library."""
 
-        rows, from_cache = get_exchange_addresses()
+        try:
+            rows, from_cache = get_exchange_addresses()
+        except (TaostatsAuthError, TaostatsRateLimitError, TaostatsUnavailableError) as exc:
+            if getattr(exc, "request_made", False):
+                self.database.record_api_request(
+                    "/v1/exchange-addresses",
+                    status_code=getattr(exc, "status_code", None),
+                    success=False,
+                )
+            raise
+        if not from_cache:
+            self.database.record_api_request("/v1/exchange-addresses", success=True)
         source = "taostats:/v1/exchange-addresses"
         valid_rows: list[dict[str, str]] = []
         invalid_count = 0
@@ -242,6 +347,7 @@ class LinkService:
                     "label": row.get("name", "").strip(),
                     "note": "",
                     "source": source,
+                    "exchange_confirmed": True,
                 }
             )
         result: dict[str, Any] = self.import_rows(valid_rows, source)
@@ -460,6 +566,8 @@ class LinkService:
                     category=row.category,
                     note=row.note,
                     source=row.source,
+                    exchange_confirmed=bool(row.exchange_confirmed),
+                    exchange_rejected=bool(row.exchange_rejected),
                 )
                 for row in db.scalars(select(AddressLibrary)).all()
             ]
@@ -477,9 +585,17 @@ class LinkService:
         pagination_complete = True
         provider_window_truncated = False
         api_error = ""
+        balances: dict[str, Any] = {}
         records_by_key: dict[str, Any] = {}
         exchange_addresses = {
-            entry.address for entry in library if entry.category == "EXCHANGE"
+            entry.address
+            for entry in library
+            if entry.category == "EXCHANGE" and entry.exchange_confirmed
+        }
+        unconfirmed_exchange_addresses = {
+            entry.address
+            for entry in library
+            if entry.category == "EXCHANGE" and not entry.exchange_confirmed
         }
         manual_validator_addresses = {
             entry.address for entry in library if entry.category == "VALIDATOR"
@@ -493,7 +609,14 @@ class LinkService:
                 else:
                     validator_api_requests += 1
                     api_requests += 1
+                    self.database.record_api_request("/v1/validators/active", success=True)
             except (TaostatsAuthError, TaostatsRateLimitError, TaostatsUnavailableError) as exc:
+                if getattr(exc, "request_made", False):
+                    self.database.record_api_request(
+                        "/v1/validators/active",
+                        status_code=getattr(exc, "status_code", None),
+                        success=False,
+                    )
                 warnings.append(f"自动验证者识别未完成：{exc}")
         excluded_addresses = set()
         if filter_exchanges:
@@ -502,7 +625,11 @@ class LinkService:
             excluded_addresses.update(manual_validator_addresses)
             excluded_addresses.update(auto_validator_addresses)
         if filter_exchanges and exchange_addresses:
-            warnings.append(f"已启用交易所过滤，跳过 {len(exchange_addresses)} 个地址库地址。")
+            warnings.append(f"已启用交易所过滤，跳过 {len(exchange_addresses)} 个已人工确认地址。")
+        if filter_exchanges and unconfirmed_exchange_addresses:
+            warnings.append(
+                f"有 {len(unconfirmed_exchange_addresses)} 个交易所候选尚未人工确认，已保留在结果中，未执行过滤。"
+            )
         if filter_validators and (manual_validator_addresses or auto_validator_addresses):
             warnings.append(
                 "已启用验证者过滤，跳过 "
@@ -533,15 +660,34 @@ class LinkService:
                         cache_hits += 1
                     else:
                         api_requests += 1
+                        self.database.record_api_request("/v1/transfers", success=True)
                 except TaostatsAuthError as exc:
+                    if getattr(exc, "request_made", False):
+                        self.database.record_api_request(
+                            "/v1/transfers",
+                            status_code=getattr(exc, "status_code", None),
+                            success=False,
+                        )
                     api_error = str(exc)
                     pagination_complete = False
                     break
                 except TaostatsRateLimitError as exc:
+                    if getattr(exc, "request_made", False):
+                        self.database.record_api_request(
+                            "/v1/transfers",
+                            status_code=getattr(exc, "status_code", None),
+                            success=False,
+                        )
                     api_error = str(exc)
                     pagination_complete = False
                     break
                 except TaostatsUnavailableError as exc:
+                    if getattr(exc, "request_made", False):
+                        self.database.record_api_request(
+                            "/v1/transfers",
+                            status_code=getattr(exc, "status_code", None),
+                            success=False,
+                        )
                     api_error = str(exc)
                     pagination_complete = False
                     break
@@ -652,6 +798,26 @@ class LinkService:
         else:
             freshness = "LOCAL_INDEX" if local_transfer_rows else "EMPTY_INDEX"
             coverage = "LOCAL_INDEX" if local_transfer_rows else "NO_DATA"
+        detected_balance_candidates = [
+            address
+            for address in exchange_balance_candidates(transfer_rows, library)
+            if is_valid_ss58(address)
+        ]
+        balance_candidates = detected_balance_candidates[:MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY]
+        if len(detected_balance_candidates) > len(balance_candidates):
+            warnings.append(
+                f"本次仅检查前 {MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY} 个高频候选余额；其余地址不会自动标记疑似交易所。"
+            )
+        if balance_candidates:
+            try:
+                balances = query_account_balances(self.rpc_url, balance_candidates)
+            except Exception as exc:
+                warnings.append(f"交易所候选余额查询未完成：{exc}")
+                balances = {}
+        if balance_candidates and not balances:
+            warnings.append(
+                "检测到高频交易所候选，但未取得当前余额；系统不会据此自动标记疑似交易所。"
+            )
         report = discover(
             seed,
             transfer_rows,
@@ -662,6 +828,7 @@ class LinkService:
             freshness=freshness,
             warnings=warnings,
             excluded_addresses=excluded_addresses,
+            balances=balances,
         )
         result = {
             "seed": report.seed,
@@ -685,6 +852,9 @@ class LinkService:
                 len(manual_validator_addresses | auto_validator_addresses)
                 if filter_validators else 0
             ),
+            "unconfirmed_exchange_candidates": len(unconfirmed_exchange_addresses),
+            "exchange_balance_candidates": len(balance_candidates),
+            "exchange_balance_checks": sum(value is not None for value in balances.values()),
             "local_transfer_count": len(local_transfer_rows),
             "taostats_transfer_count": len(records_by_key) if data_source == "taostats" else 0,
             "data_sources_used": (
@@ -711,6 +881,18 @@ class LinkService:
                 for row in report.library_matches
             ],
             "seed_is_in_library": report.seed_is_in_library,
+            "seed_library_matches": [
+                {
+                    "address": entry.address,
+                    "label": entry.label,
+                    "category": entry.category,
+                    "note": entry.note,
+                    "source": entry.source,
+                    "exchange_confirmed": entry.exchange_confirmed,
+                }
+                for entry in report.seed_library_matches
+            ],
+            "api_usage": self.api_usage_summary(),
             "warnings": [
                 warning
                 for warning in report.warnings
@@ -724,7 +906,13 @@ class LinkService:
                 ),
                 "转账关系只是行为证据，不等于同一地址、同一实体或真实身份。",
                 "质押、子网 swap、代理调用等未纳入自动关联；需要单独建立语义。",
-                "交易所和中转钱包标记只依据当前可见转账记录与已知地址库；余额和子网购买记录尚未作为完整数据源接入。",
+                "交易所疑似标记增加了当前 System.Account 可用余额和近 30 天时间条件；余额查询失败或余额偏低时不会自动标记为交易所。子网质押/解质押和购买事件仍未作为完整数据源接入，人工确认结果才允许过滤。",
             ],
         }
         return result
+
+    def api_usage_summary(self) -> dict[str, Any]:
+        return self.database.api_usage_summary(
+            monthly_limit=PUBLIC_MONTHLY_CREDIT_REFERENCE,
+            per_minute_limit=LOCAL_REQUESTS_PER_MINUTE,
+        )

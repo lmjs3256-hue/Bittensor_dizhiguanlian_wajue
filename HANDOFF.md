@@ -113,7 +113,7 @@ Taostats. “Get Exchange Addresses.” *Taostats API Documentation*, https://ta
 
 ### 发布信息
 
-- 应用版本：`0.1.0`。
+- 应用版本：`0.1.1`（初始版本为 `0.1.0`）。
 - 发布仓库：<https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue>。
 - 发布内容：源代码、测试、中文使用说明、设计可行性、验证记录和本交接文档。
 - 本地数据库、地址库、日志、缓存和运行产物不提交到仓库；克隆后首次启动会自动创建新的 SQLite 数据库。
@@ -139,6 +139,48 @@ node --check app\static\app.js
 .\start.ps1
 ```
 
+## 14. 2026-11-01 结果筛选与交易所判定改进交接
+
+### 已完成
+
+- 应用版本更新为 `0.1.1`；当前变更仍在本地工作树，尚未提交 GitHub。
+- 关联地址行增加“复制”按钮，复制完整 SS58 地址；浏览器剪贴板不可用时显示提示。
+- 关联结果增加“全部层级、只看 1 级、只看 2 级、只看 3 级”筛选。筛选在浏览器内执行，不重复消耗 Taostats 请求。
+- 交易所人工状态增加 `exchange_rejected`：关联结果和地址库均可确认、否定或重置；只有 `exchange_confirmed=true` 才可过滤，否定记录不会被自动重新识别。
+- SQLite 启动迁移会为旧库补充 `exchange_rejected` 列。人工状态不写入用户 API key，也不外发地址库内容。
+- 自动疑似交易所判定改为近 30 天带时间戳转账、高频对手方、金额和当前余额联合条件。余额通过公开 Bittensor RPC 的 `System.Account` 查询；低于 100 TAO或余额不可读时不会自动标记为交易所。每次最多检查 5 个候选。
+- 已只读核验用户举例地址当前余额：`10000 Rao = 0.00001 TAO`，因此不满足交易所疑似余额门槛。该值是 2026-11-01 的当前快照，不代表历史余额。
+
+### 当前事实与限制
+
+- Taostats 新版 `/v1/transfers` 文档公开的是分页窗口和区块/时间范围参数，没有证实“免费 API 固定只保存 7 天”。一两个月低频交易不能因短查询窗口直接判定交易所；免费账户历史范围必须用用户自己的认证响应实测。
+- 当前工具没有完整的子网质押、解质押、购买和代理事件语义；“疑似中转钱包”只是当前可见转账行为提示，不能证明该地址没有其他链上活动。
+- 当前余额为查询时点 free balance，不能代表历史余额；交易所最终结论仍由人工确认或否定决定。
+
+### 最新验收
+
+- `38 passed, 1 warning`。
+- `compileall` 和 `node --check app/static/app.js` 通过。
+- 服务已重启并在 `http://127.0.0.1:8766` 健康运行；无 JavaScript error。
+- 人工否定接口已实测返回 `exchange_confirmed=false`、`exchange_rejected=true`，随后已恢复测试记录的原确认状态。
+- 外部资料来源和 MLA 条目已同步到 `README.md`、`VERIFICATION.md`。
+
+## 15. 桌面快捷启动与发布状态
+
+- 已新增 `launch_desktop.ps1`：调用 `start.ps1` 启动或复用 8766 服务，然后打开 `http://127.0.0.1:8766`。
+- 已新增 `create_desktop_shortcut.ps1`：创建或更新桌面快捷方式。
+- 当前桌面快捷方式已创建并验证：
+  `C:\Users\gzx\Desktop\Bittensor 地址关联挖掘.lnk`
+- 快捷方式工作目录为 `G:\bittensor-wallet-link-intel`。项目移动后应重新执行：
+
+```powershell
+Set-Location G:\bittensor-wallet-link-intel
+.\create_desktop_shortcut.ps1
+```
+
+- 当前工作树包含本轮代码、文档和启动脚本改动，远程为 `origin/main`。
+- GitHub 发布使用本机已有 Git Credential Manager 认证，通过 `git push` 发布；不要求安装 GitHub CLI。
+
 打开 `http://127.0.0.1:8766` 后，先在页面输入 Taostats API key，再选择是否使用 Taostats 历史索引。API key 服务重启后需要重新输入。
 
 ### 已知风险和后续工作
@@ -147,3 +189,13 @@ node --check app\static\app.js
 2. Taostats 免费档历史跨度、接口 credit 消耗和真实账号额度需要使用用户自己的 key 验证。
 3. 自动交易所识别目前使用明确地址库标记和当前查询范围内的转账行为特征；完整余额和子网购买记录还需要接入更多数据源。
 4. 如果需要多人协作，下一步可以在 GitHub 上补充 Issue 模板、贡献指南和 CI 测试流程。
+
+## 14. 2026-11-01 新规则交接
+
+- 默认单边和累计金额阈值均为 `1` TAO；接口默认值、页面输入框和 `LinkPolicy` 已统一。
+- 自动交易所识别只产生“疑似交易所（待确认）”线索。当前转账索引使用高转账次数、高对手方数量和高可观察转账总额作为候选条件；余额与子网质押/解质押事件尚未接入，因此页面明确显示证据边界。
+- 只有地址库中 `EXCHANGE` 且 `exchange_confirmed=true` 的地址才会进入过滤集合。扫描结果提供“确认交易所并允许过滤”按钮，确认后写入 `manual:exchange-confirmation`；未确认候选即使勾选过滤也会保留。
+- `/api/relations` 增加 `seed_library_matches`，起始地址命中时页面高亮具体标签，例如 `DSV地址库`；关联表的地址库命中也显示为“标签地址库”。
+- SQLite 增加 `api_requests` 表，持久化本机实际发起的 Taostats 网络请求。`/api/overview` 和关联结果返回今日、本月、累计、本月参考上限（10,000）及剩余参考值；缓存命中不计数，账户实际 credits 以 Taostats 控制台为准。
+- `start.ps1` 在项目没有 `.venv` 时会优先使用 `BITTENSOR_PYTHON`，否则使用当前机器的 `G:\jiaoben\.venv\Scripts\python.exe`，再回退到系统 Python。
+- 本轮验证：`35 passed`；`compileall` 和 `node --check app\static\app.js` 通过；重启后的 8766 服务返回健康状态，首页显示默认 `1` TAO 和查询统计，人工确认接口返回 HTTP 200。

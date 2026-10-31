@@ -89,6 +89,27 @@ def test_exchange_and_validator_categories_can_be_imported():
             database.engine.dispose()
 
 
+def test_exchange_rejection_is_persisted_and_not_filterable():
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "exchange-decision.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            service.import_rows(
+                [{"address": ADDRESSES[0], "category": "EXCHANGE", "label": "候选交易所"}],
+                "manual.csv",
+            )
+            row = service.library()[0]
+            rejected = service.decide_exchange(row["id"], "reject")
+            assert rejected["item"]["exchange_rejected"] is True
+            assert rejected["item"]["exchange_confirmed"] is False
+            reset = service.decide_exchange(row["id"], "reset")
+            assert reset["item"]["exchange_rejected"] is False
+            assert reset["item"]["exchange_confirmed"] is False
+        finally:
+            database.engine.dispose()
+
+
 def test_notes_can_be_saved_for_library_rows_and_new_relation_addresses():
     with TemporaryDirectory() as directory:
         database = Database(Path(directory) / "notes.db")

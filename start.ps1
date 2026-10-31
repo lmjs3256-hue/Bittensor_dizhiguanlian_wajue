@@ -13,11 +13,20 @@ $HealthUrl = "http://127.0.0.1:$Port/api/health"
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 if (-not (Test-Path -LiteralPath $Python)) {
-    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-    if ($null -eq $pythonCommand) {
-        throw "Python environment not found. Create .venv with: python -m venv .venv"
+    $sharedPython = if ($env:BITTENSOR_PYTHON) {
+        $env:BITTENSOR_PYTHON
+    } else {
+        'G:\jiaoben\.venv\Scripts\python.exe'
     }
-    $Python = $pythonCommand.Source
+    if (Test-Path -LiteralPath $sharedPython) {
+        $Python = $sharedPython
+    } else {
+        $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+        if ($null -eq $pythonCommand) {
+            throw "Python environment not found. Create .venv with: python -m venv .venv"
+        }
+        $Python = $pythonCommand.Source
+    }
 }
 
 try {

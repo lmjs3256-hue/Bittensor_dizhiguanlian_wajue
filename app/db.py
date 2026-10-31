@@ -42,6 +42,8 @@ class AddressLibrary(Base):
     category: Mapped[str] = mapped_column(String(16), default="WATCH", index=True)
     note: Mapped[str] = mapped_column(Text, default="")
     source: Mapped[str] = mapped_column(String(255), default="manual")
+    exchange_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    exchange_rejected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -105,6 +107,15 @@ class ChainCursor(Base):
     )
 
 
+class ApiRequest(Base):
+    __tablename__ = "api_requests"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    endpoint: Mapped[str] = mapped_column(String(255), default="")
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
 class Database:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +139,36 @@ class Database:
 
     def initialize(self) -> None:
         Base.metadata.create_all(self.engine)
+        # ``create_all`` does not add columns to an existing SQLite table.
+        # Keep the application upgradeable for databases created by 0.1.0.
+        with self.engine.begin() as connection:
+            columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(address_library)"))
+            }
+            if "exchange_confirmed" not in columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE address_library "
+                        "ADD COLUMN exchange_confirmed BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                )
+            if "exchange_rejected" not in columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE address_library "
+                        "ADD COLUMN exchange_rejected BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                )
+                # Records already classified as EXCHANGE before this field was
+                # introduced were manually curated or provider-synced entries.
+                # New suspected addresses are not inserted into this category
+                # until the user confirms them.
+                connection.execute(
+                    text(
+                        "UPDATE address_library SET exchange_confirmed = 1 "
+                        "WHERE category = 'EXCHANGE'"
+                    )
+                )
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -156,6 +197,60 @@ class Database:
                 "cursor_hash": cursor.last_hash if cursor else None,
                 "coverage": "LOCAL_INDEX",
             }
+
+    def record_api_request(
+        self,
+        endpoint: str,
+        *,
+        status_code: int | None = None,
+        success: bool = False,
+    ) -> None:
+        with self.session() as db:
+            db.add(
+                ApiRequest(
+                    endpoint=endpoint,
+                    status_code=status_code,
+                    success=success,
+                )
+            )
+
+    def api_usage_summary(
+        self,
+        *,
+        monthly_limit: int | None = None,
+        per_minute_limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Return persisted request counts in UTC calendar periods.
+
+        The provider's account console remains authoritative for credits. The
+        application counts actual network attempts made by this instance and
+        exposes the public free-plan monthly reference when configured.
+        """
+
+        now = datetime.now(timezone.utc)
+        today_key = now.strftime("%Y-%m-%d")
+        month_key = now.strftime("%Y-%m")
+        with self.session() as db:
+            total = db.query(ApiRequest).count()
+            today = db.query(ApiRequest).filter(
+                text("strftime('%Y-%m-%d', requested_at) = :today_key")
+            ).params(today_key=today_key).count()
+            month = db.query(ApiRequest).filter(
+                text("strftime('%Y-%m', requested_at) = :month_key")
+            ).params(month_key=month_key).count()
+        remaining = None
+        if monthly_limit is not None:
+            remaining = max(monthly_limit - month, 0)
+        return {
+            "today": today,
+            "month": month,
+            "total": total,
+            "monthly_limit": monthly_limit,
+            "monthly_remaining": remaining,
+            "per_minute_limit": per_minute_limit,
+            "counted_at": now.isoformat(),
+            "counting_scope": "本机实际发起的 Taostats 网络请求；缓存命中不计数",
+        }
 
     def ingest_transfers(self, records: list[dict[str, Any]]) -> int:
         if not records:

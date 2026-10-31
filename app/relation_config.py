@@ -17,8 +17,8 @@ class LinkPolicy:
     all retained indirect edges to meet ``min_total_tao``.
     """
 
-    min_edge_tao: Decimal = Decimal("0.1")
-    min_total_tao: Decimal = Decimal("0.1")
+    min_edge_tao: Decimal = Decimal("1")
+    min_total_tao: Decimal = Decimal("1")
     include_incoming: bool = True
     include_outgoing: bool = True
     exclude_system_accounts: bool = True
@@ -39,8 +39,8 @@ class LinkPolicy:
         values = values or {}
         try:
             return cls(
-                min_edge_tao=Decimal(str(values.get("min_edge_tao", "0.1"))),
-                min_total_tao=Decimal(str(values.get("min_total_tao", "0.1"))),
+                min_edge_tao=Decimal(str(values.get("min_edge_tao", "1"))),
+                min_total_tao=Decimal(str(values.get("min_total_tao", "1"))),
                 include_incoming=bool(values.get("include_incoming", True)),
                 include_outgoing=bool(values.get("include_outgoing", True)),
                 exclude_system_accounts=bool(
@@ -100,6 +100,10 @@ class LibraryEntry:
     category: str = ""
     note: str = ""
     source: str = ""
+    # Directly constructed entries represent an already curated library row.
+    # Database-backed entries pass the persisted confirmation flag explicitly.
+    exchange_confirmed: bool = True
+    exchange_rejected: bool = False
 
 
 @dataclass
@@ -121,6 +125,8 @@ class RelationResult:
     library_source: str = ""
     address_role: str = ""
     role_reason: str = ""
+    exchange_confirmed: bool = False
+    exchange_rejected: bool = False
 
 
 @dataclass
@@ -134,4 +140,5 @@ class ScanReport:
     related: list[RelationResult] = field(default_factory=list)
     library_matches: list[RelationResult] = field(default_factory=list)
     seed_is_in_library: bool = False
+    seed_library_matches: list[LibraryEntry] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

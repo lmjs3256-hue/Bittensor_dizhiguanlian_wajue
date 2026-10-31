@@ -1,7 +1,11 @@
 import json
+from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from app.collector import extract_balance_transfers
+from app.db import Database
 from app.service import _parse_upload
 from app.relation import discover
 from app.relation_config import Edge, LibraryEntry, LinkPolicy, TransferRecord
@@ -140,6 +144,32 @@ def test_known_exchange_gets_explicit_role_label():
     assert "地址库明确标记" in report.related[0].role_reason
 
 
+def test_default_policy_starts_at_one_tao_and_reports_seed_library():
+    report = discover(
+        "S",
+        [],
+        library=[LibraryEntry("S", "DSV", "WATCH")],
+    )
+
+    assert LinkPolicy().min_edge_tao == Decimal("1")
+    assert LinkPolicy().min_total_tao == Decimal("1")
+    assert report.seed_is_in_library is True
+    assert report.seed_library_matches[0].label == "DSV"
+
+
+def test_api_usage_counts_are_persisted_by_calendar_period():
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "usage.db")
+        try:
+            database.initialize()
+            database.record_api_request("/v1/transfers", status_code=200, success=True)
+            usage = database.api_usage_summary(monthly_limit=10000, per_minute_limit=5)
+            assert usage["today"] == 1
+            assert usage["month"] == 1
+            assert usage["total"] == 1
+            assert usage["monthly_remaining"] == 9999
+        finally:
+            database.engine.dispose()
 def test_transfer_only_wallet_gets_conservative_role_label():
     report = discover(
         "S",
@@ -152,16 +182,52 @@ def test_transfer_only_wallet_gets_conservative_role_label():
 
     row = next(item for item in report.related if item.address == "A")
     assert row.address_role == "疑似中转钱包"
-    assert "未发现子网购买记录" in row.role_reason
+    assert "尚未接入子网质押、解质押和购买事件" in row.role_reason
 
 
 def test_high_volume_wallet_gets_conservative_exchange_role_label():
-    records = [TransferRecord("0x00", 1, "S", "A", Decimal("15"))]
+    timestamp = datetime.now(timezone.utc).isoformat()
+    records = [TransferRecord("0x00", 1, "S", "A", Decimal("100"), timestamp=timestamp)]
     records.extend(
-        TransferRecord(f"0x{index:02x}", index + 1, "A", f"C{index}", Decimal("15"))
-        for index in range(1, 11)
+        TransferRecord(
+            f"0x{index:02x}",
+            index + 1,
+            "A",
+            f"C{index}",
+            Decimal("100"),
+            timestamp=timestamp,
+        )
+        for index in range(1, 21)
     )
-    report = discover("S", records, max_depth=1)
+    report = discover("S", records, max_depth=1, balances={"A": Decimal("200")})
 
     row = next(item for item in report.related if item.address == "A")
-    assert row.address_role == "疑似交易所"
+    assert row.address_role == "疑似交易所（待确认）"
+
+
+def test_low_balance_high_volume_wallet_is_not_exchange_suspect():
+    timestamp = datetime.now(timezone.utc).isoformat()
+    records = [TransferRecord("0x00", 1, "S", "A", Decimal("100"), timestamp=timestamp)]
+    records.extend(
+        TransferRecord(
+            f"0x{index:02x}", index + 1, "A", f"C{index}", Decimal("100"), timestamp=timestamp
+        )
+        for index in range(1, 21)
+    )
+    report = discover("S", records, max_depth=1, balances={"A": Decimal("0.00001")})
+    row = next(item for item in report.related if item.address == "A")
+    assert row.address_role == "排除交易所疑似（余额偏低）"
+
+
+def test_missing_balance_does_not_automatically_label_exchange():
+    timestamp = datetime.now(timezone.utc).isoformat()
+    records = [TransferRecord("0x00", 1, "S", "A", Decimal("100"), timestamp=timestamp)]
+    records.extend(
+        TransferRecord(
+            f"0x{index:02x}", index + 1, "A", f"C{index}", Decimal("100"), timestamp=timestamp
+        )
+        for index in range(1, 21)
+    )
+    report = discover("S", records, max_depth=1)
+    row = next(item for item in report.related if item.address == "A")
+    assert row.address_role == "交易所判断待核余额"

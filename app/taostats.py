@@ -24,7 +24,16 @@ def is_configured() -> bool:
 
 
 class TaostatsError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_made: bool = False,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.request_made = request_made
+        self.status_code = status_code
 
 
 class TaostatsAuthError(TaostatsError):
@@ -112,14 +121,26 @@ def get_active_validator_addresses() -> tuple[set[str], bool]:
             timeout=20,
         )
     except httpx.HTTPError as exc:
-        raise TaostatsUnavailableError(f"Taostats 验证者名单请求失败：{exc}") from exc
+        raise TaostatsUnavailableError(
+            f"Taostats 验证者名单请求失败：{exc}", request_made=True
+        ) from exc
     if response.status_code in {401, 403}:
-        raise TaostatsAuthError("Taostats API key 无效或没有访问权限。")
+        raise TaostatsAuthError(
+            "Taostats API key 无效或没有访问权限。",
+            request_made=True,
+            status_code=response.status_code,
+        )
     if response.status_code == 429:
-        raise TaostatsRateLimitError("Taostats 返回限流，请稍后重试。")
+        raise TaostatsRateLimitError(
+            "Taostats 返回限流，请稍后重试。",
+            request_made=True,
+            status_code=response.status_code,
+        )
     if response.status_code >= 400:
         raise TaostatsUnavailableError(
-            f"Taostats 验证者名单返回 HTTP {response.status_code}。"
+            f"Taostats 验证者名单返回 HTTP {response.status_code}。",
+            request_made=True,
+            status_code=response.status_code,
         )
 
     try:
@@ -175,14 +196,26 @@ def get_exchange_addresses() -> tuple[list[dict[str, str]], bool]:
             timeout=20,
         )
     except httpx.HTTPError as exc:
-        raise TaostatsUnavailableError(f"Taostats 交易所地址请求失败：{exc}") from exc
+        raise TaostatsUnavailableError(
+            f"Taostats 交易所地址请求失败：{exc}", request_made=True
+        ) from exc
     if response.status_code in {401, 403}:
-        raise TaostatsAuthError("Taostats API key 无效或没有访问权限。")
+        raise TaostatsAuthError(
+            "Taostats API key 无效或没有访问权限。",
+            request_made=True,
+            status_code=response.status_code,
+        )
     if response.status_code == 429:
-        raise TaostatsRateLimitError("Taostats 返回限流，请稍后重试。")
+        raise TaostatsRateLimitError(
+            "Taostats 返回限流，请稍后重试。",
+            request_made=True,
+            status_code=response.status_code,
+        )
     if response.status_code >= 400:
         raise TaostatsUnavailableError(
-            f"Taostats 交易所地址返回 HTTP {response.status_code}。"
+            f"Taostats 交易所地址返回 HTTP {response.status_code}。",
+            request_made=True,
+            status_code=response.status_code,
         )
 
     try:
@@ -264,15 +297,27 @@ def get_transfer_page(address: str, page: int = 1) -> TransferPage:
             timeout=20,
         )
     except httpx.HTTPError as exc:
-        raise TaostatsUnavailableError(f"Taostats 请求失败：{exc}") from exc
+        raise TaostatsUnavailableError(
+            f"Taostats 请求失败：{exc}", request_made=True
+        ) from exc
 
     if response.status_code in {401, 403}:
-        raise TaostatsAuthError("Taostats API key 无效或没有访问权限。")
+        raise TaostatsAuthError(
+            "Taostats API key 无效或没有访问权限。",
+            request_made=True,
+            status_code=response.status_code,
+        )
     if response.status_code == 429:
-        raise TaostatsRateLimitError("Taostats 返回限流，请稍后重试。")
+        raise TaostatsRateLimitError(
+            "Taostats 返回限流，请稍后重试。",
+            request_made=True,
+            status_code=response.status_code,
+        )
     if response.status_code >= 400:
         raise TaostatsUnavailableError(
-            f"Taostats API 返回 HTTP {response.status_code}。"
+            f"Taostats API 返回 HTTP {response.status_code}。",
+            request_made=True,
+            status_code=response.status_code,
         )
 
     try:

@@ -14,6 +14,61 @@ RAO_PER_TAO = Decimal("1000000000")
 SYSTEM_PREFIX = "5EYCAe5"
 
 
+async def _query_account_balances(
+    url: str,
+    addresses: list[str],
+    *,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Decimal | None]:
+    """Read current System.Account balances without indexing extra history."""
+
+    substrate = AsyncSubstrateInterface(url)
+    result: dict[str, Decimal | None] = {}
+    try:
+        await asyncio.wait_for(substrate.initialize(), timeout_seconds)
+        for address in addresses:
+            try:
+                value = await asyncio.wait_for(
+                    substrate.query("System", "Account", params=[address]),
+                    timeout_seconds,
+                )
+                payload = getattr(value, "value", value)
+                data = payload.get("data", {}) if isinstance(payload, dict) else {}
+                free = int(data.get("free", 0)) if isinstance(data, dict) else 0
+                result[address] = Decimal(free) / RAO_PER_TAO
+            except Exception:
+                result[address] = None
+        return result
+    finally:
+        await substrate.close()
+
+
+def query_account_balances(
+    url: str,
+    addresses: list[str],
+    *,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Decimal | None]:
+    """Synchronous wrapper used by the synchronous relation API."""
+
+    if not addresses:
+        return {}
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            _query_account_balances(
+                url,
+                addresses,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+    # FastAPI's synchronous route is normally executed in a worker thread.
+    # If a caller invokes the service inside an active loop, skip the network
+    # lookup rather than nesting asyncio.run and blocking the loop.
+    return {}
+
+
 def _event_value(item: Any) -> dict[str, Any]:
     value = getattr(item, "value", item)
     if not isinstance(value, dict):

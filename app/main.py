@@ -38,7 +38,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Bittensor Wallet Link Intel", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Bittensor Wallet Link Intel", version="0.1.1", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 SERVICE = LinkService(DATABASE, CONFIG.rpc_url)
 
@@ -62,6 +62,18 @@ class NoteInput(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
+class ExchangeConfirmationInput(BaseModel):
+    confirmed: bool = True
+    rejected: bool = False
+    decision: str = Field(default="", pattern="^(|confirm|reject|reset)$")
+
+
+class ExchangeAddressConfirmationInput(BaseModel):
+    address: str = Field(min_length=1, max_length=64)
+    label: str = Field(default="人工确认交易所", max_length=160)
+    decision: str = Field(default="confirm", pattern="^(confirm|reject|reset)$")
+
+
 class AddressNoteInput(BaseModel):
     address: str = Field(min_length=1, max_length=64)
     note: str = Field(default="", max_length=2000)
@@ -70,8 +82,8 @@ class AddressNoteInput(BaseModel):
 class RelationInput(BaseModel):
     seed: str = Field(min_length=1, max_length=64)
     depth: int = Field(default=3, ge=1, le=3)
-    min_edge_tao: str = Field(default="0.1")
-    min_total_tao: str = Field(default="0.1")
+    min_edge_tao: str = Field(default="1")
+    min_total_tao: str = Field(default="1")
     include_incoming: bool = True
     include_outgoing: bool = True
     data_source: str = Field(default="local", pattern="^(local|taostats)$")
@@ -89,7 +101,7 @@ def health(svc: Annotated[LinkService, Depends(service)]):
     return {
         "ok": True,
         "service": "bittensor-wallet-link-intel",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "rpc_url": svc.rpc_url,
     }
 
@@ -101,6 +113,7 @@ def overview(svc: Annotated[LinkService, Depends(service)]):
         "default_seed": svc.seed_address(),
         "rpc_url": svc.rpc_url,
         "taostats_configured": taostats_is_configured(),
+        "api_usage": svc.api_usage_summary(),
     }
 
 
@@ -160,6 +173,32 @@ def update_address_note(
         return svc.update_library_note(row_id, payload.note)
     except InputError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/library/{row_id}/confirm-exchange")
+def confirm_exchange(
+    row_id: int,
+    payload: ExchangeConfirmationInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    try:
+        decision = payload.decision or (
+            "reject" if payload.rejected else ("confirm" if payload.confirmed else "reset")
+        )
+        return svc.decide_exchange(row_id, decision)
+    except InputError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/library/confirm-exchange-address")
+def confirm_exchange_address(
+    payload: ExchangeAddressConfirmationInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    try:
+        return svc.decide_exchange_address(payload.address, payload.decision, payload.label)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.delete("/api/library")

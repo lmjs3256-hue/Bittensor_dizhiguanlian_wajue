@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Iterable
 
@@ -16,6 +17,72 @@ from .relation_config import (
 )
 
 
+SUSPECT_EXCHANGE_MIN_TRANSFERS = 20
+SUSPECT_EXCHANGE_MIN_COUNTERPARTIES = 10
+SUSPECT_EXCHANGE_MIN_GROSS_TAO = Decimal("1000")
+SUSPECT_EXCHANGE_MIN_BALANCE_TAO = Decimal("100")
+SUSPECT_EXCHANGE_LOOKBACK_DAYS = 30
+
+
+def _recent_activity_for_exchange(
+    address: str,
+    activity: list[TransferRecord],
+    *,
+    now: datetime | None = None,
+) -> tuple[list[TransferRecord], set[str], Decimal]:
+    now = now or datetime.now(timezone.utc)
+    recent: list[TransferRecord] = []
+    for row in activity:
+        if not row.timestamp:
+            continue
+        try:
+            timestamp = datetime.fromisoformat(row.timestamp.replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            if timestamp >= now - timedelta(days=SUSPECT_EXCHANGE_LOOKBACK_DAYS):
+                recent.append(row)
+        except ValueError:
+            continue
+    counterparties = {
+        (row.to_address if row.from_address == address else row.from_address)
+        for row in recent
+        if address in {row.from_address, row.to_address}
+    }
+    gross_tao = sum((row.amount_tao for row in recent), Decimal("0"))
+    return recent, counterparties, gross_tao
+
+
+def exchange_balance_candidates(
+    transfers: Iterable[TransferRecord],
+    library: Iterable[LibraryEntry] = (),
+) -> list[str]:
+    """Find high-activity addresses that need a live balance check first."""
+
+    rows = _canonical_dedupe(transfers)
+    entries = {entry.address: entry for entry in library}
+    activity: dict[str, list[TransferRecord]] = defaultdict(list)
+    for row in rows:
+        activity[row.from_address].append(row)
+        activity[row.to_address].append(row)
+    candidates = []
+    for address, records in activity.items():
+        entry = entries.get(address)
+        if entry and (
+            entry.exchange_confirmed
+            or entry.exchange_rejected
+            or entry.category == "VALIDATOR"
+        ):
+            continue
+        recent, counterparties, gross_tao = _recent_activity_for_exchange(address, records)
+        if (
+            len(recent) >= SUSPECT_EXCHANGE_MIN_TRANSFERS
+            and len(counterparties) >= SUSPECT_EXCHANGE_MIN_COUNTERPARTIES
+            and gross_tao >= SUSPECT_EXCHANGE_MIN_GROSS_TAO
+        ):
+            candidates.append(address)
+    return sorted(candidates)
+
+
 def _is_system(address: str, prefix: str) -> bool:
     return bool(prefix) and address.startswith(prefix)
 
@@ -24,6 +91,7 @@ def _role_for_address(
     address: str,
     entry: LibraryEntry | None,
     activity: list[TransferRecord],
+    balance_tao: Decimal | None = None,
 ) -> tuple[str, str]:
     """Return a conservative public label from available address evidence.
 
@@ -33,8 +101,12 @@ def _role_for_address(
     """
 
     if entry and entry.category == "EXCHANGE":
-        label = entry.label.strip() or "交易所地址"
-        return label, "地址库明确标记为交易所地址。"
+        if entry.exchange_rejected:
+            return "已人工否定交易所", "用户已人工否定该交易所候选，当前不会进入交易所过滤集合。"
+        if entry.exchange_confirmed:
+            label = entry.label.strip() or "交易所地址"
+            return label, "地址库明确标记为交易所地址。"
+        return "疑似交易所（待确认）", "交易所候选尚未人工确认，交易所过滤不可用。"
     if entry and entry.category == "VALIDATOR":
         label = entry.label.strip() or "验证者地址"
         return label, "地址库明确标记为验证者地址。"
@@ -46,19 +118,50 @@ def _role_for_address(
         for row in activity
         if address in {row.from_address, row.to_address}
     }
-    gross_tao = sum((row.amount_tao for row in activity), Decimal("0"))
-    transfer_count = len(activity)
-    # This is deliberately conservative because Taostats queries and local
-    # indexes are often partial. Balance data is not available in this graph.
-    if transfer_count >= 10 and len(counterparties) >= 8 and gross_tao >= Decimal("100"):
+    recent_activity, recent_counterparties, gross_tao = _recent_activity_for_exchange(
+        address, activity
+    )
+    gross_tao = sum((row.amount_tao for row in recent_activity), Decimal("0"))
+    transfer_count = len(recent_activity)
+    # The current transfer-only index cannot prove current wallet balance or
+    # subnet staking history. This is therefore a review hint, never a filter
+    # decision. A confirmed EXCHANGE library entry is the only filterable one.
+    if (
+        balance_tao is not None
+        and balance_tao >= SUSPECT_EXCHANGE_MIN_BALANCE_TAO
+        and transfer_count >= SUSPECT_EXCHANGE_MIN_TRANSFERS
+        and len(recent_counterparties) >= SUSPECT_EXCHANGE_MIN_COUNTERPARTIES
+        and gross_tao >= SUSPECT_EXCHANGE_MIN_GROSS_TAO
+    ):
         return (
-            "疑似交易所",
-            f"当前数据范围内观察到 {transfer_count} 笔转账、{len(counterparties)} 个对手方；未接入余额全量查询。",
+            "疑似交易所（待确认）",
+            f"近 {SUSPECT_EXCHANGE_LOOKBACK_DAYS} 天观察到 {transfer_count} 笔转账、{len(recent_counterparties)} 个对手方、可观察转账总额 {gross_tao} TAO，当前余额约 {balance_tao} TAO；子网质押/解质押事件尚未纳入自动核验，需人工确认。",
         )
-    if transfer_count >= 2 and len(counterparties) >= 2:
+    if (
+        transfer_count >= SUSPECT_EXCHANGE_MIN_TRANSFERS
+        and len(recent_counterparties) >= SUSPECT_EXCHANGE_MIN_COUNTERPARTIES
+        and gross_tao >= SUSPECT_EXCHANGE_MIN_GROSS_TAO
+        and balance_tao is not None
+        and balance_tao < SUSPECT_EXCHANGE_MIN_BALANCE_TAO
+    ):
+        return (
+            "排除交易所疑似（余额偏低）",
+            f"近 {SUSPECT_EXCHANGE_LOOKBACK_DAYS} 天交易活动较高，但当前账户可用余额约 {balance_tao} TAO，低于 {SUSPECT_EXCHANGE_MIN_BALANCE_TAO} TAO 门槛；未标记为疑似交易所。",
+        )
+    if (
+        transfer_count >= SUSPECT_EXCHANGE_MIN_TRANSFERS
+        and len(recent_counterparties) >= SUSPECT_EXCHANGE_MIN_COUNTERPARTIES
+        and gross_tao >= SUSPECT_EXCHANGE_MIN_GROSS_TAO
+        and balance_tao is None
+    ):
+        return (
+            "交易所判断待核余额",
+            "转账活动符合高频候选条件，但无法取得当前账户余额，因此不会标记为疑似交易所。",
+        )
+    if len(activity) >= 2 and len(counterparties) >= 2:
         return (
             "疑似中转钱包",
-            "当前数据范围内仅观察到转账记录，未发现子网购买记录；需要更完整的链上数据复核。",
+            "当前数据范围内仅观察到转账记录；尚未接入子网质押、解质押和购买事件，不能据此确认其没有这些记录。",
         )
     return "", ""
 
@@ -104,6 +207,7 @@ def discover(
     freshness: str = "UNKNOWN_EXPORT",
     warnings: Iterable[str] = (),
     excluded_addresses: Iterable[str] = (),
+    balances: dict[str, Decimal | None] | None = None,
 ) -> ScanReport:
     """Traverse transfer edges at most ``max_depth`` hops from the seed.
 
@@ -132,6 +236,8 @@ def discover(
                 category=entry.category,
                 note=entry.note,
                 source=entry.source,
+                exchange_confirmed=entry.exchange_confirmed,
+                exchange_rejected=entry.exchange_rejected,
             )
 
     if seed in excluded:
@@ -142,6 +248,7 @@ def discover(
             freshness=freshness,
             policy=policy,
             seed_is_in_library=seed in library_map,
+            seed_library_matches=[library_map[seed]] if seed in library_map else [],
             warnings=list(dict.fromkeys([
                 *warnings,
                 "起始地址命中当前过滤地址库，已停止从该地址扩展。",
@@ -268,6 +375,7 @@ def discover(
             address,
             entry,
             activity.get(address, []),
+            (balances or {}).get(address),
         )
         unique_tx = {edge.tx_hash for edge in edge_rows if edge.tx_hash}
         incoming = [edge for edge in edge_rows if edge.to_address == address]
@@ -291,6 +399,8 @@ def discover(
                 library_source=entry.source if entry else "",
                 address_role=address_role,
                 role_reason=role_reason,
+                exchange_confirmed=entry.exchange_confirmed if entry else False,
+                exchange_rejected=entry.exchange_rejected if entry else False,
             )
         )
     related.sort(key=lambda row: (row.depth, -row.total_tao, row.address))
@@ -317,6 +427,7 @@ def discover(
         related=related,
         library_matches=[row for row in related if row.match],
         seed_is_in_library=seed_entry is not None,
+        seed_library_matches=[seed_entry] if seed_entry else [],
         warnings=list(dict.fromkeys(final_warnings)),
     )
 

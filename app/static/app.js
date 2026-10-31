@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (selector) => document.querySelector(selector);
-const state = { lastResult: null, library: [] };
+const state = { lastResult: null, library: [], depthFilter: "all" };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -17,6 +17,11 @@ function number(value) {
 function shortAddr(value) {
   const text = String(value || "");
   return text.length > 30 ? `${text.slice(0, 10)}…${text.slice(-8)}` : text;
+}
+
+function libraryName(label, category) {
+  const name = String(label || category || "未命名").trim();
+  return name.endsWith("地址库") ? name : `${name}地址库`;
 }
 
 function sourceLabel(value) {
@@ -122,6 +127,13 @@ async function loadOverview() {
     $("#metric-cursor").textContent = index.cursor_block ? number(index.cursor_block) : "未建立";
     if (!$("#seed").value && data.default_seed) $("#seed").value = data.default_seed;
     showTaostatsKeyStatus(data.taostats_configured);
+    const usage = data.api_usage || {};
+    $("#usage-today").textContent = number(usage.today);
+    $("#usage-month").textContent = number(usage.month);
+    $("#usage-total").textContent = number(usage.total);
+    $("#usage-limit").textContent = usage.monthly_limit == null ? "未设置" : number(usage.monthly_limit);
+    $("#usage-remaining").textContent = usage.monthly_remaining == null ? "未设置" : number(usage.monthly_remaining);
+    $("#usage-note").textContent = `${usage.counting_scope || "统计本机实际发起的 Taostats 网络请求"}；免费档按 credits 计费，参考上限不等同账号精确剩余次数。`;
     if (index.jobs && index.jobs[0] && index.jobs[0].error) {
       toast(`索引任务失败：${index.jobs[0].error}`, true);
     }
@@ -175,10 +187,22 @@ function relatedTable(rows) {
       ? `<span class="tag role-tag" title="${esc(row.role_reason || "")}">${esc(row.address_role)}</span>`
       : "";
     const library = row.match
-      ? `<span class="tag warn">${esc(row.library_label || row.library_category)}</span>`
+      ? `<span class="tag warn">${esc(libraryName(row.library_label, row.library_category))}</span>`
       : "-";
-    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code>${esc(row.address)}</code>${role}</div></td><td>${row.depth}</td><td class="amount">${esc(row.incoming_tao)}</td><td class="amount">${esc(row.outgoing_tao)}</td><td class="amount">${esc(row.total_tao)}</td><td>${library}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
+    const exchangeActions = row.address_role === "疑似交易所（待确认）"
+      ? `<div class="exchange-decision"><button class="secondary note-save" data-exchange-decision="confirm" data-address="${esc(row.address)}" type="button">确认交易所</button><button class="ghost note-save" data-exchange-decision="reject" data-address="${esc(row.address)}" type="button">否定</button></div>`
+      : "";
+    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code>${esc(row.address)}</code><button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${role}</div></td><td>${row.depth}</td><td class="amount">${esc(row.incoming_tao)}</td><td class="amount">${esc(row.outgoing_tao)}</td><td class="amount">${esc(row.total_tao)}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
   }).join("")}</tbody></table>`;
+}
+
+function refreshRelatedTable() {
+  const allRows = state.lastResult?.related || [];
+  const rows = state.depthFilter === "all"
+    ? allRows
+    : allRows.filter((row) => String(row.depth) === state.depthFilter);
+  $("#count-related").textContent = number(rows.length);
+  $("#related").innerHTML = relatedTable(rows);
 }
 
 function renderResult(data) {
@@ -194,10 +218,19 @@ function renderResult(data) {
     ? '<span class="badge warn">分页未完整</span>' : "";
   const windowBadge = data.provider_window_truncated
     ? '<span class="badge warn">服务端历史窗口有限</span>' : "";
-  $("#result-badges").innerHTML = `<span class="badge ${data.freshness === "LOCAL_INDEX" || data.freshness === "TAOSTATS_INDEX" ? "" : "warn"}">${esc(freshnessLabel(data.freshness, data))}</span><span class="badge">${esc(coverageLabel(data.coverage))}</span>${paginationBadge}${windowBadge}${data.seed_is_in_library ? '<span class="badge warn">起始地址已在地址库</span>' : ""}`;
-  $("#count-related").textContent = number(data.related.length);
+  $("#result-badges").innerHTML = `<span class="badge ${data.freshness === "LOCAL_INDEX" || data.freshness === "TAOSTATS_INDEX" ? "" : "warn"}">${esc(freshnessLabel(data.freshness, data))}</span><span class="badge">${esc(coverageLabel(data.coverage))}</span>${paginationBadge}${windowBadge}${data.seed_is_in_library ? '<span class="badge warn">起始地址已命中地址库</span>' : ""}`;
+  $("#related-depth-filter").value = state.depthFilter;
   $("#cutoff").textContent = data.data_cutoff_block ? number(data.data_cutoff_block) : "-";
-  $("#related").innerHTML = relatedTable(data.related);
+  const seedHit = $("#seed-library-hit");
+  const seedMatches = data.seed_library_matches || [];
+  if (seedMatches.length) {
+    seedHit.classList.remove("hidden");
+    $("#seed-library-hit-content").innerHTML = `<div class="library-hit-list">${seedMatches.map((entry) => `<div class="library-hit-item"><b>${esc(libraryName(entry.label, entry.category))}</b><span> · ${esc(entry.category)}${entry.note ? ` · ${esc(entry.note)}` : ""}</span></div>`).join("")}</div>`;
+  } else {
+    seedHit.classList.add("hidden");
+    $("#seed-library-hit-content").textContent = "";
+  }
+  refreshRelatedTable();
   $("#warnings").innerHTML = [...data.warnings, ...data.limitations].map((text) => `<li>${esc(text)}</li>`).join("");
   document.querySelectorAll("[data-use-address]").forEach((button) => button.addEventListener("click", () => {
     $("#seed").value = button.dataset.useAddress;
@@ -233,7 +266,8 @@ async function runRelations() {
       return;
     }
     renderResult(data);
-    toast(`查询完成：${data.related.length} 个关联地址，${data.library_matches.length} 个地址库命中。${data.pagination_complete === false ? "部分历史尚未读取完，请查看提示。" : ""}`, data.pagination_complete === false);
+    const libraryHitCount = data.library_matches.length + (data.seed_library_matches || []).length;
+    toast(`查询完成：${data.related.length} 个关联地址，${libraryHitCount} 个地址库命中。${data.pagination_complete === false ? "部分历史尚未读取完，请查看提示。" : ""}`, data.pagination_complete === false);
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -258,7 +292,7 @@ async function scanBlocks(advance) {
 }
 
 function libraryRowsTable(rows) {
-  return `<table><thead><tr><th class="selection-cell"></th><th>地址</th><th>名称</th><th>分类</th><th>备注</th><th>来源</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr><td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td><td class="mono address">${esc(row.address)}</td><td>${esc(row.label || "-")}</td><td><span class="lib-category ${esc(row.category)}">${esc(row.category)}</span></td><td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td><td>${esc(row.source || "-")}</td><td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td></tr>`).join("")}</tbody></table>`;
+  return `<table><thead><tr><th class="selection-cell"></th><th>地址</th><th>名称</th><th>分类</th><th>备注</th><th>来源</th><th></th></tr></thead><tbody>${rows.map((row) => { const exchangeControl = row.category === "EXCHANGE" ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销确认</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">重新确认</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销否定</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>` : ""; return `<tr><td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td><td class="mono address">${esc(row.address)}</td><td>${esc(row.label || "-")}</td><td><span class="lib-category ${esc(row.category)}">${esc(row.category)}</span>${exchangeControl}</td><td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td><td>${esc(row.source || "-")}</td><td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td></tr>`; }).join("")}</tbody></table>`;
 }
 
 function libraryTable(rows) {
@@ -338,6 +372,21 @@ async function loadLibrary() {
       } catch (error) { toast(`备注保存失败：${error.message}`, true); }
       finally { button.disabled = false; }
     }));
+    document.querySelectorAll("[data-library-exchange-decision]").forEach((button) => button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/library/${button.dataset.rowId}/confirm-exchange`, {
+          method: "POST",
+          body: JSON.stringify({ decision: button.dataset.libraryExchangeDecision }),
+        });
+        await loadLibrary();
+        const decision = button.dataset.libraryExchangeDecision;
+        toast(decision === "confirm" ? "已确认，扫描时允许过滤该交易所地址。" : decision === "reject" ? "已否定，该地址不会被交易所过滤。" : "已重置交易所人工结论。", false);
+      } catch (error) {
+        toast(`交易所人工结论更新失败：${error.message}`, true);
+        button.disabled = false;
+      }
+    }));
   } catch (error) { toast(error.message, true); }
 }
 
@@ -366,6 +415,67 @@ async function saveRelationNote(button) {
     window.setTimeout(() => { button.textContent = "保存备注"; }, 1400);
   } catch (error) { toast(`备注保存失败：${error.message}`, true); }
   finally { button.disabled = false; }
+}
+
+async function copyAddress(address, button) {
+  if (!address) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(address);
+    } else {
+      const input = document.createElement("textarea");
+      input.value = address;
+      input.setAttribute("readonly", "");
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      if (!document.execCommand("copy")) throw new Error("clipboard unavailable");
+      input.remove();
+    }
+    const original = button.textContent;
+    button.textContent = "已复制";
+    window.setTimeout(() => { button.textContent = original || "复制"; }, 1200);
+  } catch (_) {
+    toast("浏览器未允许自动复制，请手动选择地址复制。", true);
+  }
+}
+
+async function decideExchange(address, decision, button) {
+  if (!address) return;
+  button.disabled = true;
+  try {
+    const result = await api("/api/library/confirm-exchange-address", {
+      method: "POST",
+      body: JSON.stringify({
+        address,
+        label: decision === "confirm" ? "人工确认交易所" : "人工否定交易所",
+        decision,
+      }),
+    });
+    const item = result.item;
+    const row = state.lastResult?.related?.find((entry) => entry.address === address);
+    if (row && item) {
+      row.match = true;
+      row.library_label = item.label;
+      row.library_category = item.category;
+      row.library_note = item.note;
+      row.library_source = item.source;
+      row.exchange_confirmed = item.exchange_confirmed;
+      row.exchange_rejected = item.exchange_rejected;
+      row.address_role = decision === "confirm" ? item.label : "已人工否定交易所";
+      row.role_reason = decision === "confirm"
+        ? "已由用户人工确认并加入交易所过滤库。"
+        : "已由用户人工否定，不会进入交易所过滤集合。";
+    }
+    renderResult(state.lastResult);
+    toast(decision === "confirm"
+      ? "已人工确认该地址为交易所地址；下次扫描可按交易所过滤。"
+      : "已人工否定该地址；后续扫描不会再将其列为交易所候选。", false);
+  } catch (error) {
+    toast(`确认失败：${error.message}`, true);
+    button.disabled = false;
+  }
 }
 
 async function addAddress() {
@@ -431,6 +541,10 @@ $("#taostats-api-key").addEventListener("keydown", (event) => {
   if (event.key === "Enter") saveTaostatsKey();
 });
 $("#run-scan").addEventListener("click", runRelations);
+$("#related-depth-filter").addEventListener("change", (event) => {
+  state.depthFilter = event.target.value;
+  refreshRelatedTable();
+});
 $("#scan-latest").addEventListener("click", () => scanBlocks(false));
 $("#scan-advance").addEventListener("click", () => scanBlocks(true));
 $("#add-address").addEventListener("click", addAddress);
@@ -440,6 +554,10 @@ $("#sync-exchanges").addEventListener("click", syncExchangeLibrary);
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-save-relation-note]");
   if (button) saveRelationNote(button);
+  const exchangeButton = event.target.closest("[data-exchange-decision]");
+  if (exchangeButton) decideExchange(exchangeButton.dataset.address, exchangeButton.dataset.exchangeDecision, exchangeButton);
+  const copyButton = event.target.closest("[data-copy-address]");
+  if (copyButton) copyAddress(copyButton.dataset.copyAddress, copyButton);
 });
 $("#delete-selected").addEventListener("click", async () => {
   const ids = [...document.querySelectorAll("[data-library-select]:checked")]

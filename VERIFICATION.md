@@ -97,3 +97,36 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 - 无 key 调用 `POST /api/library/import-exchanges`：HTTP 401，提示先配置 Taostats API key。没有伪造交易所目录，也没有宣称已完成真实官方地址同步。
 
 本轮仍未使用用户真实 Taostats key 做认证请求；免费档历史覆盖、真实扣点和交易所目录当前内容需要在用户填写 key 后由页面实际同步确认。
+
+## 2026-11-01 新规则回归
+
+- 默认单边阈值和累计阈值均为 `1` TAO；页面、Pydantic 请求模型和 `LinkPolicy` 一致。
+- 自动候选交易所只显示“疑似交易所（待确认）”，过滤集合只接受已确认的 `EXCHANGE` 地址。新增人工确认接口 `POST /api/library/confirm-exchange-address` 和地址库行确认接口；未确认候选在勾选交易所过滤时仍保留。
+- 起始地址命中返回 `seed_library_matches`，页面按具体标签高亮；例如 DSV 记录显示为 `DSV地址库`。
+- 新增 SQLite `api_requests` 持久化计数；`/api/overview` 返回今日、本月、累计、10,000 本月参考上限和剩余参考值。计数范围为本机实际网络请求，缓存不计数，未声称读取 Taostats 账户余额。
+- 运行回归：`35 passed`；Python `compileall` 通过；`node --check app/static/app.js` 通过；重启 8766 后健康检查通过，页面无 console error，并看到默认 `1` TAO 和查询统计。
+
+## 2026-11-01 关联结果与交易所判定改进
+
+### 本轮实现
+
+- 关联地址新增“复制”按钮，复制失败时给出手动复制提示。
+- 关联结果新增全部、1 级、2 级、3 级筛选；筛选在前端完成，不重新调用 Taostats。
+- 疑似交易所支持“确认交易所”“否定”“重置”；`exchange_rejected` 写入 SQLite，否定地址不会进入交易所过滤集合，也不会再次作为自动候选。
+- 自动交易所候选只使用带时间戳的近 30 天转账，候选先读取公开 Bittensor RPC 的 `System.Account` free balance；余额低于 100 TAO或余额不可读时不自动标记疑似交易所。
+- 通过公开 RPC 实测用户举例地址 `5CMaXXPk1qfbJxXAZr1ow7qyyai39qhRcocVtdXyDGZbQ99E` 当前 free balance 为 `10000 Rao = 0.00001 TAO`。这是当前余额快照，不代表历史余额或地址身份；该数值低于自动疑似交易所门槛。
+
+### 验证结果
+
+- 完整 pytest：`38 passed, 1 warning`。
+- Python `compileall`：通过。
+- Node `--check app/static/app.js`：通过。
+- 重启 `8766`：健康检查通过，页面无 JavaScript error。
+- API 人工否定回归：先将现有交易所记录临时设为 `reject`，确认返回 `exchange_confirmed=false`、`exchange_rejected=true`，再恢复 `confirm`，确认返回 `true/false`。
+- Taostats 新版转账文档实测页面显示：`page` 的可达窗口为 1,000,000 行，深层历史应使用 `block_start/block_end` 或 `timestamp_start/timestamp_end`；未发现“免费档固定只保留 7 天”的官方表述。因此项目不把 7 天当作已证实事实。
+
+### 仍然存在的限制
+
+- 当前余额是查询时点快照，不能证明一两个月前余额；交易所判定仍需人工确认。
+- `Balances.Transfer` 记录没有完整表达子网质押、解质押、购买或代理语义，因此代码不能仅凭“只有转账记录”证明地址没有其他链上行为。
+- 本轮没有使用用户真实 Taostats API key，免费档账号的实际历史范围、credits 消耗和权限仍需用户在页面配置 key 后，以认证响应实测。
