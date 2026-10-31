@@ -33,8 +33,9 @@
 
 ```powershell
 Set-Location G:\bittensor-wallet-link-intel
-& 'G:\jiaoben\.venv\Scripts\python.exe' -m pip install -r requirements.txt
-& 'G:\jiaoben\.venv\Scripts\python.exe' run.py --host 127.0.0.1 --port 8766
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe run.py --host 127.0.0.1 --port 8766
 ```
 
 浏览器打开 <http://127.0.0.1:8766>。也可以使用项目内的 `start.ps1` 和 `stop.ps1` 管理后台服务。

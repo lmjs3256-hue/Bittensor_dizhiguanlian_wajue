@@ -31,7 +31,7 @@
 
 Windows 临时数据库测试现已在 `finally` 中调用 `database.engine.dispose()`，保证测试异常后数据库文件可以清理。
 
-此前租约锁修复复验记录为完整 pytest **9 passed**；当前最新完整回归为 **27 passed**，具体结果见 `VERIFICATION.md`。
+此前租约锁修复复验记录为完整 pytest **9 passed**；当前最新完整回归为 **33 passed**，具体结果见 `VERIFICATION.md`。
 
 后续改动应至少执行：
 
@@ -102,7 +102,7 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 - 查询页新增“过滤交易所地址”和“过滤验证者地址”。交易所过滤读取地址库 `EXCHANGE`；验证者过滤合并地址库 `VALIDATOR` 与 Taostats `/v1/validators/active` 返回的明确地址。过滤地址不会继续作为下一层中转节点；起始地址命中过滤集合时直接停止扩展。
 - 新增保守角色标记：地址库明确标记的交易所/验证者会显示对应标签；在当前数据范围内达到较高转账次数、对手方数量和累计金额的地址显示“疑似交易所”；只观察到转账记录且没有接入子网购买记录的地址显示“疑似中转钱包”。角色说明带有数据范围提示，不等同于身份判断。
 - 用户指定地址 `5Gr1Ab7LSV4eT6RdWmVeoxnTpDBWAZFLXHHrcaWNDdjK22pp` 已加入当前数据库，分类 `EXCHANGE`，标签 `OKX交易所`，并可通过交易所过滤。
-- 最新验证：`27 passed`；`compileall` 通过；`node --check app/static/app.js` 通过；8766 服务已重启。
+- 最新验证：`33 passed`；`compileall` 通过；`node --check app/static/app.js` 通过；8766 服务已重启。
 - Playwright 实测：结果区不含交易哈希、区块号、from/to 等交易明细；本地样本查询显示关联地址、层级和金额；深灰主题可以切换；无 key 调用交易所同步接口返回 401 并提示先设置 API key。
 
 Taostats. “Get Active Validators.” *Taostats API Documentation*, https://taostats.io/zh/docs/new/validators/get-validators-active. Accessed 31 Oct. 2026.

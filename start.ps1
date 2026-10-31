@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Python = 'G:\jiaoben\.venv\Scripts\python.exe'
+$Python = Join-Path $Root '.venv\Scripts\python.exe'
 $LogDir = Join-Path $Root 'logs'
 $OutLog = Join-Path $LogDir 'wallet-link.stdout.log'
 $ErrLog = Join-Path $LogDir 'wallet-link.stderr.log'
@@ -12,7 +12,13 @@ $PidFile = Join-Path $LogDir 'wallet-link.pid'
 $HealthUrl = "http://127.0.0.1:$Port/api/health"
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
-if (-not (Test-Path -LiteralPath $Python)) { throw "Python environment not found: $Python" }
+if (-not (Test-Path -LiteralPath $Python)) {
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($null -eq $pythonCommand) {
+        throw "Python environment not found. Create .venv with: python -m venv .venv"
+    }
+    $Python = $pythonCommand.Source
+}
 
 try {
     $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
