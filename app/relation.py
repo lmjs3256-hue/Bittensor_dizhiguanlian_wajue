@@ -423,6 +423,7 @@ def discover(
                 tx_count=len(unique_tx) or len(edge_rows),
                 first_block=min(edge.block_number for edge in edge_rows),
                 last_block=max(edge.block_number for edge in edge_rows),
+                balance_tao=(balances or {}).get(address),
                 match=entry is not None,
                 library_label=entry.label if entry else "",
                 library_category=entry.category if entry else "",

@@ -193,6 +193,17 @@ def test_default_policy_starts_at_one_tao_and_reports_seed_library():
     assert report.seed_library_matches[0].label == "DSV"
 
 
+def test_relation_result_carries_current_balance_when_available():
+    report = discover(
+        "S",
+        [TransferRecord("0x01", 1, "S", "A", Decimal("1.25"))],
+        balances={"A": Decimal("12.3456")},
+    )
+
+    row = next(item for item in report.related if item.address == "A")
+    assert row.balance_tao == Decimal("12.3456")
+
+
 def test_api_usage_counts_are_persisted_by_calendar_period():
     with TemporaryDirectory() as directory:
         database = Database(Path(directory) / "usage.db")

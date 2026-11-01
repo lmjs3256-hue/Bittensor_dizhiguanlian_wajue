@@ -118,6 +118,7 @@ class RelationResult:
     tx_count: int
     first_block: int
     last_block: int
+    balance_tao: Decimal | None = None
     match: bool = False
     library_label: str = ""
     library_category: str = ""
