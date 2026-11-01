@@ -104,6 +104,20 @@ def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
     else:
         raise InputError("upload must be .txt, .csv or .json")
     result = []
+
+    def boolean(row: dict, name: str, default: bool = False) -> bool:
+        value = row.get(name)
+        if value is None or str(value).strip() == "":
+            return default
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "y", "是", "已确认"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "否", "未确认"}:
+            return False
+        raise InputError(f"row {position}: {name} must be true or false")
+
     for position, row in enumerate(values, start=1):
         if isinstance(row, str):
             row = {"address": row}
@@ -123,6 +137,8 @@ def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
                 "category": category,
                 "label": str(row.get("label") or "").strip(),
                 "note": str(row.get("note") or "").strip(),
+                "exchange_confirmed": boolean(row, "exchange_confirmed"),
+                "exchange_rejected": boolean(row, "exchange_rejected"),
             }
         )
     return result
@@ -136,7 +152,7 @@ class LinkService:
         self._task: asyncio.Task | None = None
         self._continuous = False
 
-    def import_rows(self, rows: list[dict[str, str]], source: str) -> dict[str, int]:
+    def import_rows(self, rows: list[dict[str, Any]], source: str) -> dict[str, int]:
         inserted = updated = skipped = 0
         with self.database.session() as db:
             for position, row in enumerate(rows, start=1):
@@ -148,6 +164,12 @@ class LinkService:
                 )
                 if current is None:
                     category = row.get("category", "WATCH").upper()
+                    rejected = bool(row.get("exchange_rejected", False))
+                    confirmed = bool(
+                        row.get("exchange_confirmed", category == "EXCHANGE")
+                    )
+                    if rejected:
+                        confirmed = False
                     db.add(
                         AddressLibrary(
                             address=address,
@@ -155,11 +177,8 @@ class LinkService:
                             category=category,
                             note=row.get("note", ""),
                             source=source,
-                            exchange_confirmed=(
-                                category == "EXCHANGE"
-                                and not bool(row.get("exchange_rejected", False))
-                            ),
-                            exchange_rejected=bool(row.get("exchange_rejected", False)),
+                            exchange_confirmed=(category == "EXCHANGE" and confirmed),
+                            exchange_rejected=(category == "EXCHANGE" and rejected),
                         )
                     )
                     inserted += 1
@@ -369,6 +388,52 @@ class LinkService:
                 )
             ).all()
             return [address_dict(row) for row in rows]
+
+    def export_library(self, file_format: str) -> tuple[str, str]:
+        """Return a portable address-library backup and its media type."""
+
+        if file_format not in {"csv", "json"}:
+            raise InputError("library export format must be csv or json")
+        portable = [
+            {
+                "address": item["address"],
+                "label": item["label"],
+                "category": item["category"],
+                "note": item["note"],
+                "exchange_confirmed": item["exchange_confirmed"],
+                "exchange_rejected": item["exchange_rejected"],
+            }
+            for item in self.library()
+        ]
+        if file_format == "json":
+            import json
+
+            payload = {
+                "format": "bittensor-address-library",
+                "schema_version": 1,
+                "addresses": portable,
+            }
+            return (
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                "application/json; charset=utf-8",
+            )
+
+        import csv
+        import io
+
+        output = io.StringIO(newline="")
+        fields = [
+            "address",
+            "label",
+            "category",
+            "note",
+            "exchange_confirmed",
+            "exchange_rejected",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(portable)
+        return output.getvalue(), "text/csv; charset=utf-8"
 
     def remove_address(self, row_id: int) -> bool:
         with self.database.session() as db:

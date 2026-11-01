@@ -147,3 +147,64 @@ def test_dsv_source_without_label_is_presented_as_one_group_label():
             assert service.library()[0]["label"] == "DSV"
         finally:
             database.engine.dispose()
+
+
+def test_library_export_is_portable_and_preserves_exchange_decisions():
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "portable-library.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            service.import_rows(
+                [
+                    {
+                        "address": ADDRESSES[0],
+                        "label": "DSV",
+                        "category": "WATCH",
+                        "note": "研究备注",
+                    },
+                    {
+                        "address": ADDRESSES[1],
+                        "label": "OKX",
+                        "category": "EXCHANGE",
+                        "note": "公共地址",
+                        "exchange_confirmed": True,
+                    },
+                    {
+                        "address": ADDRESSES[2],
+                        "label": "候选交易所",
+                        "category": "EXCHANGE",
+                        "exchange_confirmed": False,
+                        "exchange_rejected": True,
+                    },
+                ],
+                "manual.csv",
+            )
+
+            csv_text, csv_type = service.export_library("csv")
+            csv_rows = _parse_upload("backup.csv", csv_text)
+            assert csv_type == "text/csv; charset=utf-8"
+            assert {row["address"] for row in csv_rows} == set(ADDRESSES)
+            exported = {row["address"]: row for row in csv_rows}
+            assert exported[ADDRESSES[0]]["note"] == "研究备注"
+            assert exported[ADDRESSES[1]]["exchange_confirmed"] is True
+            assert exported[ADDRESSES[2]]["exchange_rejected"] is True
+
+            json_text, json_type = service.export_library("json")
+            json_rows = _parse_upload("backup.json", json_text)
+            assert json_type == "application/json; charset=utf-8"
+            assert {row["address"] for row in json_rows} == set(ADDRESSES)
+        finally:
+            database.engine.dispose()
+
+
+def test_library_export_rejects_unknown_format():
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "portable-library-format.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            with pytest.raises(InputError, match="csv or json"):
+                service.export_library("txt")
+        finally:
+            database.engine.dispose()
