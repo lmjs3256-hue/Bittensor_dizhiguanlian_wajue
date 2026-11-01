@@ -16,7 +16,18 @@ function number(value) {
 
 function shortAddr(value) {
   const text = String(value || "");
-  return text.length > 30 ? `${text.slice(0, 10)}…${text.slice(-8)}` : text;
+  return text.length > 8 ? `${text.slice(0, 4)}…${text.slice(-4)}` : text;
+}
+
+function formatTao(value, suffix = false) {
+  if (value === null || value === undefined || value === "") return "未获取";
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "未获取";
+  const formatted = new Intl.NumberFormat("zh-CN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(parsed);
+  return suffix ? `${formatted} TAO` : formatted;
 }
 
 function libraryName(label, category) {
@@ -209,7 +220,7 @@ async function clearTaostatsKey() {
 
 function relatedTable(rows) {
   if (!rows.length) return '<div class="placeholder">没有达到过滤条件的关联地址。</div>';
-  return `<table><thead><tr><th>关联钱包地址</th><th>层级</th><th>流入 TAO</th><th>流出 TAO</th><th>累计转账 TAO</th><th>地址库</th><th>备注</th></tr></thead><tbody>${rows.map((row) => {
+  return `<table><thead><tr><th>关联钱包地址</th><th>当前余额 TAO</th><th>层级</th><th>流入 TAO</th><th>流出 TAO</th><th>累计转账 TAO</th><th>地址库</th><th>备注</th></tr></thead><tbody>${rows.map((row) => {
     const role = row.address_role
       ? `<span class="tag role-tag" title="${esc(row.role_reason || "")}">${esc(row.address_role)}</span>`
       : "";
@@ -219,7 +230,7 @@ function relatedTable(rows) {
     const exchangeActions = row.address_role === "疑似交易所（待确认）"
       ? `<div class="exchange-decision"><button class="secondary note-save" data-exchange-decision="confirm" data-address="${esc(row.address)}" type="button">确认交易所</button><button class="ghost note-save" data-exchange-decision="reject" data-address="${esc(row.address)}" type="button">否定</button></div>`
       : "";
-    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code>${esc(row.address)}</code><button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${role}</div></td><td>${row.depth}</td><td class="amount">${esc(row.incoming_tao)}</td><td class="amount">${esc(row.outgoing_tao)}</td><td class="amount">${esc(row.total_tao)}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
+    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code title="${esc(row.address)}">${esc(shortAddr(row.address))}</code><button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td>${row.depth}</td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 
@@ -241,6 +252,8 @@ function renderResult(data) {
     ? ` · API 请求 ${data.api_requests} 次 · 返回转账 ${data.taostats_transfer_count} 条 · 缓存命中 ${data.api_cache_hits} 次`
     : "";
   $("#result-subtitle").textContent = `${data.seed} · 最多 ${data.max_depth} 级 · 来源 ${sourcesLabel}${apiUsage} · 数据截止 ${data.data_cutoff_block ? number(data.data_cutoff_block) : "未采集"} 区块`;
+  $("#seed-result-address").textContent = data.seed || "-";
+  $("#seed-result-balance").textContent = formatTao(data.seed_balance_tao, true);
   const paginationBadge = data.data_source === "taostats" && data.pagination_complete === false
     ? '<span class="badge warn">分页未完整</span>' : "";
   const windowBadge = data.provider_window_truncated
@@ -633,6 +646,7 @@ $("#export-json").addEventListener("click", () => {
     data_source: state.lastResult.data_source,
     coverage: state.lastResult.coverage,
     data_cutoff_block: state.lastResult.data_cutoff_block,
+    seed_balance_tao: state.lastResult.seed_balance_tao,
     policy: state.lastResult.policy,
     related: (state.lastResult.related || []).map((row) => ({
       address: row.address,
@@ -640,6 +654,7 @@ $("#export-json").addEventListener("click", () => {
       incoming_tao: row.incoming_tao,
       outgoing_tao: row.outgoing_tao,
       total_tao: row.total_tao,
+      balance_tao: row.balance_tao,
       match: row.match,
       library_label: row.library_label,
       library_category: row.library_category,

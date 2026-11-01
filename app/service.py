@@ -891,6 +891,9 @@ class LinkService:
             warnings.append(
                 "检测到高频交易所候选，但未取得当前余额；系统不会据此自动标记疑似交易所。"
             )
+        exchange_balance_checks = sum(
+            value is not None for value in balances.values()
+        )
         report = discover(
             seed,
             transfer_rows,
@@ -903,8 +906,38 @@ class LinkService:
             excluded_addresses=excluded_addresses,
             balances=balances,
         )
+        balance_addresses = list(dict.fromkeys(
+            address
+            for address in [seed, *(row.address for row in report.related)]
+            if is_valid_ss58(address) and address not in balances
+        ))
+        if balance_addresses:
+            try:
+                balances.update(query_account_balances(self.rpc_url, balance_addresses))
+            except Exception as exc:
+                warnings.append(f"起始地址或关联地址的当前余额查询未完成：{exc}")
+            if any(
+                address not in balances or balances[address] is None
+                for address in balance_addresses
+            ):
+                warnings.append(
+                    "部分起始地址或关联地址未能读取当前余额；余额栏会显示“未获取”。"
+                )
+            report = discover(
+                seed,
+                transfer_rows,
+                library=library,
+                max_depth=depth,
+                policy=policy,
+                data_cutoff_block=last_block,
+                freshness=freshness,
+                warnings=warnings,
+                excluded_addresses=excluded_addresses,
+                balances=balances,
+            )
         result = {
             "seed": report.seed,
+            "seed_balance_tao": str(balances[seed]) if balances.get(seed) is not None else None,
             "max_depth": report.max_depth,
             "data_cutoff_block": report.data_cutoff_block,
             "data_first_block": first_block,
@@ -927,7 +960,7 @@ class LinkService:
             ),
             "unconfirmed_exchange_candidates": len(unconfirmed_exchange_addresses),
             "exchange_balance_candidates": len(balance_candidates),
-            "exchange_balance_checks": sum(value is not None for value in balances.values()),
+            "exchange_balance_checks": exchange_balance_checks,
             "local_transfer_count": len(local_transfer_rows),
             "taostats_transfer_count": len(records_by_key) if data_source == "taostats" else 0,
             "data_sources_used": (
@@ -942,6 +975,7 @@ class LinkService:
                     "incoming_tao": str(row.incoming_tao),
                     "outgoing_tao": str(row.outgoing_tao),
                     "total_tao": str(row.total_tao),
+                    "balance_tao": str(row.balance_tao) if row.balance_tao is not None else None,
                 }
                 for row in report.related
             ],
@@ -950,6 +984,7 @@ class LinkService:
                     "incoming_tao": str(row.incoming_tao),
                     "outgoing_tao": str(row.outgoing_tao),
                     "total_tao": str(row.total_tao),
+                    "balance_tao": str(row.balance_tao) if row.balance_tao is not None else None,
                 }
                 for row in report.library_matches
             ],

@@ -1,5 +1,6 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 import app.service as service_module
 import app.taostats as taostats
 import app.main as main_module
-from app.db import Database
+from app.db import Database, Transfer
 from app.service import LinkService
 from app.taostats import (
     TaostatsAuthError,
@@ -27,8 +28,9 @@ ADDRESSES = [
 
 
 @pytest.fixture(autouse=True)
-def reset_taostats_state():
+def reset_taostats_state(monkeypatch):
     taostats.reset_client_state_for_tests()
+    monkeypatch.setattr(service_module, "query_account_balances", lambda *_args, **_kwargs: {})
     yield
     taostats.reset_client_state_for_tests()
 
@@ -372,6 +374,51 @@ def test_note_api_updates_library_and_creates_relation_note(monkeypatch):
                 assert updated.json()["item"]["note"] == "已复核"
                 assert relation_note.status_code == 200
                 assert relation_note.json()["created"] is True
+        finally:
+            database.engine.dispose()
+
+
+def test_local_relation_returns_seed_and_related_current_balances(monkeypatch):
+    seed, neighbor = ADDRESSES[:2]
+    monkeypatch.setattr(
+        service_module,
+        "query_account_balances",
+        lambda _url, addresses: {
+            address: {seed: Decimal("12.3456"), neighbor: Decimal("7")}.get(address)
+            for address in addresses
+        },
+    )
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "balance-display.db")
+        try:
+            database.initialize()
+            with database.session() as session:
+                session.add(
+                    Transfer(
+                        event_key="balance-display-edge",
+                        tx_hash="0xbalance-display",
+                        block_number=100,
+                        block_hash="0xblock",
+                        event_index=0,
+                        from_address=seed,
+                        to_address=neighbor,
+                        amount_rao=1_250_000_000,
+                        amount_tao=Decimal("1.25"),
+                    )
+                )
+            result = LinkService(database, "wss://example.invalid").relations(
+                seed=seed,
+                depth=1,
+                min_edge_tao="0.1",
+                min_total_tao="0.1",
+                data_source="local",
+            )
+            row = result["related"][0]
+            assert result["seed_balance_tao"] == "12.3456"
+            assert row["balance_tao"] == "7"
+            assert Decimal(row["incoming_tao"]) == Decimal("1.25")
+            assert Decimal(row["outgoing_tao"]) == Decimal("0")
+            assert Decimal(row["total_tao"]) == Decimal("1.25")
         finally:
             database.engine.dispose()
 
