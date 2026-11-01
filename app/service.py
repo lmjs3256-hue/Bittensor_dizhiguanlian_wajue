@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from .collector import RPCCollector, query_account_balances
+from .collector import RPCCollector, query_account_balances, query_wallet_values
 from .db import (
     AddressLibrary,
     ChainCursor,
@@ -651,6 +651,7 @@ class LinkService:
         provider_window_truncated = False
         api_error = ""
         balances: dict[str, Any] = {}
+        wallet_values: dict[str, dict[str, Any]] = {}
         records_by_key: dict[str, Any] = {}
         exchange_addresses = {
             entry.address
@@ -905,23 +906,42 @@ class LinkService:
             warnings=warnings,
             excluded_addresses=excluded_addresses,
             balances=balances,
+            wallet_values=wallet_values,
         )
         balance_addresses = list(dict.fromkeys(
             address
             for address in [seed, *(row.address for row in report.related)]
-            if is_valid_ss58(address) and address not in balances
+            if is_valid_ss58(address)
+            and wallet_values.get(address, {}).get("total_value_tao") is None
         ))
         if balance_addresses:
             try:
-                balances.update(query_account_balances(self.rpc_url, balance_addresses))
+                # Keep the legacy free-balance lookup as a fast fallback for
+                # older callers and tests; the richer runtime query below
+                # replaces these partial values whenever it succeeds.
+                legacy_balances = query_account_balances(self.rpc_url, balance_addresses)
+                for address, available in legacy_balances.items():
+                    wallet_values[address] = {
+                        "available_tao": available,
+                        "staked_tao": None,
+                        "total_value_tao": available,
+                        "balance_status": "partial" if available is not None else "unavailable",
+                    }
+                wallet_values.update(query_wallet_values(self.rpc_url, balance_addresses))
+                balances.update({
+                    address: value.get("total_value_tao")
+                    for address, value in wallet_values.items()
+                    if value.get("total_value_tao") is not None
+                })
             except Exception as exc:
                 warnings.append(f"起始地址或关联地址的当前余额查询未完成：{exc}")
             if any(
-                address not in balances or balances[address] is None
+                address not in wallet_values
+                or wallet_values[address].get("total_value_tao") is None
                 for address in balance_addresses
             ):
                 warnings.append(
-                    "部分起始地址或关联地址未能读取当前余额；余额栏会显示“未获取”。"
+                    "部分起始地址或关联地址未能完整读取钱包总价值；余额栏会显示“未获取”或“部分获取”。"
                 )
             report = discover(
                 seed,
@@ -934,10 +954,16 @@ class LinkService:
                 warnings=warnings,
                 excluded_addresses=excluded_addresses,
                 balances=balances,
+                wallet_values=wallet_values,
             )
+        seed_wallet = wallet_values.get(seed, {})
+        seed_total = seed_wallet.get("total_value_tao")
         result = {
             "seed": report.seed,
-            "seed_balance_tao": str(balances[seed]) if balances.get(seed) is not None else None,
+            "seed_balance_tao": str(seed_total) if seed_total is not None else None,
+            "seed_available_tao": str(seed_wallet.get("available_tao")) if seed_wallet.get("available_tao") is not None else None,
+            "seed_staked_tao": str(seed_wallet.get("staked_tao")) if seed_wallet.get("staked_tao") is not None else None,
+            "seed_balance_status": seed_wallet.get("balance_status", "unavailable"),
             "max_depth": report.max_depth,
             "data_cutoff_block": report.data_cutoff_block,
             "data_first_block": first_block,
@@ -976,6 +1002,9 @@ class LinkService:
                     "outgoing_tao": str(row.outgoing_tao),
                     "total_tao": str(row.total_tao),
                     "balance_tao": str(row.balance_tao) if row.balance_tao is not None else None,
+                    "available_tao": str(row.available_tao) if row.available_tao is not None else None,
+                    "staked_tao": str(row.staked_tao) if row.staked_tao is not None else None,
+                    "balance_status": row.balance_status,
                 }
                 for row in report.related
             ],
@@ -985,6 +1014,9 @@ class LinkService:
                     "outgoing_tao": str(row.outgoing_tao),
                     "total_tao": str(row.total_tao),
                     "balance_tao": str(row.balance_tao) if row.balance_tao is not None else None,
+                    "available_tao": str(row.available_tao) if row.available_tao is not None else None,
+                    "staked_tao": str(row.staked_tao) if row.staked_tao is not None else None,
+                    "balance_status": row.balance_status,
                 }
                 for row in report.library_matches
             ],
@@ -1014,7 +1046,7 @@ class LinkService:
                 ),
                 "转账关系只是行为证据，不等于同一地址、同一实体或真实身份。",
                 "质押、子网 swap、代理调用等未纳入自动关联；需要单独建立语义。",
-                "交易所疑似标记增加了当前 System.Account 可用余额和近 30 天时间条件；余额查询失败或余额偏低时不会自动标记为交易所。子网质押/解质押和购买事件仍未作为完整数据源接入，人工确认结果才允许过滤。",
+                "交易所疑似标记增加了当前账户余额和近 30 天时间条件；余额查询失败或余额偏低时不会自动标记为交易所。钱包总价值会读取子网质押估值，但交易所判断仍需人工确认，人工确认结果才允许过滤。",
             ],
         }
         return result

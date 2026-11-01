@@ -119,6 +119,9 @@ class RelationResult:
     first_block: int
     last_block: int
     balance_tao: Decimal | None = None
+    available_tao: Decimal | None = None
+    staked_tao: Decimal | None = None
+    balance_status: str = "unavailable"
     match: bool = False
     library_label: str = ""
     library_category: str = ""

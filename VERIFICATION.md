@@ -1,5 +1,15 @@
 # 0.1.0 验证交付记录
 
+## 0.1.6 钱包总价值与质押估值验证
+
+- `pytest -q`：`49 passed`，1 条既有 Starlette/httpx 弃用 warning。
+- `python -m compileall -q app tests`：通过。
+- `node --check app/static/app.js`：通过。
+- `git diff --check`：通过。
+- 模拟运行时验证通过：可用 `2 TAO`、根子网质押 `0.5 TAO`、普通子网质押按 `0.5 TAO/Alpha` 折合 `1 TAO`，总价值为 `3.5 TAO`。
+- 质押运行时失败时返回 `balance_status=partial`，总价值保持未完成，不把质押值误算为 `0`。
+- 当前环境对 `wss://entrypoint-finney.opentensor.ai:443` 的只读 RPC 探测未返回余额；这属于运行环境/RPC 可达性结果，页面会按设计显示“未获取”，不影响离线单元测试。
+
 ## 0.1.5 余额和地址显示验证
 
 - 关系结果模型和服务结果均返回起始地址余额、关联地址余额。

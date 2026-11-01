@@ -69,6 +69,145 @@ def query_account_balances(
     return {}
 
 
+async def _query_wallet_values(
+    url: str,
+    addresses: list[str],
+    *,
+    timeout_seconds: float = 20.0,
+) -> dict[str, dict[str, Decimal | str | None]]:
+    """Read available TAO plus coldkey stake valued in current TAO.
+
+    ``StakeInfoRuntimeApi.get_stake_info_for_coldkey`` returns subnet-specific
+    Alpha positions. Alpha units are not comparable across subnets, so each
+    position is converted with ``SwapRuntimeApi.current_alpha_price`` before
+    the values are added. A failed stake lookup never gets presented as a
+    complete zero-stake wallet.
+    """
+
+    substrate = AsyncSubstrateInterface(url)
+    result: dict[str, dict[str, Decimal | str | None]] = {
+        address: {
+            "available_tao": None,
+            "staked_tao": None,
+            "total_value_tao": None,
+            "balance_status": "unavailable",
+        }
+        for address in addresses
+    }
+    try:
+        await asyncio.wait_for(substrate.initialize(), timeout_seconds)
+        for address in addresses:
+            available: Decimal | None = None
+            stake_ok = False
+            try:
+                value = await asyncio.wait_for(
+                    substrate.query("System", "Account", params=[address]),
+                    timeout_seconds,
+                )
+                payload = getattr(value, "value", value)
+                data = payload.get("data", {}) if isinstance(payload, dict) else {}
+                free = int(data.get("free", 0)) if isinstance(data, dict) else 0
+                available = Decimal(free) / RAO_PER_TAO
+            except Exception:
+                pass
+
+            staked: Decimal | None = None
+            try:
+                raw_stakes = await asyncio.wait_for(
+                    substrate.runtime_call(
+                        api="StakeInfoRuntimeApi",
+                        method="get_stake_info_for_coldkey",
+                        params=[address],
+                    ),
+                    timeout_seconds,
+                )
+                stake_payload = getattr(raw_stakes, "value", raw_stakes)
+                if isinstance(stake_payload, dict):
+                    stake_payload = stake_payload.get(
+                        "stakes", stake_payload.get("data", [])
+                    )
+                if stake_payload is None:
+                    stake_payload = []
+                if not isinstance(stake_payload, (list, tuple)):
+                    raise TypeError("stake runtime result is not a list")
+
+                positions: list[tuple[int, int]] = []
+                for item in stake_payload:
+                    decoded = getattr(item, "value", item)
+                    if not isinstance(decoded, dict):
+                        continue
+                    netuid = int(decoded.get("netuid", 0))
+                    stake_rao = int(decoded.get("stake", 0))
+                    if stake_rao > 0:
+                        positions.append((netuid, stake_rao))
+
+                prices: dict[int, int] = {0: int(RAO_PER_TAO)}
+                for netuid, _stake_rao in positions:
+                    if netuid in prices:
+                        continue
+                    raw_price = await asyncio.wait_for(
+                        substrate.runtime_call(
+                            api="SwapRuntimeApi",
+                            method="current_alpha_price",
+                            params=[netuid],
+                        ),
+                        timeout_seconds,
+                    )
+                    price_payload = getattr(raw_price, "value", raw_price)
+                    prices[netuid] = int(price_payload)
+
+                staked = sum(
+                    (
+                        Decimal(stake_rao)
+                        * Decimal(prices[netuid])
+                        / (RAO_PER_TAO * RAO_PER_TAO)
+                        for netuid, stake_rao in positions
+                    ),
+                    Decimal("0"),
+                )
+                stake_ok = True
+            except Exception:
+                # Keep the available component when the runtime API is not
+                # exposed by an older node or a public endpoint is transient.
+                pass
+
+            current = result[address]
+            current["available_tao"] = available
+            current["staked_tao"] = staked
+            current["balance_status"] = (
+                "complete" if available is not None and stake_ok else
+                "partial" if available is not None else "unavailable"
+            )
+            if available is not None and staked is not None:
+                current["total_value_tao"] = available + staked
+    finally:
+        await substrate.close()
+    return result
+
+
+def query_wallet_values(
+    url: str,
+    addresses: list[str],
+    *,
+    timeout_seconds: float = 20.0,
+) -> dict[str, dict[str, Decimal | str | None]]:
+    """Synchronous wrapper for current wallet value queries."""
+
+    if not addresses:
+        return {}
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            _query_wallet_values(
+                url,
+                addresses,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+    return {}
+
+
 def _event_value(item: Any) -> dict[str, Any]:
     value = getattr(item, "value", item)
     if not isinstance(value, dict):
