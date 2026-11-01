@@ -30,20 +30,6 @@ function formatTao(value, suffix = false) {
   return suffix ? `${formatted} TAO` : formatted;
 }
 
-function formatWalletValue(total, status = "unavailable") {
-  if (total === null || total === undefined || total === "") {
-    return status === "partial" ? "部分获取" : "未获取";
-  }
-  const value = formatTao(total, true);
-  return status === "partial" ? `${value}（部分获取）` : value;
-}
-
-function walletTooltip(row) {
-  const available = formatTao(row.available_tao, true);
-  const staked = formatTao(row.staked_tao, true);
-  return `可用 ${available} · 已质押折合 ${staked}`;
-}
-
 function libraryName(label, category) {
   const name = String(label || category || "未命名").trim();
   return name.endsWith("地址库") ? name : `${name}地址库`;
@@ -234,7 +220,7 @@ async function clearTaostatsKey() {
 
 function relatedTable(rows) {
   if (!rows.length) return '<div class="placeholder">没有达到过滤条件的关联地址。</div>';
-  return `<table><thead><tr><th>关联钱包地址</th><th>钱包总价值 TAO</th><th>层级</th><th>流入 TAO</th><th>流出 TAO</th><th>累计转账 TAO</th><th>地址库</th><th>备注</th></tr></thead><tbody>${rows.map((row) => {
+  return `<table><thead><tr><th>关联钱包地址</th><th>当前余额 TAO</th><th>层级</th><th>流入 TAO</th><th>流出 TAO</th><th>累计转账 TAO</th><th>地址库</th><th>备注</th></tr></thead><tbody>${rows.map((row) => {
     const role = row.address_role
       ? `<span class="tag role-tag" title="${esc(row.role_reason || "")}">${esc(row.address_role)}</span>`
       : "";
@@ -244,7 +230,7 @@ function relatedTable(rows) {
     const exchangeActions = row.address_role === "疑似交易所（待确认）"
       ? `<div class="exchange-decision"><button class="secondary note-save" data-exchange-decision="confirm" data-address="${esc(row.address)}" type="button">确认交易所</button><button class="ghost note-save" data-exchange-decision="reject" data-address="${esc(row.address)}" type="button">否定</button></div>`
       : "";
-    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code title="${esc(row.address)}">${esc(shortAddr(row.address))}</code><button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${role}</div></td><td class="amount" title="${esc(walletTooltip(row))}">${esc(formatWalletValue(row.balance_tao, row.balance_status))}</td><td>${row.depth}</td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
+    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code title="${esc(row.address)}">${esc(shortAddr(row.address))}</code><button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td>${row.depth}</td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 
@@ -267,9 +253,7 @@ function renderResult(data) {
     : "";
   $("#result-subtitle").textContent = `${data.seed} · 最多 ${data.max_depth} 级 · 来源 ${sourcesLabel}${apiUsage} · 数据截止 ${data.data_cutoff_block ? number(data.data_cutoff_block) : "未采集"} 区块`;
   $("#seed-result-address").textContent = data.seed || "-";
-  $("#seed-result-balance").textContent = formatWalletValue(data.seed_balance_tao, data.seed_balance_status);
-  $("#seed-result-available").textContent = `可用 ${formatTao(data.seed_available_tao, true)}`;
-  $("#seed-result-staked").textContent = `已质押折合 ${formatTao(data.seed_staked_tao, true)}`;
+  $("#seed-result-balance").textContent = formatTao(data.seed_balance_tao, true);
   const paginationBadge = data.data_source === "taostats" && data.pagination_complete === false
     ? '<span class="badge warn">分页未完整</span>' : "";
   const windowBadge = data.provider_window_truncated
@@ -663,8 +647,6 @@ $("#export-json").addEventListener("click", () => {
     coverage: state.lastResult.coverage,
     data_cutoff_block: state.lastResult.data_cutoff_block,
     seed_balance_tao: state.lastResult.seed_balance_tao,
-    seed_available_tao: state.lastResult.seed_available_tao,
-    seed_staked_tao: state.lastResult.seed_staked_tao,
     policy: state.lastResult.policy,
     related: (state.lastResult.related || []).map((row) => ({
       address: row.address,
@@ -673,9 +655,6 @@ $("#export-json").addEventListener("click", () => {
       outgoing_tao: row.outgoing_tao,
       total_tao: row.total_tao,
       balance_tao: row.balance_tao,
-      available_tao: row.available_tao,
-      staked_tao: row.staked_tao,
-      balance_status: row.balance_status,
       match: row.match,
       library_label: row.library_label,
       library_category: row.library_category,

@@ -215,7 +215,6 @@ def discover(
     warnings: Iterable[str] = (),
     excluded_addresses: Iterable[str] = (),
     balances: dict[str, Decimal | None] | None = None,
-    wallet_values: dict[str, dict[str, object]] | None = None,
 ) -> ScanReport:
     """Traverse transfer edges at most ``max_depth`` hops from the seed.
 
@@ -409,15 +408,6 @@ def discover(
             (balances or {}).get(address),
             address in exchange_related_addresses,
         )
-        wallet_value = (wallet_values or {}).get(address, {})
-        available_tao = wallet_value.get("available_tao")
-        staked_tao = wallet_value.get("staked_tao")
-        total_value_tao = wallet_value.get("total_value_tao")
-        balance_status = str(wallet_value.get("balance_status") or "unavailable")
-        if total_value_tao is None:
-            total_value_tao = (balances or {}).get(address)
-            if total_value_tao is not None and balance_status == "unavailable":
-                balance_status = "partial"
         unique_tx = {edge.tx_hash for edge in edge_rows if edge.tx_hash}
         incoming = [edge for edge in edge_rows if edge.to_address == address]
         outgoing = [edge for edge in edge_rows if edge.from_address == address]
@@ -433,10 +423,7 @@ def discover(
                 tx_count=len(unique_tx) or len(edge_rows),
                 first_block=min(edge.block_number for edge in edge_rows),
                 last_block=max(edge.block_number for edge in edge_rows),
-                balance_tao=total_value_tao,
-                available_tao=available_tao,
-                staked_tao=staked_tao,
-                balance_status=balance_status,
+                balance_tao=(balances or {}).get(address),
                 match=entry is not None,
                 library_label=entry.label if entry else "",
                 library_category=entry.category if entry else "",

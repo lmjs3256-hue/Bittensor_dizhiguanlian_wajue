@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.5.6">
+  <link rel="stylesheet" href="/static/styles.css?v=0.5.5">
 </head>
 <body>
   <div class="shell">
@@ -62,7 +62,7 @@
 
         <section id="result" class="hidden">
           <div class="result-heading"><div><span class="label">ASSOCIATION RESULT</span><h2>扫描结果</h2><p id="result-subtitle"></p></div><div class="badges" id="result-badges"></div></div>
-          <section class="seed-balance-card"><div><span>起始地址</span><code id="seed-result-address">-</code></div><div><span>钱包总价值</span><b id="seed-result-balance">未获取</b><small id="seed-result-available">可用 未获取</small><small id="seed-result-staked">已质押折合 未获取</small></div></section>
+          <section class="seed-balance-card"><div><span>起始地址</span><code id="seed-result-address">-</code></div><div><span>当前钱包余额</span><b id="seed-result-balance">未获取</b></div></section>
           <div class="stats stats-three">
             <div><span>关联地址</span><b id="count-related">0</b></div>
             <div><span>截止区块</span><b id="cutoff">-</b></div>
@@ -92,6 +92,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.5.6"></script>
+  <script src="/static/app.js?v=0.5.5"></script>
 </body>
 </html>

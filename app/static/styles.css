@@ -43,6 +43,5 @@ table input[type="checkbox"] { width:16px; height:16px; padding:0; accent-color:
 .seed-balance-card span { color:var(--muted); font-size:12px; }
 .seed-balance-card code { font-size:13px; }
 .seed-balance-card b { font-family:var(--mono); font-size:20px; }
-.seed-balance-card small { color:var(--muted); font-size:11px; }
 @media (max-width:560px) { .release-heading { display:block; } .release-meta { margin-top:7px; } }
 @media (max-width:560px) { .seed-balance-card { align-items:flex-start; flex-direction:column; } }

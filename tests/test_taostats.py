@@ -388,19 +388,6 @@ def test_local_relation_returns_seed_and_related_current_balances(monkeypatch):
             for address in addresses
         },
     )
-    monkeypatch.setattr(
-        service_module,
-        "query_wallet_values",
-        lambda _url, addresses: {
-            address: {
-                "available_tao": {seed: Decimal("12.3456"), neighbor: Decimal("7")}.get(address),
-                "staked_tao": Decimal("0"),
-                "total_value_tao": {seed: Decimal("12.3456"), neighbor: Decimal("7")}.get(address),
-                "balance_status": "complete",
-            }
-            for address in addresses
-        },
-    )
     with TemporaryDirectory() as directory:
         database = Database(Path(directory) / "balance-display.db")
         try:
@@ -428,12 +415,7 @@ def test_local_relation_returns_seed_and_related_current_balances(monkeypatch):
             )
             row = result["related"][0]
             assert result["seed_balance_tao"] == "12.3456"
-            assert result["seed_available_tao"] == "12.3456"
-            assert result["seed_staked_tao"] == "0"
             assert row["balance_tao"] == "7"
-            assert row["available_tao"] == "7"
-            assert row["staked_tao"] == "0"
-            assert row["balance_status"] == "complete"
             assert Decimal(row["incoming_tao"]) == Decimal("1.25")
             assert Decimal(row["outgoing_tao"]) == Decimal("0")
             assert Decimal(row["total_tao"]) == Decimal("1.25")
