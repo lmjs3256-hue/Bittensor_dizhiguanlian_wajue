@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.5.2">
+  <link rel="stylesheet" href="/static/styles.css?v=0.5.3">
 </head>
 <body>
   <div class="shell">
@@ -17,6 +17,7 @@
         <button class="nav active" data-nav="scan">地址扫描</button>
         <button class="nav" data-nav="library">已知地址库</button>
         <button class="nav" data-nav="method">方法说明</button>
+        <button class="nav" data-nav="release">更新日志</button>
       </nav>
       <div class="aside-status">
         <span class="dot" id="health-dot"></span>
@@ -83,9 +84,13 @@
       <div id="view-method" class="hidden">
         <section class="panel prose"><span class="label">DESIGN NOTES</span><h2>什么算关联</h2><p>本工具将 Bittensor 的普通转账事件视为一条行为关系。第一跳支持低于阈值的金额，以保留小额试探路径；第二、三跳必须达到单边金额门槛，且最终地址累计金额达到累计门槛。公共系统账户默认排除。</p><h3>证据边界</h3><ul><li><b>已验证：</b>RPC 能读取最新块的交易与事件，<code>Balances.Transfer</code> 包含 from、to、amount。</li><li><b>已验证：</b>金额过滤、三级上限、去重、地址库命中可由确定性程序完成。</li><li><b>限制：</b>一次转账不能证明同一所有者。工具表达“发生资金关联”，不表达“同一人”或身份。</li><li><b>限制：</b>本地索引只管实际采集到的区块。公开节点旧状态可能已裁剪，不能据此宣称全历史完整性。</li></ul><h3>后续扩展</h3><p>可接入归档节点、补充质押与代理关系、加入时间窗和交易次数阈值，以及地址库命中审计日志。</p></section>
       </div>
+      <div id="view-release" class="hidden">
+        <section class="panel prose release-page"><span class="label">RELEASE NOTES</span><h2>版本更新日志</h2><p>这里显示当前运行版本及已发布版本的功能变更，内容来自项目内的 <code>VERSION</code> 和 <code>CHANGELOG.md</code>。</p><div id="release-list" class="release-list"><div class="placeholder">更新日志加载中…</div></div></section>
+      </div>
+      <footer class="app-footer"><span>Bittensor 地址关联挖掘</span><span id="app-version">当前版本：读取中…</span><button class="footer-release-link" data-nav="release" type="button">查看更新日志</button></footer>
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.5.2"></script>
+  <script src="/static/app.js?v=0.5.3"></script>
 </body>
 </html>

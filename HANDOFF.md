@@ -191,6 +191,14 @@ Set-Location G:\bittensor-wallet-link-intel
 
 打开 `http://127.0.0.1:8766` 后，先在页面输入 Taostats API key，再选择是否使用 Taostats 历史索引。API key 服务重启后需要重新输入。
 
+## 17. 页面版本显示与更新日志
+
+- 应用版本更新为 `0.1.3`。
+- 页面底部固定显示当前版本号，并提供“查看更新日志”快捷入口。
+- 侧边栏新增“更新日志”页面，展示 `CHANGELOG.md` 中的版本、日期和功能变更。
+- 后端新增 `/api/version`，统一读取项目根目录的 `VERSION` 和 `CHANGELOG.md`；健康接口、页面版本号和更新日志使用同一来源。
+- 新增 `tests/test_version.py`；本轮验证为 `43 passed`，另有 1 条既有 Starlette/httpx 弃用 warning。
+
 ### 已知风险和后续工作
 
 1. 公共 RPC 历史状态可能被裁剪，本地索引不能代表全链历史。

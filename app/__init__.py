@@ -1,3 +1,6 @@
 """Bittensor wallet link intelligence MVP."""
 
-__version__ = "0.1.0"
+from .version_info import read_version_info
+
+
+__version__ = read_version_info()["version"]
