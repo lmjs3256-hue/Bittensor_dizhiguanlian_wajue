@@ -25,11 +25,13 @@ from .taostats import (
     configure_api_key as configure_taostats_api_key,
     is_configured as taostats_is_configured,
 )
+from .version_info import read_version_info
 
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = settings()
 DATABASE = Database(database_path())
+VERSION_INFO = read_version_info()
 
 
 @asynccontextmanager
@@ -38,7 +40,11 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Bittensor Wallet Link Intel", version="0.1.2", lifespan=lifespan)
+app = FastAPI(
+    title="Bittensor Wallet Link Intel",
+    version=VERSION_INFO["version"],
+    lifespan=lifespan,
+)
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 SERVICE = LinkService(DATABASE, CONFIG.rpc_url)
 
@@ -101,9 +107,16 @@ def health(svc: Annotated[LinkService, Depends(service)]):
     return {
         "ok": True,
         "service": "bittensor-wallet-link-intel",
-        "version": "0.1.2",
+        "version": VERSION_INFO["version"],
         "rpc_url": svc.rpc_url,
     }
+
+
+@app.get("/api/version")
+def version_info():
+    """Return the version and structured release notes shown in the UI."""
+
+    return read_version_info()
 
 
 @app.get("/api/overview")

@@ -106,10 +106,11 @@ function navigate(view) {
   document.querySelectorAll(".nav").forEach((button) => {
     button.classList.toggle("active", button.dataset.nav === view);
   });
-  ["scan", "library", "method"].forEach((name) => {
+  ["scan", "library", "method", "release"].forEach((name) => {
     $(`#view-${name}`).classList.toggle("hidden", name !== view);
   });
   if (view === "library") loadLibrary();
+  if (view === "release") loadVersionInfo();
 }
 
 async function loadOverview() {
@@ -143,6 +144,32 @@ async function loadOverview() {
     $("#index-dot").className = "dot bad";
     $("#index-status").textContent = "服务不可用";
     toast(error.message, true);
+  }
+}
+
+function renderReleaseNotes(data) {
+  const currentVersion = String(data.version || "").trim();
+  $("#app-version").textContent = currentVersion ? `当前版本：${currentVersion}` : "当前版本：未知";
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  if (!entries.length) {
+    $("#release-list").innerHTML = '<div class="placeholder">暂无更新日志。</div>';
+    return;
+  }
+  $("#release-list").innerHTML = entries.map((entry) => {
+    const current = entry.version === currentVersion ? '<span class="tag">当前版本</span>' : "";
+    const changes = (entry.changes || []).length
+      ? `<ul>${entry.changes.map((change) => `<li>${esc(change)}</li>`).join("")}</ul>`
+      : "<p>本版本暂无详细变更说明。</p>";
+    return `<article class="release-entry${entry.version === currentVersion ? " current" : ""}"><div class="release-heading"><h3>v${esc(entry.version)} · ${esc(entry.title)}</h3><div class="release-meta">${esc(entry.date)} ${current}</div></div>${changes}</article>`;
+  }).join("");
+}
+
+async function loadVersionInfo() {
+  try {
+    renderReleaseNotes(await api("/api/version"));
+  } catch (error) {
+    $("#app-version").textContent = "当前版本：读取失败";
+    $("#release-list").innerHTML = `<div class="placeholder">更新日志加载失败：${esc(error.message)}</div>`;
   }
 }
 
@@ -521,7 +548,7 @@ async function syncExchangeLibrary() {
   }
 }
 
-document.querySelectorAll(".nav").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.nav)));
+document.querySelectorAll("[data-nav]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.nav)));
 const savedTheme = (() => {
   try {
     const saved = localStorage.getItem("wallet-link-theme");
@@ -605,3 +632,4 @@ $("#export-json").addEventListener("click", () => {
 });
 $("#seed").addEventListener("keydown", (event) => { if (event.key === "Enter") runRelations(); });
 loadOverview();
+loadVersionInfo();

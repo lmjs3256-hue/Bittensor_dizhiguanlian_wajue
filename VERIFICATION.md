@@ -1,5 +1,14 @@
 # 0.1.0 验证交付记录
 
+## 0.1.3 页面版本与更新日志验证
+
+- `pytest -q`：`43 passed`，1 条既有 Starlette/httpx 弃用 warning。
+- `python -m compileall -q app tests`：通过。
+- `node --check app/static/app.js`：通过。
+- `git diff --check`：通过。
+- 重启 `127.0.0.1:8766` 后，`/api/health` 返回版本 `0.1.3`；`/api/version` 返回 4 个版本记录。
+- Playwright 验证页面底部显示 `当前版本：0.1.3`，侧边栏更新日志页面显示当前版本条目。
+
 **验收时间：** 2026-10-31 12:39:42（Asia/Shanghai）
 **交付目录：** G:\bittensor-wallet-link-intel
 
