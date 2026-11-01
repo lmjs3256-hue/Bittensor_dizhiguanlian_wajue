@@ -592,6 +592,7 @@ class LinkService:
             for entry in library
             if entry.category == "EXCHANGE" and entry.exchange_confirmed
         }
+        terminal_exchange_addresses = set(exchange_addresses)
         unconfirmed_exchange_addresses = {
             entry.address
             for entry in library
@@ -653,6 +654,8 @@ class LinkService:
                 else:
                     address, current_depth, page_number = page_queue.popleft()
                 if current_depth >= depth:
+                    continue
+                if address in terminal_exchange_addresses:
                     continue
                 try:
                     page = get_transfer_page(address, page_number)
@@ -752,6 +755,11 @@ class LinkService:
                 for neighbor in sorted(next_addresses):
                     next_depth = current_depth + 1
                     if next_depth < depth and next_depth < address_depth.get(neighbor, depth + 1):
+                        if neighbor in terminal_exchange_addresses:
+                            # Keep the edge in records_by_key so the public
+                            # exchange appears in results, but never query or
+                            # traverse through its high-volume outgoing graph.
+                            continue
                         address_depth[neighbor] = next_depth
                         page_key = (neighbor, 1)
                         if page_key not in queued_pages:

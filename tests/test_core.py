@@ -144,6 +144,42 @@ def test_known_exchange_gets_explicit_role_label():
     assert "地址库明确标记" in report.related[0].role_reason
 
 
+def test_confirmed_exchange_is_terminal_and_direct_neighbor_is_intermediary():
+    report = discover(
+        "S",
+        [
+            TransferRecord("0x01", 1, "S", "PERSONAL", Decimal("1")),
+            TransferRecord("0x02", 2, "PERSONAL", "EXCHANGE", Decimal("0.1")),
+            TransferRecord("0x03", 3, "EXCHANGE", "BEYOND", Decimal("100")),
+        ],
+        max_depth=3,
+        policy=LinkPolicy(Decimal("0.1"), Decimal("0.1")),
+        library=[LibraryEntry("EXCHANGE", "OKX交易所", "EXCHANGE")],
+    )
+
+    rows = {row.address: row for row in report.related}
+    assert set(rows) == {"PERSONAL", "EXCHANGE"}
+    assert rows["EXCHANGE"].address_role == "OKX交易所"
+    assert rows["PERSONAL"].address_role == "疑似中转钱包（交易所关联）"
+    assert "余额高低不影响此线索" in rows["PERSONAL"].role_reason
+
+
+def test_exchange_related_intermediary_needs_only_one_transfer():
+    report = discover(
+        "S",
+        [
+            TransferRecord("0x01", 1, "S", "PERSONAL", Decimal("0.1")),
+            TransferRecord("0x02", 2, "PERSONAL", "EXCHANGE", Decimal("0.1")),
+        ],
+        max_depth=2,
+        policy=LinkPolicy(Decimal("1"), Decimal("0.1")),
+        library=[LibraryEntry("EXCHANGE", "OKX交易所", "EXCHANGE")],
+    )
+
+    row = next(item for item in report.related if item.address == "PERSONAL")
+    assert row.address_role == "疑似中转钱包（交易所关联）"
+
+
 def test_default_policy_starts_at_one_tao_and_reports_seed_library():
     report = discover(
         "S",

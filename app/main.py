@@ -38,7 +38,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Bittensor Wallet Link Intel", version="0.1.1", lifespan=lifespan)
+app = FastAPI(title="Bittensor Wallet Link Intel", version="0.1.2", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 SERVICE = LinkService(DATABASE, CONFIG.rpc_url)
 
@@ -101,7 +101,7 @@ def health(svc: Annotated[LinkService, Depends(service)]):
     return {
         "ok": True,
         "service": "bittensor-wallet-link-intel",
-        "version": "0.1.1",
+        "version": "0.1.2",
         "rpc_url": svc.rpc_url,
     }
 
