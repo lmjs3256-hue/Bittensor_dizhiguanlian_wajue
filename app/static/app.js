@@ -417,6 +417,28 @@ async function loadLibrary() {
   } catch (error) { toast(error.message, true); }
 }
 
+async function exportLibrary(format) {
+  try {
+    const response = await fetch(`/api/library/export?format=${encodeURIComponent(format)}`);
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || `导出失败 (${response.status})`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `bittensor-address-library-${new Date().toISOString().slice(0, 10)}.${format}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast(`地址库已导出为 ${format.toUpperCase()}，可在其他设备通过“导入文件”恢复。`);
+  } catch (error) {
+    toast(`地址库导出失败：${error.message}`, true);
+  }
+}
+
 async function saveRelationNote(button) {
   const rowElement = button.closest("tr");
   const address = rowElement?.dataset.relatedAddress;
@@ -578,6 +600,8 @@ $("#add-address").addEventListener("click", addAddress);
 $("#choose-file").addEventListener("click", () => $("#library-file").click());
 $("#library-file").addEventListener("change", (event) => { if (event.target.files[0]) uploadLibrary(event.target.files[0]); });
 $("#sync-exchanges").addEventListener("click", syncExchangeLibrary);
+$("#export-library-csv").addEventListener("click", () => exportLibrary("csv"));
+$("#export-library-json").addEventListener("click", () => exportLibrary("json"));
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-save-relation-note]");
   if (button) saveRelationNote(button);

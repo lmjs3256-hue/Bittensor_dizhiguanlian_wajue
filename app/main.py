@@ -8,7 +8,7 @@ from typing import Annotated
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -160,6 +160,23 @@ def delete_taostats_key():
 @app.get("/api/library")
 def library(svc: Annotated[LinkService, Depends(service)]):
     return {"items": svc.library()}
+
+
+@app.get("/api/library/export")
+def export_library(
+    svc: Annotated[LinkService, Depends(service)],
+    format: str = Query(default="json", pattern="^(csv|json)$"),
+):
+    content, media_type = svc.export_library(format)
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="bittensor-address-library.{format}"'
+            )
+        },
+    )
 
 
 @app.post("/api/library")

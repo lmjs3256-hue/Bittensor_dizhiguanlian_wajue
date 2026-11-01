@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.5.3">
+  <link rel="stylesheet" href="/static/styles.css?v=0.5.4">
 </head>
 <body>
   <div class="shell">
@@ -78,7 +78,7 @@
           <div><span class="label">KNOWN ADDRESS LIBRARY</span><h2>地址库</h2><p>支持 TXT、CSV、JSON 人工导入。EXCHANGE 是交易所地址库，VALIDATOR 是验证者地址库；查询时可分别勾选过滤。SEED 可作为扫描默认地址，WATCH 和 BLACKLIST 用于命中提示。</p></div>
           <div class="inline-form"><label>名称<input id="lib-label" placeholder="标签名称"></label><label>分类<select id="lib-category"><option value="WATCH">WATCH</option><option value="SEED">SEED</option><option value="BLACKLIST">BLACKLIST</option><option value="EXCHANGE">EXCHANGE · 交易所</option><option value="VALIDATOR">VALIDATOR · 验证者</option></select></label><label>地址<input id="lib-address" placeholder="SS58 地址" spellcheck="false"></label><label>备注<input id="lib-note" placeholder="可选备注"></label><button class="secondary" id="add-address">添加地址</button><button class="primary" id="choose-file">导入文件</button><button class="secondary" id="sync-exchanges">同步官方交易所地址</button><input type="file" id="library-file" accept=".txt,.csv,.json" hidden></div>
         </section>
-        <section class="panel"><div class="section-title"><div><h3>地址库清单</h3><span class="tag" id="library-count">0 条</span></div><div class="library-actions"><label class="select-all-control"><input type="checkbox" id="select-all-addresses" aria-label="全选地址">全选</label><button class="danger" id="delete-selected" disabled>删除所选 (0)</button></div></div><div id="library-table" class="table-wrap"></div></section>
+        <section class="panel"><div class="section-title"><div><h3>地址库清单</h3><span class="tag" id="library-count">0 条</span></div><div class="library-actions"><button class="secondary" id="export-library-csv" type="button">导出 CSV</button><button class="secondary" id="export-library-json" type="button">导出 JSON</button><label class="select-all-control"><input type="checkbox" id="select-all-addresses" aria-label="全选地址">全选</label><button class="danger" id="delete-selected" disabled>删除所选 (0)</button></div></div><div id="library-table" class="table-wrap"></div></section>
       </div>
 
       <div id="view-method" class="hidden">
@@ -91,6 +91,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.5.3"></script>
+  <script src="/static/app.js?v=0.5.4"></script>
 </body>
 </html>
