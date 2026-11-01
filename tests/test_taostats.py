@@ -234,6 +234,58 @@ def test_exchange_filter_stops_remote_expansion(monkeypatch):
             database.engine.dispose()
 
 
+def test_confirmed_exchange_is_terminal_without_filtering(monkeypatch):
+    seed, exchange, beyond = ADDRESSES
+    calls = []
+
+    def fake_get(address, page):
+        calls.append((address, page))
+        if address == seed:
+            return TransferPage(
+                [{
+                    "id": "exchange-edge-terminal",
+                    "block_number": 10,
+                    "from": seed,
+                    "to": exchange,
+                    "amount": "1000000000",
+                    "transaction_hash": "0xexchange-terminal",
+                }],
+                None,
+            )
+        return TransferPage(
+            [{
+                "id": "beyond-edge-terminal",
+                "block_number": 11,
+                "from": exchange,
+                "to": beyond,
+                "amount": "2000000000",
+                "transaction_hash": "0xbeyond-terminal",
+            }],
+            None,
+        )
+
+    monkeypatch.setattr(service_module, "get_transfer_page", fake_get)
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "exchange-terminal.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            service.import_rows([{"address": exchange, "category": "EXCHANGE"}], "manual")
+            result = service.relations(
+                seed=seed,
+                depth=3,
+                min_edge_tao="0.1",
+                min_total_tao="0.1",
+                data_source="taostats",
+                filter_exchanges=False,
+            )
+            assert calls == [(seed, 1)]
+            assert [row["address"] for row in result["related"]] == [exchange]
+            assert result["related"][0]["address_role"] == "交易所地址"
+        finally:
+            database.engine.dispose()
+
+
 def test_manual_validator_filter_stops_remote_expansion(monkeypatch):
     seed, validator, beyond = ADDRESSES
     calls = []

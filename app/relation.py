@@ -92,6 +92,7 @@ def _role_for_address(
     entry: LibraryEntry | None,
     activity: list[TransferRecord],
     balance_tao: Decimal | None = None,
+    exchange_related: bool = False,
 ) -> tuple[str, str]:
     """Return a conservative public label from available address evidence.
 
@@ -110,6 +111,12 @@ def _role_for_address(
     if entry and entry.category == "VALIDATOR":
         label = entry.label.strip() or "验证者地址"
         return label, "地址库明确标记为验证者地址。"
+
+    if exchange_related:
+        return (
+            "疑似中转钱包（交易所关联）",
+            "该地址与已确认的交易所公共地址存在直接转账；当前查询数据只包含 Balances.Transfer，未观察到子网交易语义。余额高低不影响此线索，但这不是全链历史中不存在子网交易的证明。",
+        )
 
     if not activity:
         return "", ""
@@ -240,6 +247,12 @@ def discover(
                 exchange_rejected=entry.exchange_rejected,
             )
 
+    terminal_exchange_addresses = {
+        address
+        for address, entry in library_map.items()
+        if entry.category == "EXCHANGE" and entry.exchange_confirmed
+    }
+
     if seed in excluded:
         return ScanReport(
             seed=seed,
@@ -263,6 +276,14 @@ def discover(
         activity[transfer.to_address].append(transfer)
         if transfer.to_address != transfer.from_address:
             graph[transfer.to_address].append(transfer)
+
+    exchange_related_addresses: set[str] = set()
+    for transfer in transfer_rows:
+        if transfer.from_address in terminal_exchange_addresses:
+            if transfer.to_address not in terminal_exchange_addresses:
+                exchange_related_addresses.add(transfer.to_address)
+        elif transfer.to_address in terminal_exchange_addresses:
+            exchange_related_addresses.add(transfer.from_address)
 
     distances: dict[str, int] = {seed: 0}
     paths: dict[str, list[TransferRecord]] = {seed: []}
@@ -288,6 +309,8 @@ def discover(
         current = queue.popleft()
         depth = distances[current]
         if depth >= max_depth:
+            continue
+        if current in terminal_exchange_addresses:
             continue
         for transfer in graph.get(current, []):
             if policy.exclude_system_accounts and (
@@ -322,10 +345,17 @@ def discover(
             key = (transfer.from_address, transfer.to_address, qualifier, transfer.block_number)
             if material and key not in retained:
                 retained[key] = retained_edge(transfer, depth + 1, neighbor)
-            if neighbor not in distances and neighbor not in excluded:
+            if (
+                neighbor not in distances
+                and neighbor not in excluded
+                and neighbor not in terminal_exchange_addresses
+            ):
                 distances[neighbor] = depth + 1
                 paths[neighbor] = paths[current] + [transfer]
                 queue.append(neighbor)
+            elif neighbor in terminal_exchange_addresses and neighbor not in distances:
+                distances[neighbor] = depth + 1
+                paths[neighbor] = paths[current] + [transfer]
 
     # A low transfer can create a candidate but not carry a path. Every retained
     # edge is therefore above the threshold, unless it starts directly at seed.
@@ -376,6 +406,7 @@ def discover(
             entry,
             activity.get(address, []),
             (balances or {}).get(address),
+            address in exchange_related_addresses,
         )
         unique_tx = {edge.tx_hash for edge in edge_rows if edge.tx_hash}
         incoming = [edge for edge in edge_rows if edge.to_address == address]
@@ -406,6 +437,11 @@ def discover(
     related.sort(key=lambda row: (row.depth, -row.total_tao, row.address))
     seed_entry = library_map.get(seed)
     final_warnings = list(warnings)
+    visible_terminal_exchanges = terminal_exchange_addresses & set(visible)
+    if visible_terminal_exchanges:
+        final_warnings.append(
+            f"已识别 {len(visible_terminal_exchanges)} 个已确认交易所地址；交易所公共地址作为关联终点，不继续扩展其下游转账。"
+        )
     if missing_hash_rows:
         final_warnings.append(
             f"{missing_hash_rows} matching rows have no tx_hash; exact deduplication was limited."
