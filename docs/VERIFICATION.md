@@ -160,3 +160,15 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 - 本地测试覆盖：交易所公共地址之后的下游地址不会出现在结果；只有一笔转账的个人地址会被标记为交易所关联疑似中转地址。
 - Taostats mock 覆盖：不勾选交易所过滤时，查询只调用起始地址，不调用已确认交易所地址；结果保留交易所公共地址。
 - 回归结果：`41 passed, 1 warning`；`compileall`、`node --check app/static/app.js` 和 `git diff --check` 通过。
+
+## 2026-11-04 0.6.2 离线授权与同机多副本验收
+
+> 0.2.0–0.6.1 的验收细节见 `CHANGELOG.md` 与 git 提交记录，本节记录当前版本的实测结论。
+
+- 全量 pytest：`101 passed, 1 warning`（新增 `/api/health` 的 `pid`／`root` 断言；`tests/test_version.py` 版本号同步到 `0.6.2`）。
+- `node --check app/static/app.js` 通过；`start.ps1`、`launch_desktop.ps1`、`stop.ps1` 经 `[System.Management.Automation.Language.Parser]::ParseFile` 校验无语法错误。
+- 同一台电脑复制副本实测（`robocopy` 整目录到 `D:\wallet_link_test`）：`.venv` 在新路径可用（`sys.prefix` 指向新目录）；机器码仍为 `KNT5-YFER-N3PA-5W7Z`；`license.key` 拷过去直接生效（`licensed=true`）；`/api/library`、`/api/library/books`、`/api/library/categories` 与首页均返回 200。验证完成后已删除该副本。
+- 端口冲突实测：D 盘副本占用 8798 时，主目录执行 `start.ps1 -Port 8798` 输出“端口 8798 已被 D:\wallet_link_test 占用。本副本改用端口 8799 启动”，`logs/wallet-link.port` 写入 `8799`；同目录重复启动输出 `Service is already running`；`stop.ps1 -Port 8799` 在无服务时输出“服务当前没有在运行”。
+- 授权口径核对：解码本机 `license.key`（`base64` 解 payload）得到 `machines: ["KNT5YFERN3PA5W7Z"]`、`team: 内部团队`、无到期日，与“一机一码”一致；`tools/issue_license.py` 对超过 50 个机器码直接报错，`--machine "*"` 生成不绑机的码。
+- 文档同步：`授权管理.md`（三种签法对照 + 机器码何时变）、`使用说明.md`／`使用说明.html`（同一台电脑复制一份做测试）、`README.md`、`CHANGELOG.md`、`VERSION` 全部更新到 `0.6.2`；静态资源缓存戳 `?v=0.6.7`。
+

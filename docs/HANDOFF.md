@@ -230,3 +230,42 @@ Set-Location G:\bittensor-wallet-link-intel
 - SQLite 增加 `api_requests` 表，持久化本机实际发起的 Taostats 网络请求。`/api/overview` 和关联结果返回今日、本月、累计、本月参考上限（10,000）及剩余参考值；缓存命中不计数，账户实际 credits 以 Taostats 控制台为准。
 - `start.ps1` 在项目没有 `.venv` 时会优先使用 `BITTENSOR_PYTHON`，否则使用当前机器的 `G:\jiaoben\.venv\Scripts\python.exe`，再回退到系统 Python。
 - 本轮验证：`35 passed`；`compileall` 和 `node --check app\static\app.js` 通过；重启后的 8766 服务返回健康状态，首页显示默认 `1` TAO 和查询统计，人工确认接口返回 HTTP 200。
+
+## 20. 2026-11-04 0.6.x 交接：离线授权、地址库分类、多副本启动
+
+> 0.2.0–0.6.1 的功能细节见 [`CHANGELOG.md`](../CHANGELOG.md)；本节只记录当前状态和交接要点，避免与上面的 0.1.x 历史记录混淆。
+
+**当前状态**
+
+- 应用版本 `0.6.2`；本机 `127.0.0.1:8766` 运行中，`/api/health` 返回 `version`、`licensed`、`team`、`pid`、`root`。
+- 回归：`101 passed`；`node --check app/static/app.js` 通过；`start.ps1`／`launch_desktop.ps1`／`stop.ps1` 经 `[Parser]::ParseFile` 校验无语法错误。
+- 代码位置：`app/license.py`（授权）、`app/service.py`（地址库/分类）、`tools/issue_license.py`（签发）、`tests/test_license.py`、`tests/test_address_books.py`、`tests/test_categories.py`。
+
+**离线授权（0.6.0 起）**
+
+- 机器码 = Windows `MachineGuid` → SHA-256 → base32 取前 16 位，显示成 `XXXX-XXXX-XXXX-XXXX`；**与安装路径、磁盘、用户名无关**，重装系统才会变。
+- 授权码格式 `WL1.<payload>.<sig>`，Ed25519 签名；程序内只有 `PUBLIC_KEY_B64`，私钥在仓库外 `.license-keys/wallet_link_private.pem`，不进 Git、不进安装包。
+- 拦截点：`app/main.py` 的 `license_guard` 中间件，非 `PUBLIC_PATHS` 且未授权 → 403 `code=unlicensed`。测试用 `tests/conftest.py` autouse 打桩放行业务用例，`tests/test_license.py` 的 `real_gate` 单独验证真实拦截。
+- 授权粒度：**默认一机一码**；同一个码里可以写多个机器码共用（`issue_license.py` 限制 ≤50 个），`--machine "*"` 表示不绑机器。这里的 50 是“单码机器码上限”，不是“一个码自动能发 50 个人”。
+- 其它：系统时间回拨超过 24 小时拒绝启动（`data/.license-clock`）；页面右下角、TXT/JSON 导出都带“团队名 · 机器码后 6 位”水印。
+
+**地址库分类（0.5.0 起）**
+
+- 人工分类：大V／群友／其他，可自定义新增（≤12 字），存 `address_categories`；`EXCHANGE`／`VALIDATOR` 是系统分类，只用于查询过滤，不出现在人工下拉。
+- 地址库台账 `address_books` + `address_library.book`；解散地址库只清 `book` 标记，不删地址记录。
+
+**启动脚本与同机多副本（0.6.2）**
+
+- `/api/health` 的 `pid`／`root` 用来判断端口上跑的是“本目录的服务”还是“另一个副本”。
+- `start.ps1` 发现端口被别人占用时，自动向后找 10 个空闲端口（`TcpListener` 试绑），实际端口写入 `logs/wallet-link.port`。
+- `launch_desktop.ps1` 读这个文件打开正确页面；`stop.ps1` 不带参数时优先用这个端口停，避免误停原副本；`启动.cmd` 支持 `启动.cmd 8777`。
+- 同一台电脑上的多份副本是两套独立数据（各自的 `data\wallet_link.db`）；机器码相同，`license.key` 拷过去直接可用。
+
+**发布状态**：`6fa8881`（0.6.2）已推送到 <https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue>。
+
+**后续可做**
+
+1. 需要更强防破解时再考虑 PyInstaller／PyArmor 打包（会改变“拷文件夹即用”的部署方式）。
+2. 离线授权无法远程吊销，只能等到期；要即时吊销必须引入联网校验。
+3. 单码最多 50 个机器码，团队规模更大时按批次拆码，并在团队名里带成员标识以便溯源。
+
