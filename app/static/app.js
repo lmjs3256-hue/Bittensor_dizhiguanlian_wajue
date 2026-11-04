@@ -376,7 +376,7 @@ function refreshRelatedTable() {
   const removedNote = $("#removed-note");
   if (removedNote) {
     if (state.removedAddresses.size) {
-      removedNote.textContent = `已手动移除 ${state.removedAddresses.size} 个关联地址（点「刷新结果」后，这些地址线索的下游也会一并消失）`;
+      removedNote.textContent = `已手动移除 ${state.removedAddresses.size} 个关联地址（点「刷新结果」后，这些地址、与其有转账交集的地址及下游线索都会一并消失）`;
       removedNote.classList.remove("hidden");
     } else {
       removedNote.classList.add("hidden");

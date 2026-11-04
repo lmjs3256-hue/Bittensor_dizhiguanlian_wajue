@@ -576,3 +576,93 @@ def test_relations_endpoint_accepts_removed_addresses():
         finally:
             main_module.app.dependency_overrides.pop(original, None)
             database.engine.dispose()
+
+
+def test_relations_removed_also_cuts_intersecting_addresses():
+    """与被移除地址有直接转账交集的地址也要一并剪除（即使它另有路径连回起始地址）。"""
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "intersect.db")
+        try:
+            records = [
+                ("ix-1", SEED, NEIGHBORS[0]),   # S → N0（将被移除）
+                ("ix-2", NEIGHBORS[0], NEIGHBORS[1]),  # N0 → N1：N1 与 N0 有交集
+                ("ix-3", SEED, NEIGHBORS[2]),   # S → N2：N1 的另一条路径
+                ("ix-4", NEIGHBORS[2], NEIGHBORS[1]),  # N2 → N1
+            ]
+            rows = [
+                {
+                    "event_key": key,
+                    "tx_hash": key,
+                    "block_number": 100 + index,
+                    "block_hash": "0xblock",
+                    "event_index": index,
+                    "from_address": source,
+                    "to_address": target,
+                    "amount_rao": 1_000_000_000,
+                    "amount_tao": 1,
+                }
+                for index, (key, source, target) in enumerate(records)
+            ]
+            database.ingest_transfers(rows)
+
+            full = service.relations(
+                seed=SEED, depth=3, min_edge_tao="1", min_total_tao="1",
+                data_source="local",
+            )
+            assert {row["address"] for row in full["related"]} == set(NEIGHBORS[:3])
+
+            cut = service.relations(
+                seed=SEED, depth=3, min_edge_tao="1", min_total_tao="1",
+                data_source="local",
+                removed_addresses=[NEIGHBORS[0]],
+            )
+            # N1 虽然能经 N2 连回起始地址，但与 N0 有直接转账，必须一并移除。
+            assert {row["address"] for row in cut["related"]} == {NEIGHBORS[2]}
+            assert any("转账交集" in warning for warning in cut["warnings"])
+        finally:
+            database.engine.dispose()
+
+
+def test_relations_removed_also_cuts_intersecting_addresses():
+    """与被移除地址有直接转账交集的地址也要一并剪除（即使它另有路径连回起始地址）。"""
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "intersect.db")
+        try:
+            records = [
+                ("ix-1", SEED, NEIGHBORS[0]),   # S → N0（将被移除）
+                ("ix-2", NEIGHBORS[0], NEIGHBORS[1]),  # N0 → N1：N1 与 N0 有交集
+                ("ix-3", SEED, NEIGHBORS[2]),   # S → N2：N1 的另一条路径
+                ("ix-4", NEIGHBORS[2], NEIGHBORS[1]),  # N2 → N1
+            ]
+            rows = [
+                {
+                    "event_key": key,
+                    "tx_hash": key,
+                    "block_number": 100 + index,
+                    "block_hash": "0xblock",
+                    "event_index": index,
+                    "from_address": source,
+                    "to_address": target,
+                    "amount_rao": 1_000_000_000,
+                    "amount_tao": 1,
+                }
+                for index, (key, source, target) in enumerate(records)
+            ]
+            database.ingest_transfers(rows)
+
+            full = service.relations(
+                seed=SEED, depth=3, min_edge_tao="1", min_total_tao="1",
+                data_source="local",
+            )
+            assert {row["address"] for row in full["related"]} == set(NEIGHBORS[:3])
+
+            cut = service.relations(
+                seed=SEED, depth=3, min_edge_tao="1", min_total_tao="1",
+                data_source="local",
+                removed_addresses=[NEIGHBORS[0]],
+            )
+            # N1 虽然能经 N2 连回起始地址，但与 N0 有直接转账，必须一并移除。
+            assert {row["address"] for row in cut["related"]} == {NEIGHBORS[2]}
+            assert any("转账交集" in warning for warning in cut["warnings"])
+        finally:
+            database.engine.dispose()

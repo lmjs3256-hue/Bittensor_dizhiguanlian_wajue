@@ -122,6 +122,7 @@ class RelationContext:
     manual_validator_addresses: set[str] = field(default_factory=set)
     auto_validator_addresses: set[str] = field(default_factory=set)
     excluded_addresses: set[str] = field(default_factory=set)
+    removed_addresses: set[str] = field(default_factory=set)
     validator_api_requests: int = 0
     validator_cache_hits: int = 0
 
@@ -1575,7 +1576,8 @@ class LinkService:
         if removed_addresses:
             excluded_addresses.update(removed_addresses)
             warnings.append(
-                f"已手动移除 {len(removed_addresses)} 个关联地址；刷新后这些地址及其线索的下游地址都不会出现。"
+                f"已手动移除 {len(removed_addresses)} 个关联地址；刷新后这些地址、与其有直接转账交集的"
+                "地址及其线索的下游地址都不会出现。"
             )
         return RelationContext(
             seed=seed,
@@ -1594,6 +1596,7 @@ class LinkService:
             manual_validator_addresses=manual_validator_addresses,
             auto_validator_addresses=auto_validator_addresses,
             excluded_addresses=excluded_addresses,
+            removed_addresses=set(removed_addresses),
             validator_api_requests=validator_api_requests,
             validator_cache_hits=validator_cache_hits,
         )
@@ -1823,6 +1826,7 @@ class LinkService:
             freshness=freshness,
             warnings=warnings,
             excluded_addresses=excluded_addresses,
+            removed_addresses=context.removed_addresses,
             balances=balances,
         )
         if balance_budget_short:
@@ -1863,6 +1867,7 @@ class LinkService:
                 freshness=freshness,
                 warnings=warnings,
                 excluded_addresses=excluded_addresses,
+                removed_addresses=context.removed_addresses,
                 balances=balances,
             )
         result = {

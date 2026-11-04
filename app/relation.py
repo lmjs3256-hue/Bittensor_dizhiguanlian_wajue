@@ -217,6 +217,7 @@ def discover(
     freshness: str = "UNKNOWN_EXPORT",
     warnings: Iterable[str] = (),
     excluded_addresses: Iterable[str] = (),
+    removed_addresses: Iterable[str] = (),
     balances: dict[str, Decimal | None] | None = None,
 ) -> ScanReport:
     """Traverse transfer edges at most ``max_depth`` hops from the seed.
@@ -235,6 +236,26 @@ def discover(
     policy = policy or LinkPolicy()
     transfer_rows = _canonical_dedupe(transfers)
     excluded = {address.strip() for address in excluded_addresses if address.strip()}
+    removed = {address.strip() for address in removed_addresses if address.strip()}
+    removed_contact_notes: list[str] = []
+    if removed:
+        # 手动移除关联的延伸规则：与被移除地址发生过直接转账的其他地址
+        # 一并视为「同一条线索」，在 BFS 之前就排除——这样通过它们中转的
+        # 下游地址也会级联剪掉，而不是只剪路径恰好经过被移除地址的分支。
+        pruned_contacts: set[str] = set()
+        for transfer in transfer_rows:
+            source = transfer.from_address.strip()
+            target = transfer.to_address.strip()
+            if source in removed and target not in removed and target != seed:
+                pruned_contacts.add(target)
+            elif target in removed and source not in removed and source != seed:
+                pruned_contacts.add(source)
+        excluded.update(pruned_contacts)
+        if pruned_contacts:
+            removed_contact_notes.append(
+                f"已移除地址与 {len(pruned_contacts)} 个其他关联地址存在直接转账交集，"
+                "这些地址及其下游线索也已一并移除。"
+            )
     library_map: dict[str, LibraryEntry] = {}
     for entry in library:
         address = entry.address.strip()
@@ -475,6 +496,7 @@ def discover(
     related.sort(key=lambda row: (row.depth, -row.total_tao, row.address))
     seed_entry = library_map.get(seed)
     final_warnings = list(warnings)
+    final_warnings.extend(removed_contact_notes)
     visible_terminal_exchanges = terminal_exchange_addresses & set(visible)
     if visible_terminal_exchanges:
         final_warnings.append(
