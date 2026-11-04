@@ -194,3 +194,11 @@ td.address code { word-break:break-all; }
 body.license-locked .shell { filter:blur(2px); pointer-events:none; user-select:none; }
 .license-watermark { position:fixed; right:16px; bottom:10px; z-index:60; font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--muted); opacity:.45; pointer-events:none; user-select:none; }
 @media (max-width:560px) { .license-card { padding:22px 18px 20px; } .license-machine button { margin-left:0; } }
+
+/* 结果为空时说明原因：以前 0 个关联地址只显示一张空表，容易误判成工具坏了 */
+.result-alert { border:1px solid var(--warn); background:var(--warn-soft); color:var(--warn); border-radius:12px; padding:14px 16px; margin:18px 0 0; }
+.result-alert .alert-title { font-weight:750; margin-bottom:6px; font-size:14px; }
+.result-alert ul { margin:0; padding-left:18px; display:grid; gap:4px; font-size:13px; line-height:1.62; }
+.result-alert .alert-actions { margin-top:11px; }
+.result-alert .alert-actions button { padding:8px 13px; }
+.warn-text { color:var(--warn) !important; }

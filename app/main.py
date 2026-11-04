@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import license as license_mod
+from . import settings_store
 from .config import ROOT_DIR, database_path, settings
 from .db import Database
 from .inputs import InputError
@@ -41,6 +42,11 @@ VERSION_INFO = read_version_info()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     DATABASE.initialize()
+    # 上次保存过 Taostats key 就自动装回内存，避免每次重启都要重填。
+    if not taostats_is_configured():
+        saved_key = settings_store.load_api_key()
+        if saved_key:
+            configure_taostats_api_key(saved_key)
     scheduler = asyncio.create_task(_job_scheduler())
     try:
         yield
@@ -60,6 +66,13 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 SERVICE = LinkService(DATABASE, CONFIG.rpc_url)
 JOBS = RelationJobManager()
+
+# 勾了「使用 Taostats 历史索引」但没有 key 时直接报错，不再静默退回本地索引：
+# 以前那种回退会返回 0 个关联地址，用户只看到一张空表，以为是工具坏了。
+TAOSTATS_KEY_MISSING = (
+    "未配置 Taostats API key：请先在页面「Taostats API key」里粘贴并点「保存 API key」，再发起查询。"
+    "如果只想查本地索引，请取消勾选「使用 Taostats 历史索引」。"
+)
 
 # 未激活时也要能打开的路径：首页显示激活页，健康检查和授权接口用于自检/激活。
 PUBLIC_PATHS = {
@@ -256,6 +269,7 @@ def overview(svc: Annotated[LinkService, Depends(service)]):
         "default_seed": svc.seed_address(),
         "rpc_url": svc.rpc_url,
         "taostats_configured": taostats_is_configured(),
+        "taostats_key_storage": settings_store.storage_kind(),
         "api_usage": svc.api_usage_summary(),
     }
 
@@ -278,13 +292,16 @@ async def save_taostats_key(request: Request):
         raise HTTPException(422, "API key 不能为空且不得超过 1024 个字符")
     key = candidate.strip()
     configure_taostats_api_key(key)
-    return {"configured": True}
+    # 同时也存到本机（DPAPI 加密），重启服务后自动装回内存。
+    storage = settings_store.save_api_key(key)
+    return {"configured": True, "storage": storage}
 
 
 @app.delete("/api/settings/taostats")
 def delete_taostats_key():
     clear_taostats_api_key()
-    return {"configured": False}
+    settings_store.clear_api_key()
+    return {"configured": False, "storage": ""}
 
 
 @app.get("/api/library")
@@ -534,6 +551,8 @@ def scan(
 def relations(payload: RelationInput, svc: Annotated[LinkService, Depends(service)]):
     if not payload.seed.strip():
         raise HTTPException(422, "seed must not be blank")
+    if payload.data_source == "taostats" and not taostats_is_configured():
+        raise HTTPException(400, TAOSTATS_KEY_MISSING)
     try:
         return svc.relations(
             seed=payload.seed.strip(),
@@ -558,6 +577,8 @@ def start_relation_job(
 
     if not payload.seed.strip():
         raise HTTPException(422, "seed must not be blank")
+    if not taostats_is_configured():
+        raise HTTPException(400, TAOSTATS_KEY_MISSING)
     try:
         job = JOBS.create(
             svc,

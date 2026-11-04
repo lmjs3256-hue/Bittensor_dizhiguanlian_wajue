@@ -98,7 +98,7 @@ python -m venv .venv
 1. 注册并创建 key：打开 <https://taostats.io/zh/pro> 登录（免费档标价 $0），再进入 <https://taostats.io/zh/pro/api-keys> 新建项目并生成 key（通常只完整显示一次，生成后立即复制）；找不到入口时看官方图文步骤 <https://taostats.io/zh/docs/start-here/getting-started-with-taostats-api>。官方套餐页当前列出每分钟 5 API credits、每月 10,000 API credits，实际可用历史范围和单次端点 credit 消耗以账户控制台及 API 响应为准。
 2. 打开工具首页，在“Taostats API key”密码框中粘贴 key，点击“保存 API key”。页面只显示是否已配置，不会回显已保存的内容。
 
-应用只把页面提交的 key 保存在当前服务进程内存，不写入数据库、配置文件或浏览器存储；刷新页面后仍显示“已配置”，但不会再次显示 key。服务重启后需要重新输入。点击“清除”会立即停用当前服务中的 key。`/api/overview` 返回 key 是否已配置和本机请求统计。Taostats 查询每次最多发起 5 个 API 请求，并在应用进程内将同一地址同一页缓存 5 分钟；本机统计会跨服务重启保留，但不等同 Taostats 账户 credits 余量。未配置 key、遇到服务端限流或查询超出本轮预算时，界面会保留已取得的结果并标为部分结果/不可用。
+页面提交的 key 会用 Windows DPAPI 加密保存在本机 `data\settings.json`（绑定当前用户，不上传、不回显），服务启动时自动装回内存，重启后不用重填；点击“清除”会同时删掉本机保存的 key。0.6.4 起，勾着 Taostats 数据源但没配置 key 时查询会被直接拒绝并提示，不再静默回退本地索引。`/api/overview` 返回 key 是否已配置和本机请求统计。Taostats 查询每次最多发起 5 个 API 请求，并在应用进程内将同一地址同一页缓存 5 分钟；本机统计会跨服务重启保留，但不等同 Taostats 账户 credits 余量。未配置 key、遇到服务端限流或查询超出本轮预算时，界面会保留已取得的结果并标为部分结果/不可用。
 
 ### 分轮续查（每分钟一轮，直到查完）
 

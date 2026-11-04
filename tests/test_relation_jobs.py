@@ -206,6 +206,8 @@ def test_job_endpoints_expose_progress_and_result(monkeypatch):
     monkeypatch.setattr(
         service_module, "get_stake_transfer_page", lambda *_a: TransferPage([], None)
     )
+    # 分轮查询走 Taostats，接口层会先校验 key 是否存在。
+    taostats.configure_api_key("job-endpoint-test-key")
 
     with TemporaryDirectory() as directory:
         database = Database(Path(directory) / "api.db")

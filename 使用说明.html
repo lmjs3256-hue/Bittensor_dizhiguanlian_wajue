@@ -612,8 +612,8 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <p>免费档按 credits 计费，页面上的“Taostats 查询次数”统计的是本机真实发出的请求，缓存命中不计数。具体额度以官方套餐页为准：<a href="https://taostats.io/zh/pro">https://taostats.io/zh/pro</a></p>
 <p>关于 key 的几点说明：</p>
 <ul>
-<li>key 只保存在<strong>本机服务的内存</strong>里，不写数据库、不写文件、不进浏览器存储；</li>
-<li>因此<strong>每次重启服务后需要重新填写一次</strong>（这是刻意的安全取舍）；</li>
+<li>key 保存<strong>在这台电脑上</strong>：<code>data\settings.json</code>（Windows DPAPI 加密，绑定当前 Windows 用户，拷到别的电脑解不开），不上传、不在页面上回显；</li>
+<li><strong>服务重启后不用重填</strong>，启动时会自动装回内存；点“清除”会把本机保存的 key 一起删掉；</li>
 <li>页面上的“Taostats 查询次数”统计的是本机真实发出的请求，缓存命中不计数；</li>
 <li>单次关联查询最多发起 5 次请求，所以才有“分轮续查”。</li>
 </ul>
@@ -684,11 +684,11 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <p><strong>Q：提示端口被占用 / 服务起不来？</strong>
 8766 端口被别的程序占了。在文件夹的 PowerShell 里执行 <code>.\start.ps1 -Port 8777</code>，然后访问 <a href="http://127.0.0.1:8777">http://127.0.0.1:8777</a>。</p>
 <p><strong>Q：查询结果的地址是 0 个？</strong>
-依次检查：① 是否勾选了“使用 Taostats 历史索引”；② 金额阈值是否设得太高（把 1 改成 0.1 试试）；③ 这个地址是不是新地址、本来就没有往来；④ 看结果下方的“数据范围与限制”写了什么。</p>
+0.6.4 起结果区顶部会直接列出原因（key 未配置、本地索引为空、金额门槛太高、过滤条件挡掉等）。常见处理：① 确认已保存 Taostats API key（勾着“使用 Taostats 历史索引”时没 key 会被直接拦下）；② 金额阈值改小（把 1 改成 0.1 试试）；③ 这个地址可能本来就没有往来。</p>
 <p><strong>Q：分轮查询到一半不动了？</strong>
 每分钟 5 次请求的限制会让每轮之间等约 1 分钟，属正常现象。如果超过 3 分钟没变化，点“停止续查”保留已有结果，稍后重试。</p>
 <p><strong>Q：Taostats 报 401 / 401 Unauthorized？</strong>
-key 没填、填错，或服务重启后没重新填（key 只存在内存里，重启即失效）。到 <a href="https://taostats.io/zh/pro/api-keys">https://taostats.io/zh/pro/api-keys</a> 重新复制一次，粘贴保存即可。如果提示 key 已失效，在后台删掉重新生成。</p>
+key 没填、填错，或 key 已在 Taostats 后台被删/重置（0.6.4 起 key 已保存在本机，重启不再丢失）。到 <a href="https://taostats.io/zh/pro/api-keys">https://taostats.io/zh/pro/api-keys</a> 重新复制一次，粘贴保存即可。如果提示 key 已失效，在后台删掉重新生成。</p>
 <p><strong>Q：能不能在 Mac 或 Linux 上用？</strong>
 可以，但需要手动建环境：装 Python 3.10–3.13，执行 <code>python -m venv .venv</code>、<code>.venv/bin/pip install -r requirements.txt</code>、<code>.venv/bin/python run.py</code>，然后访问同一地址。一键脚本只适配 Windows。</p>
 <p><strong>Q：数据存在哪？要不要备份？</strong>

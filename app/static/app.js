@@ -8,6 +8,8 @@ const state = {
   categories: [],
   bookFilter: "",
   depthFilter: "all",
+  taostatsConfigured: null,
+  taostatsKeyStorage: "",
   history: { offset: 0, total: 0, items: [] },
 };
 
@@ -73,19 +75,29 @@ function freshnessLabel(value, data) {
   })[value] || value;
 }
 
-function showTaostatsKeyStatus(configured) {
+function showTaostatsKeyStatus(configured, storage) {
   const status = $("#taostats-status");
   const detail = $("#taostats-key-status");
   if (typeof configured !== "boolean") {
     status.textContent = "后台版本较旧；请重启服务后设置 API key";
     detail.textContent = "设置 API key 前请先更新并重启服务。";
     $("#clear-taostats-key").disabled = true;
+    state.taostatsConfigured = null;
     return;
   }
-  status.textContent = configured ? "API key 已配置" : "尚未设置 API key";
-  detail.textContent = configured
-    ? "当前服务已保存 key（不回显）；服务重启后需要重新输入。"
-    : "尚未保存 key。";
+  state.taostatsConfigured = configured;
+  state.taostatsKeyStorage = storage || state.taostatsKeyStorage || "";
+  status.textContent = configured ? "API key 已配置" : "尚未设置 API key（无法使用 Taostats 查询）";
+  status.classList.toggle("warn-text", !configured);
+  if (!configured) {
+    detail.textContent = "勾选「使用 Taostats 历史索引」前必须先保存 key，否则查询会被拒绝。";
+  } else if (state.taostatsKeyStorage === "dpapi") {
+    detail.textContent = "key 已加密保存在本机（Windows DPAPI，绑定当前用户），服务重启后自动恢复，不会回显。";
+  } else if (state.taostatsKeyStorage === "plain") {
+    detail.textContent = "key 已保存在本机 data\\settings.json（当前系统不支持加密，为明文），服务重启后自动恢复，不会回显。";
+  } else {
+    detail.textContent = "key 只存在当前进程内存：服务重启后需要重新输入。";
+  }
   $("#clear-taostats-key").disabled = !configured;
 }
 
@@ -203,7 +215,7 @@ async function loadOverview() {
       : "未采集";
     $("#metric-cursor").textContent = index.cursor_block ? number(index.cursor_block) : "未建立";
     if (!$("#seed").value && data.default_seed) $("#seed").value = data.default_seed;
-    showTaostatsKeyStatus(data.taostats_configured);
+    showTaostatsKeyStatus(data.taostats_configured, data.taostats_key_storage);
     const usage = data.api_usage || {};
     $("#usage-today").textContent = number(usage.today);
     $("#usage-month").textContent = number(usage.month);
@@ -260,8 +272,15 @@ async function saveTaostatsKey() {
       body: JSON.stringify({ api_key: apiKey }),
     });
     $("#taostats-api-key").value = "";
-    showTaostatsKeyStatus(data.configured);
-    toast("API key 已保存到当前服务内存。", false);
+    showTaostatsKeyStatus(data.configured, data.storage);
+    toast(
+      data.storage === "dpapi"
+        ? "API key 已保存（本机加密存储），重启服务后不用重填。"
+        : data.storage === "plain"
+          ? "API key 已保存到本机 data\\settings.json（明文），重启后不用重填。"
+          : "API key 已保存到当前服务内存，重启后需要重填。",
+      false
+    );
   } catch (error) {
     toast(`API key 保存失败：${error.message}`, true);
   } finally {
@@ -275,8 +294,8 @@ async function clearTaostatsKey() {
   try {
     const data = await api("/api/settings/taostats", { method: "DELETE" });
     $("#taostats-api-key").value = "";
-    showTaostatsKeyStatus(data.configured);
-    toast("当前服务中的 API key 已清除。", false);
+    showTaostatsKeyStatus(data.configured, data.storage);
+    toast("API key 已从本机清除，Taostats 查询需要重新填写。", false);
   } catch (error) {
     toast(`清除 API key 失败：${error.message}`, true);
     button.disabled = false;
@@ -308,10 +327,82 @@ function refreshRelatedTable() {
   $("#related").innerHTML = relatedTable(rows);
 }
 
+/* 0 个关联地址时，必须告诉用户"为什么是空表"，否则很容易被当成工具坏了。
+   最常见的两种：Taostats API key 没配（只回退了本地索引）、过滤/阈值把结果挡光。 */
+function emptyResultReason(data) {
+  if ((data.related || []).length) return null;
+  const warnings = [...(data.warnings || []), ...(data.limitations || [])].join(" ");
+  const keyMissing = /API key/i.test(warnings)
+    || (data.data_source === "taostats" && !data.api_requests && data.freshness === "LOCAL_FALLBACK");
+  const points = [];
+  if (keyMissing) {
+    points.push("当前服务没有可用的 Taostats API key，这次查询只读了本地索引。");
+  }
+  if (data.freshness === "LOCAL_FALLBACK") {
+    points.push(`本地索引里没有这个地址的转账记录（本地共 ${number(data.local_transfer_count || 0)} 条转账，覆盖区间有限）。`);
+  } else if (data.data_source === "local" && data.freshness === "EMPTY_INDEX") {
+    points.push("本地索引是空的：先在「更新链上索引」里扫描最新区块，或勾选「使用 Taostats 历史索引」再查。");
+  }
+  if (keyMissing || data.freshness === "LOCAL_FALLBACK") {
+    points.push("保存 API key（或取消勾选「使用 Taostats 历史索引」只查本地）后重新查询。");
+  } else if (data.data_source === "taostats" && !(data.taostats_transfer_count > 0)) {
+    points.push("Taostats 返回 0 条转账：这个地址在该数据源里没有可用的转账历史。");
+  }
+  const filtered = (data.exchange_addresses_filtered || 0) + (data.validator_addresses_filtered || 0);
+  if (filtered > 0) {
+    points.push(`过滤条件排除了 ${number(filtered)} 个地址（交易所/验证者），可以取消过滤再看一次。`);
+  }
+  const policy = data.policy || {};
+  if (Number(policy.min_edge_tao) > 0 || Number(policy.min_total_tao) > 0) {
+    points.push(`当前金额门槛是单边 ≥ ${policy.min_edge_tao} TAO、累计 ≥ ${policy.min_total_tao} TAO，低于门槛的转账不会出现在表里。`);
+  }
+  if (data.pagination_complete === false) {
+    points.push("历史分页没有读完整（额度或服务端窗口限制），可以稍后重查或调高查询轮数。");
+  }
+  if (!points.length) {
+    points.push("数据源里没有符合当前层级/方向/金额条件的转账记录。");
+  }
+  return { keyMissing, points };
+}
+
+function emptyResultSummary(data) {
+  const reason = emptyResultReason(data);
+  if (!reason) return "";
+  return reason.keyMissing ? "未配置 Taostats API key，只查了本地索引" : "数据源里没有符合条件的转账";
+}
+
+function focusTaostatsKey(message) {
+  toast(message, true);
+  const input = $("#taostats-api-key");
+  if (!input) return;
+  input.scrollIntoView({ behavior: "smooth", block: "center" });
+  input.focus();
+}
+
+function renderResultAlert(data) {
+  const box = $("#result-alert");
+  if (!box) return;
+  const reason = emptyResultReason(data);
+  if (!reason) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = `<div class="alert-title">本次查询没有得到关联地址</div><ul>${reason.points.map((text) => `<li>${esc(text)}</li>`).join("")}</ul>${reason.keyMissing ? '<div class="alert-actions"><button class="secondary" type="button" data-alert-action="key">去填写 Taostats API key</button></div>' : ""}`;
+  const action = box.querySelector("[data-alert-action='key']");
+  if (action) {
+    action.addEventListener("click", () => {
+      focusTaostatsKey("粘贴 Taostats API key 后点「保存 API key」，再重新查询。");
+    });
+  }
+}
+
 function renderResult(data) {
   state.lastResult = data;
   $("#empty").classList.add("hidden");
   $("#result").classList.remove("hidden");
+  renderResultAlert(data);
   const sourcesLabel = (data.data_sources_used || []).map(sourceLabel).join(" + ") || "无数据来源";
   const apiUsage = data.data_source === "taostats"
     ? ` · API 请求 ${data.api_requests}/${data.api_request_budget ?? "?"} 次（优先一级关联转账） · 返回转账 ${data.taostats_transfer_count} 条 · 缓存命中 ${data.api_cache_hits} 次`
@@ -444,7 +535,12 @@ async function runRelationJob(payload) {
       showJobProgress(null);
       renderResult(last.result);
       const libraryHitCount = (last.result.library_matches?.length || 0) + (last.result.seed_library_matches?.length || 0);
-      toast(`分轮查询完成：共 ${last.rounds_done} 轮、${last.requests_total} 次请求，${last.result.related.length} 个关联地址，${libraryHitCount} 个地址库命中。`);
+      const relatedCount = last.result.related.length;
+      if (!relatedCount) {
+        toast(`分轮查询完成（${last.rounds_done} 轮、${last.requests_total} 次请求），但没有关联地址：${emptyResultSummary(last.result)}。`, true);
+      } else {
+        toast(`分轮查询完成：共 ${last.rounds_done} 轮、${last.requests_total} 次请求，${relatedCount} 个关联地址，${libraryHitCount} 个地址库命中。`);
+      }
       return;
     }
     if (last.status === "cancelled") {
@@ -458,7 +554,7 @@ async function runRelationJob(payload) {
           remaining > 0
             ? `${summary}；仍有 ${last.pending_transfer} 个转账明细 / ${last.pending_stake} 个子网请求（共 ${remaining} 个）未查询。`
             : `${summary}；停止时待查队列已清空。`,
-          remaining > 0
+          remaining > 0 || !last.result.related.length
         );
       } else {
         toast("已停止续查。", true);
@@ -502,6 +598,10 @@ function scanPayload(seed) {
 async function runRelations() {
   const seed = $("#seed").value.trim();
   if (!seed) { toast("请先输入起始地址。", true); return; }
+  if ($("#taostats-source").checked && state.taostatsConfigured === false) {
+    focusTaostatsKey("还没保存 Taostats API key：先粘贴 key 并点「保存 API key」；或取消勾选「使用 Taostats 历史索引」只查本地索引。");
+    return;
+  }
   const button = $("#run-scan");
   button.disabled = true;
   button.textContent = "扫描中…";
@@ -523,9 +623,17 @@ async function runRelations() {
     }
     renderResult(data);
     const libraryHitCount = data.library_matches.length + (data.seed_library_matches || []).length;
-    toast(`查询完成：${data.related.length} 个关联地址，${libraryHitCount} 个地址库命中。${data.pagination_complete === false ? "部分历史尚未读取完，请查看提示。" : ""}`, data.pagination_complete === false);
+    if (!data.related.length) {
+      toast(`查询完成，但没有关联地址：${emptyResultSummary(data)}。原因见结果区顶部提示。`, true);
+    } else {
+      toast(`查询完成：${data.related.length} 个关联地址，${libraryHitCount} 个地址库命中。${data.pagination_complete === false ? "部分历史尚未读取完，请查看提示。" : ""}`, data.pagination_complete === false);
+    }
   } catch (error) {
-    toast(error.message, true);
+    if (/API key|Taostats/i.test(error.message || "")) {
+      focusTaostatsKey(error.message);
+    } else {
+      toast(error.message, true);
+    }
   } finally {
     activeJob = null;
     showJobProgress(null);

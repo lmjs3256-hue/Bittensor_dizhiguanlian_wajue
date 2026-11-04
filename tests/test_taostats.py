@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import app.service as service_module
 import app.taostats as taostats
 import app.main as main_module
+from app import settings_store
 from app.db import Database, Transfer
 from app.service import LinkService
 from app.taostats import (
@@ -657,6 +658,15 @@ def test_api_selects_data_source_and_preserves_local_default(monkeypatch):
                     "/api/relations",
                     json={"seed": seed, "depth": 1, "data_source": "taostats"},
                 )
+                # 未配置 key 时不再静默回退本地索引，而是明确拒绝。
+                assert remote_result.status_code == 400
+                assert "API key" in remote_result.json()["detail"]
+
+                taostats.configure_api_key("unit-test-key")
+                remote_result = client.post(
+                    "/api/relations",
+                    json={"seed": seed, "depth": 1, "data_source": "taostats"},
+                )
                 assert remote_result.status_code == 200
                 assert remote_result.json()["related"][0]["address"] == neighbor
 
@@ -669,7 +679,7 @@ def test_api_selects_data_source_and_preserves_local_default(monkeypatch):
             database.engine.dispose()
 
 
-def test_taostats_key_settings_are_memory_only_and_never_echoed(monkeypatch):
+def test_taostats_key_settings_persist_locally_and_never_echo(monkeypatch):
     monkeypatch.delenv("TAOSTATS_API_KEY", raising=False)
     calls = []
 
@@ -700,9 +710,15 @@ def test_taostats_key_settings_are_memory_only_and_never_echoed(monkeypatch):
                 key = "private-test-key"
                 saved = client.post("/api/settings/taostats", json={"api_key": key})
                 assert saved.status_code == 200
-                assert saved.json() == {"configured": True}
+                assert saved.json()["configured"] is True
+                assert saved.json()["storage"] in {"dpapi", "plain"}
                 assert key not in saved.text
                 assert client.get("/api/overview").json()["taostats_configured"] is True
+                # key 落盘，重启后能自动装回；磁盘上不应出现明文（DPAPI 可用时）。
+                saved_file = settings_store.settings_path()
+                assert saved_file.exists()
+                if saved.json()["storage"] == "dpapi":
+                    assert key not in saved_file.read_text(encoding="utf-8")
 
                 get_transfer_page(ADDRESSES[0])
                 assert calls[0]["headers"]["Authorization"] == key
@@ -716,7 +732,7 @@ def test_taostats_key_settings_are_memory_only_and_never_echoed(monkeypatch):
 
                 cleared = client.delete("/api/settings/taostats")
                 assert cleared.status_code == 200
-                assert cleared.json() == {"configured": False}
+                assert cleared.json()["configured"] is False
                 assert client.get("/api/overview").json()["taostats_configured"] is False
                 with pytest.raises(TaostatsAuthError, match="未配置"):
                     get_transfer_page(ADDRESSES[1])
