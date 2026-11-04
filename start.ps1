@@ -100,8 +100,14 @@ $process = Start-Process -FilePath $Python `
     -RedirectStandardError $ErrLog `
     -PassThru
 Set-Content -LiteralPath $PidFile -Value $process.Id -Encoding ascii
+# 端口一启动就记下来：即使等待超时，启动器也知道页面在哪个端口，不会打开错的地址。
+Set-Content -LiteralPath $PortFile -Value $Port -Encoding ascii
 
-$deadline = (Get-Date).AddSeconds(30)
+# 首次启动时 Windows Defender 会扫描 python.exe 和一堆依赖，30 秒经常不够，
+# 所以这里放宽到 90 秒，并每 10 秒提示一次，别让人以为卡死了。
+$timeout = 90
+$deadline = (Get-Date).AddSeconds($timeout)
+$nextNotice = 10
 while ((Get-Date) -lt $deadline) {
     try {
         $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
@@ -109,7 +115,6 @@ while ((Get-Date) -lt $deadline) {
             $readyRoot = ''
             if ($null -ne $health.root) { $readyRoot = ([string]$health.root).TrimEnd('\') }
             if ($readyRoot -eq '' -or $readyRoot -ieq $Root.TrimEnd('\')) {
-                Set-Content -LiteralPath $PortFile -Value $Port -Encoding ascii
                 "Ready: http://127.0.0.1:$Port"
                 exit 0
             }
@@ -117,5 +122,11 @@ while ((Get-Date) -lt $deadline) {
     } catch {
         Start-Sleep -Milliseconds 500
     }
+
+    $elapsed = [int]($timeout - ($deadline - (Get-Date)).TotalSeconds)
+    if ($elapsed -ge $nextNotice) {
+        Write-Host "还在启动…已等 $elapsed 秒（首次启动要初始化，最长等 $timeout 秒）"
+        $nextNotice += 10
+    }
 }
-throw "服务没有在 30 秒内就绪。请检查是否已有其他程序占用端口 $Port，或查看日志：$ErrLog"
+throw "服务没有在 $timeout 秒内就绪。请检查是否已有其他程序占用端口 $Port，或查看日志：$ErrLog"
