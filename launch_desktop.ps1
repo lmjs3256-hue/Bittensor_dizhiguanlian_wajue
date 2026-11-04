@@ -15,4 +15,14 @@ if (-not (Test-Path -LiteralPath $Python)) {
 }
 
 & (Join-Path $Root "start.ps1") -Port $Port
+
+# 同一台电脑上有多份副本时，start.ps1 会自动换用空闲端口，实际端口写在这里。
+$PortFile = Join-Path $Root 'logs\wallet-link.port'
+if (Test-Path -LiteralPath $PortFile) {
+    $raw = (Get-Content -LiteralPath $PortFile -Raw -ErrorAction SilentlyContinue)
+    $actual = 0
+    if ($null -ne $raw -and [int]::TryParse($raw.Trim(), [ref]$actual) -and $actual -gt 0) {
+        $Port = $actual
+    }
+}
 Start-Process "http://127.0.0.1:$Port"

@@ -7,8 +7,8 @@ from app.version_info import read_version_info
 def test_version_info_reads_current_version_and_release_notes():
     info = read_version_info()
 
-    assert info["version"] == "0.6.1"
-    assert info["entries"][0]["version"] == "0.6.1"
+    assert info["version"] == "0.6.2"
+    assert info["entries"][0]["version"] == "0.6.2"
     assert any("授权" in change or "机器码" in change for change in info["entries"][0]["changes"])
 
 
@@ -18,5 +18,16 @@ def test_version_endpoint_exposes_current_version_and_release_notes():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "0.6.1"
-    assert payload["entries"][0]["title"] == "双击签发授权"
+    assert payload["version"] == "0.6.2"
+    assert payload["entries"][0]["title"] == "同机多副本自动换端口"
+
+
+def test_health_reports_service_root_and_pid():
+    """启动脚本靠 root/pid 区分“本目录的服务”和“另一个副本”。"""
+
+    with TestClient(main_module.app) as client:
+        payload = client.get("/api/health").json()
+
+    assert payload["ok"] is True
+    assert payload["root"].endswith(main_module.ROOT_DIR.name)
+    assert isinstance(payload["pid"], int) and payload["pid"] > 0

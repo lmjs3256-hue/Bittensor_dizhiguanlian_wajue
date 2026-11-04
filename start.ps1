@@ -9,7 +9,22 @@ $LogDir = Join-Path $Root 'logs'
 $OutLog = Join-Path $LogDir 'wallet-link.stdout.log'
 $ErrLog = Join-Path $LogDir 'wallet-link.stderr.log'
 $PidFile = Join-Path $LogDir 'wallet-link.pid'
+$PortFile = Join-Path $LogDir 'wallet-link.port'
 $HealthUrl = "http://127.0.0.1:$Port/api/health"
+
+function Test-PortFree {
+    param([int]$Candidate)
+    $listener = $null
+    try {
+        $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Candidate)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $listener) { $listener.Stop() }
+    }
+}
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 if (-not (Test-Path -LiteralPath $Python)) {
@@ -25,14 +40,44 @@ if (-not (Test-Path -LiteralPath $Python)) {
     }
 }
 
+$portOwner = $null
+$serviceHere = $false
 try {
     $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
     if ($health.service -eq 'bittensor-wallet-link-intel') {
-        "Service is already running at http://127.0.0.1:$Port"
-        exit 0
+        $serviceHere = $true
+        $runningRoot = ''
+        if ($null -ne $health.root) { $runningRoot = ([string]$health.root).TrimEnd('\') }
+        if ($runningRoot -ieq $Root.TrimEnd('\')) {
+            "Service is already running at http://127.0.0.1:$Port"
+            exit 0
+        }
+        if ($runningRoot) { $portOwner = $runningRoot } else { $portOwner = '另一个副本（旧版本，没有目录信息）' }
     }
 } catch {
     # Not running yet.
+}
+
+if (-not $serviceHere -and -not (Test-PortFree $Port)) {
+    $portOwner = '其他程序'
+}
+
+if ($portOwner) {
+    # 同一台电脑复制了第二份（比如拷到 D 盘做测试）时，端口会被原副本占着。
+    # 与其报错让人去查，不如自动换一个空闲端口启动，把实际端口写进 logs\wallet-link.port，
+    # 由 launch_desktop.ps1 据此打开正确的页面。
+    $fallback = 0
+    foreach ($candidate in (($Port + 1)..($Port + 10))) {
+        if (Test-PortFree $candidate) { $fallback = $candidate; break }
+    }
+    if (-not $fallback) {
+        throw ("端口 $Port 已被 $portOwner 占用，$($Port + 1)-$($Port + 10) 也都被占用。" +
+            "请先双击各自文件夹里的 停止.cmd 关掉不用的副本，再启动本目录。")
+    }
+    Write-Host "提示：端口 $Port 已被 $portOwner 占用。"
+    Write-Host "      本副本改用端口 $fallback 启动（数据独立，不影响原副本）。"
+    $Port = $fallback
+    $HealthUrl = "http://127.0.0.1:$Port/api/health"
 }
 
 # PowerShell 5.1 cannot enumerate the environment (and Start-Process fails)
@@ -61,8 +106,13 @@ while ((Get-Date) -lt $deadline) {
     try {
         $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
         if ($health.service -eq 'bittensor-wallet-link-intel') {
-            "Ready: http://127.0.0.1:$Port"
-            exit 0
+            $readyRoot = ''
+            if ($null -ne $health.root) { $readyRoot = ([string]$health.root).TrimEnd('\') }
+            if ($readyRoot -eq '' -or $readyRoot -ieq $Root.TrimEnd('\')) {
+                Set-Content -LiteralPath $PortFile -Value $Port -Encoding ascii
+                "Ready: http://127.0.0.1:$Port"
+                exit 0
+            }
         }
     } catch {
         Start-Sleep -Milliseconds 500

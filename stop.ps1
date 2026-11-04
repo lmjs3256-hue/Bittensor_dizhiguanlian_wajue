@@ -1,10 +1,22 @@
 ﻿param(
-    [int]$Port = 8766
+    [int]$Port = 0
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PidFile = Join-Path $Root 'logs\wallet-link.pid'
+$PortFile = Join-Path $Root 'logs\wallet-link.port'
+
+# 同一台电脑可能有多份副本、各用不同端口：不指定端口时先看本目录最后一次实际使用的端口，
+# 避免 pid 文件丢失时按 8766 把“原副本”停掉。
+if ($Port -le 0 -and (Test-Path -LiteralPath $PortFile)) {
+    $rawPort = (Get-Content -LiteralPath $PortFile -Raw -ErrorAction SilentlyContinue)
+    $parsedPort = 0
+    if ($null -ne $rawPort -and [int]::TryParse($rawPort.Trim(), [ref]$parsedPort) -and $parsedPort -gt 0) {
+        $Port = $parsedPort
+    }
+}
+if ($Port -le 0) { $Port = 8766 }
 
 function Stop-ByPidFile {
     if (-not (Test-Path -LiteralPath $PidFile)) { return $false }

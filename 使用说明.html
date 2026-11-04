@@ -319,14 +319,26 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <ul>
 <li>双击桌面上的 <strong>“Bittensor 地址关联挖掘”</strong> 快捷方式（推荐）</li>
 <li>双击文件夹里的 <strong><code>启动.cmd</code></strong></li>
-<li>需要换端口时，在本文件夹的 PowerShell 里执行 <code>.\start.ps1 -Port 8777</code></li>
+<li>需要换端口时，在本文件夹的 PowerShell 里执行 <code>.\start.ps1 -Port 8777</code>（也可以 <code>启动.cmd 8777</code>）</li>
 </ul>
-<p>启动成功后浏览器会自动打开 <a href="http://127.0.0.1:8766">http://127.0.0.1:8766</a>。</p>
+<p>启动成功后浏览器会自动打开 <a href="http://127.0.0.1:8766">http://127.0.0.1:8766</a>。如果 8766 已被同一台电脑上的另一份副本占用，脚本会自动改用 8767 之类的空闲端口启动，并在窗口里提示实际端口。</p>
 <blockquote>
 <p>服务在后台运行，关掉浏览器页面不影响；想再打开页面，直接访问上面的地址即可，不用重新启动。</p>
 </blockquote>
 <h3 id="关闭">关闭</h3>
 <p>双击 <strong><code>停止.cmd</code></strong>。电脑重启后服务不会自动启动，需要再次双击快捷方式。</p>
+<h3 id="在同一台电脑上复制一份做测试换个磁盘或目录">在同一台电脑上复制一份做测试（换个磁盘或目录）</h3>
+<p>可以，而且<strong>不用重新安装、也不用重新激活</strong>：</p>
+<ol>
+<li>把<strong>整个文件夹</strong>复制到别的磁盘或别的目录（例如 <code>D:\wallet_link_test</code>），<code>data\</code>、<code>license.key</code>、<code>.venv\</code> 一起拷过去；</li>
+<li>双击副本里的 <code>启动.cmd</code>；</li>
+<li>如果原副本正占着 8766，窗口会提示“端口 8766 已被 … 占用，本副本改用 8767”，然后用新端口启动并自动打开对应页面 —— 不会串到原副本的页面。</li>
+</ol>
+<p>为什么不用重新激活：机器码只由 Windows 系统本身派生，<strong>跟文件夹在哪个磁盘、叫什么名字无关</strong>。同一台电脑上机器码不会变，所以拷过去的 <code>license.key</code> 照样有效。只有<strong>换电脑或重装系统</strong>才会变，那时才需要找管理员重签。</p>
+<p>两个副本的数据是<strong>各自独立的两套</strong>：副本里查的记录、建的地址库都写在副本自己的 <code>data\wallet_link.db</code> 里，不会同步回原目录。测完把副本文件夹直接删掉即可，不用卸载，也不影响原目录。</p>
+<blockquote>
+<p>判断自己开的是哪一份，看地址栏端口就行（8766 是原来那份，8767 是副本）；两边右下角水印相同是正常的——同一台电脑、同一个授权。</p>
+</blockquote>
 <h3 id="如果页面打不开">如果页面打不开</h3>
 <ol>
 <li>看右下角：启动窗口是否报错？</li>
@@ -611,6 +623,10 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <p>本地索引的好处是不消耗 API 额度；缺点是<strong>只包含你实际扫过的区块</strong>。公开节点会裁剪历史状态，所以不能指望靠它拿到全链历史。日常查关联建议直接用 Taostats 数据源。</p>
 <hr />
 <h2 id="十拷贝到另一台电脑">十、拷贝到另一台电脑</h2>
+<blockquote>
+<p>只是<strong>同一台电脑</strong>换个磁盘/目录再装一份做测试？不用看这节，按 <a href="#四启动与关闭">四、启动</a> 里“在同一台电脑上复制一份做测试”操作即可，不需要重装也不需要重签授权。</p>
+<p>下面说的是<strong>换电脑</strong>：目标电脑上没有这套运行环境，所以要重新安装，而且机器码会变、需要重新激活。</p>
+</blockquote>
 <p>这个文件夹是可以整体搬走的，但<strong>运行环境不能直接搬</strong>。正确做法：</p>
 <ol>
 <li>在旧电脑双击 <code>停止.cmd</code> 关闭服务；</li>

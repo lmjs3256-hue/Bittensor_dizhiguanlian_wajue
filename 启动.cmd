@@ -2,6 +2,9 @@
 chcp 65001 >nul
 title Bittensor 地址关联挖掘
 cd /d "%~dp0"
+rem 可选参数：第一个参数是端口，例如：启动.cmd 8767；不填默认 8766。
+set "WL_PORT=%~1"
+if "%WL_PORT%"=="" set "WL_PORT=8766"
 if not exist "%~dp0.venv\Scripts\python.exe" (
   echo.
   echo [!] 还没有安装运行环境。
@@ -10,7 +13,7 @@ if not exist "%~dp0.venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch_desktop.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch_desktop.ps1" -Port %WL_PORT%
 if errorlevel 1 (
   echo.
   echo [!] 启动失败。可以双击 停止.cmd 清理后重试，

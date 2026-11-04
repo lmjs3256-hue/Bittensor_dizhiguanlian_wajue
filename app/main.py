@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -14,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import license as license_mod
-from .config import database_path, settings
+from .config import ROOT_DIR, database_path, settings
 from .db import Database
 from .inputs import InputError
 from .jobs import RelationJobManager
@@ -218,6 +219,10 @@ def health(svc: Annotated[LinkService, Depends(service)]):
         "rpc_url": svc.rpc_url,
         "licensed": status["licensed"],
         "team": status["team"],
+        # pid/root 用来区分“同一个服务”还是“另一个副本占着同一个端口”：
+        # 把整个文件夹拷到别的磁盘再启动时，端口若被原副本占用，启动脚本据此提示换端口。
+        "pid": os.getpid(),
+        "root": str(ROOT_DIR),
     }
 
 
