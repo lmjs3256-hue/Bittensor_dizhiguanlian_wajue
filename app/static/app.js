@@ -10,6 +10,7 @@ const state = {
   depthFilter: "all",
   taostatsConfigured: null,
   taostatsKeyStorage: "",
+  apiKeyBodyOpen: false,
   history: { offset: 0, total: 0, items: [] },
 };
 
@@ -75,6 +76,12 @@ function freshnessLabel(value, data) {
   })[value] || value;
 }
 
+function setApiKeyBody(open) {
+  $("#api-key-body").classList.toggle("hidden", !open);
+  $("#toggle-api-key").textContent = open ? "收起" : "填写 / 修改";
+  state.apiKeyBodyOpen = open;
+}
+
 function showTaostatsKeyStatus(configured, storage) {
   const status = $("#taostats-status");
   const detail = $("#taostats-key-status");
@@ -83,6 +90,7 @@ function showTaostatsKeyStatus(configured, storage) {
     detail.textContent = "设置 API key 前请先更新并重启服务。";
     $("#clear-taostats-key").disabled = true;
     state.taostatsConfigured = null;
+    setApiKeyBody(true);
     return;
   }
   state.taostatsConfigured = configured;
@@ -99,6 +107,7 @@ function showTaostatsKeyStatus(configured, storage) {
     detail.textContent = "key 只存在当前进程内存：服务重启后需要重新输入。";
   }
   $("#clear-taostats-key").disabled = !configured;
+  setApiKeyBody(!configured);
 }
 
 function toast(message, error = false) {
@@ -273,12 +282,13 @@ async function saveTaostatsKey() {
     });
     $("#taostats-api-key").value = "";
     showTaostatsKeyStatus(data.configured, data.storage);
+    setApiKeyBody(false);
     toast(
       data.storage === "dpapi"
-        ? "API key 已保存（本机加密存储），重启服务后不用重填。"
+        ? "API key 已保存（本机加密存储），重启服务后不用重填。设置已折叠，点「填写 / 修改」可再次展开。"
         : data.storage === "plain"
-          ? "API key 已保存到本机 data\\settings.json（明文），重启后不用重填。"
-          : "API key 已保存到当前服务内存，重启后需要重填。",
+          ? "API key 已保存到本机 data\\settings.json（明文），重启后不用重填。设置已折叠，点「填写 / 修改」可再次展开。"
+          : "API key 已保存到当前服务内存，重启后需要重填。设置已折叠，点「填写 / 修改」可再次展开。",
       false
     );
   } catch (error) {
@@ -295,6 +305,7 @@ async function clearTaostatsKey() {
     const data = await api("/api/settings/taostats", { method: "DELETE" });
     $("#taostats-api-key").value = "";
     showTaostatsKeyStatus(data.configured, data.storage);
+    setApiKeyBody(true);
     toast("API key 已从本机清除，Taostats 查询需要重新填写。", false);
   } catch (error) {
     toast(`清除 API key 失败：${error.message}`, true);
@@ -1466,6 +1477,7 @@ setTheme(savedTheme, false);
 $("#theme-select").addEventListener("change", (event) => setTheme(event.target.value));
 $("#save-taostats-key").addEventListener("click", saveTaostatsKey);
 $("#clear-taostats-key").addEventListener("click", clearTaostatsKey);
+$("#toggle-api-key").addEventListener("click", () => setApiKeyBody(!state.apiKeyBodyOpen));
 $("#taostats-api-key").addEventListener("keydown", (event) => {
   if (event.key === "Enter") saveTaostatsKey();
 });
