@@ -31,3 +31,4 @@ license.key
 
 # 外发包（由 tools/make_release.py 生成，不进仓库）
 *.zip
+.pytest_tmp*/
