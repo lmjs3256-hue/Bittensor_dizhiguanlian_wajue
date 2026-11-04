@@ -640,9 +640,12 @@ def export_relation_history(
     archive_id: int,
     svc: Annotated[LinkService, Depends(service)],
     format: str = Query(default="txt", pattern="^(txt|json)$"),
+    depth: int | None = Query(default=None, ge=1, le=3),
 ):
     try:
-        content, media_type, filename = svc.export_relation_history(archive_id, format)
+        content, media_type, filename = svc.export_relation_history(
+            archive_id, format, depth=depth
+        )
     except InputError as exc:
         raise HTTPException(404, str(exc)) from exc
     return Response(

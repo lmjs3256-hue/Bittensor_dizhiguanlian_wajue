@@ -322,3 +322,84 @@ def test_archives_are_trimmed_to_retention_limit(monkeypatch):
             assert remaining == [ids[2], ids[1]]
         finally:
             database.engine.dispose()
+
+
+def test_select_exportable_addresses_filters_by_depth():
+    rows = [
+        {"address": "addr-1", "depth": 1},
+        {"address": "addr-2", "depth": 2},
+        {"address": "addr-3", "depth": 2, "library_category": "VALIDATOR"},
+        {"address": "addr-4", "depth": 3},
+    ]
+
+    all_rows = select_exportable_addresses(rows)
+    assert all_rows["addresses"] == ["addr-1", "addr-2", "addr-4"]
+    assert all_rows["skipped_other_depth"] == 0
+
+    depth1 = select_exportable_addresses(rows, depth=1)
+    assert depth1["addresses"] == ["addr-1"]
+    assert depth1["skipped_other_depth"] == 3
+
+    depth2 = select_exportable_addresses(rows, depth=2)
+    # 层级过滤和交易所/验证者剔除同时生效。
+    assert depth2["addresses"] == ["addr-2"]
+    assert depth2["skipped_validator"] == 1
+    assert depth2["skipped_other_depth"] == 2
+
+    depth3 = select_exportable_addresses(rows, depth=3)
+    assert depth3["addresses"] == ["addr-4"]
+
+
+def test_history_export_supports_depth_filter(monkeypatch):
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "depth.db")
+        database.initialize()
+        service = LinkService(database, "wss://example.invalid")
+        result = sample_result()
+        result["related"] = [
+            {**result["related"][0], "depth": 1},  # 已确认交易所：任何层级都不导出
+            {**result["related"][1], "depth": 1},  # 验证者：任何层级都不导出
+            {**result["related"][2], "depth": 2},
+        ]
+        archive_id = service.archive_relation(
+            result, kind="single", status="complete"
+        )
+        monkeypatch.setattr(main_module, "DATABASE", database)
+        monkeypatch.setattr(main_module, "SERVICE", service)
+        monkeypatch.setattr(main_module, "JOBS", RelationJobManager())
+        try:
+            with TestClient(main_module.app) as client:
+                full = client.get(
+                    f"/api/relations/history/{archive_id}/export?format=txt"
+                )
+                assert full.status_code == 200
+                assert NEIGHBORS[2] in full.text
+                assert "-d" not in full.headers["content-disposition"].split("filename=")[1]
+
+                depth2 = client.get(
+                    f"/api/relations/history/{archive_id}/export?format=txt&depth=2"
+                )
+                assert depth2.status_code == 200
+                assert NEIGHBORS[2] in depth2.text
+                assert "d2" in depth2.headers["content-disposition"]
+
+                # 1 级只剩被剔除的交易所/验证者：导出为空但不报错。
+                depth1 = client.get(
+                    f"/api/relations/history/{archive_id}/export?format=txt&depth=1"
+                )
+                assert depth1.status_code == 200
+                assert NEIGHBORS[2] not in depth1.text
+
+                depth_json = client.get(
+                    f"/api/relations/history/{archive_id}/export?format=json&depth=2"
+                )
+                assert depth_json.status_code == 200
+                payload = depth_json.json()
+                assert [item["address"] for item in payload["related"]] == [NEIGHBORS[2]]
+
+                out_of_range = client.get(
+                    f"/api/relations/history/{archive_id}/export?format=txt&depth=9"
+                )
+                assert out_of_range.status_code == 422
+        finally:
+            database.engine.dispose()

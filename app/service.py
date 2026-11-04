@@ -179,18 +179,31 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
     }
 
 
-def select_exportable_addresses(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def select_exportable_addresses(
+    rows: list[dict[str, Any]], *, depth: int | None = None
+) -> dict[str, Any]:
     """从关联结果挑出可导出的地址。
 
     已人工确认的交易所地址和验证者地址不导出，避免把公共地址当成待跟进
     钱包继续扩散；疑似交易所（待确认）保留，方便人工核查。
+    ``depth`` 为 1/2/3 时只保留该层级的关联地址（与结果页“层级筛选”口径
+    一致，按地址首次被发现的层级算）；None 表示全部层级。
     """
 
     keep: list[str] = []
     seen: set[str] = set()
     skipped_exchange = 0
     skipped_validator = 0
+    skipped_other_depth = 0
     for row in rows or []:
+        if depth is not None:
+            try:
+                row_depth = int(row.get("depth") or 0)
+            except (TypeError, ValueError):
+                row_depth = 0
+            if row_depth != int(depth):
+                skipped_other_depth += 1
+                continue
         category = str(row.get("library_category") or "").upper()
         if (
             category == "EXCHANGE"
@@ -211,6 +224,7 @@ def select_exportable_addresses(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "addresses": keep,
         "skipped_exchange": skipped_exchange,
         "skipped_validator": skipped_validator,
+        "skipped_other_depth": skipped_other_depth,
     }
 
 
@@ -1085,24 +1099,51 @@ class LinkService:
             )
 
     def export_relation_history(
-        self, archive_id: int, file_format: str = "txt"
+        self,
+        archive_id: int,
+        file_format: str = "txt",
+        *,
+        depth: int | None = None,
     ) -> tuple[str, str, str]:
-        """导出历史记录的关联地址（TXT）或完整结果（JSON）。"""
+        """导出历史记录的关联地址（TXT）或完整结果（JSON）。
+
+        ``depth`` 为 1/2/3 时只导出该层级的关联地址；None 导出全部。
+        """
 
         if file_format not in {"txt", "json"}:
             raise InputError("导出格式只能是 txt 或 json")
+        if depth is not None and depth not in (1, 2, 3):
+            raise InputError("导出层级只能是 1、2、3 或全部")
         row = self._load_archive(archive_id)
+        depth_tag = f"-d{depth}" if depth else ""
         if file_format == "json":
+            if depth is None:
+                return (
+                    (row.payload or "{}") + "\n",
+                    "application/json; charset=utf-8",
+                    f"bittensor-link-archive-{archive_id}.json",
+                )
+            try:
+                payload = json.loads(row.payload) if row.payload else {}
+            except ValueError as exc:
+                raise InputError("历史记录内容已损坏，无法导出地址") from exc
+            payload["related"] = [
+                item
+                for item in payload.get("related") or []
+                if str(item.get("depth") or "") == str(depth)
+            ]
             return (
-                (row.payload or "{}") + "\n",
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                 "application/json; charset=utf-8",
-                f"bittensor-link-archive-{archive_id}.json",
+                f"bittensor-link-archive-{archive_id}{depth_tag}.json",
             )
         try:
             payload = json.loads(row.payload) if row.payload else {}
         except ValueError as exc:
             raise InputError("历史记录内容已损坏，无法导出地址") from exc
-        selection = select_exportable_addresses(payload.get("related") or [])
+        selection = select_exportable_addresses(
+            payload.get("related") or [], depth=depth
+        )
         date = (row.finished_at or row.created_at).strftime("%Y%m%d")
         licensed_to = license_mod.watermark()
         header = f"# Wallet Link · 授权给 {licensed_to}\n" if licensed_to else ""
@@ -1111,7 +1152,7 @@ class LinkService:
             + "\n".join(selection["addresses"])
             + ("\n" if selection["addresses"] else ""),
             "text/plain; charset=utf-8",
-            f"bittensor-addresses-{row.seed[:8]}-{date}.txt",
+            f"bittensor-addresses-{row.seed[:8]}{depth_tag}-{date}.txt",
         )
 
     # -- 关联地址同步进地址库 ---------------------------------------------

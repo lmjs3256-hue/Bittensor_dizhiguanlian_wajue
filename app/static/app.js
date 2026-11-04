@@ -1273,7 +1273,10 @@ async function viewHistoryRecord(id) {
 
 async function exportHistoryRecord(id, format) {
   try {
-    const response = await fetch(`/api/relations/history/${id}/export?format=${encodeURIComponent(format)}`);
+    const depthSelect = $("#history-export-depth");
+    const depth = depthSelect && depthSelect.value !== "all" ? depthSelect.value : "";
+    const depthQuery = depth ? `&depth=${encodeURIComponent(depth)}` : "";
+    const response = await fetch(`/api/relations/history/${id}/export?format=${encodeURIComponent(format)}${depthQuery}`);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
       throw new Error(body.detail || `导出失败 (${response.status})`);
@@ -1289,7 +1292,9 @@ async function exportHistoryRecord(id, format) {
     link.click();
     link.remove();
     URL.revokeObjectURL(link.href);
-    toast(`历史记录 #${id} 已导出为 ${format.toUpperCase()}。`);
+    toast(depth
+      ? `历史记录 #${id} 的 ${depth} 级关联地址已导出为 ${format.toUpperCase()}。`
+      : `历史记录 #${id} 已导出为 ${format.toUpperCase()}（全部层级）。`);
   } catch (error) {
     toast(`历史记录导出失败：${error.message}`, true);
   }
@@ -1564,8 +1569,26 @@ $("#delete-selected").addEventListener("click", async () => {
     toast(`已批量删除 ${result.deleted} 条记录。`);
   } catch (error) { toast(error.message, true); }
 });
+// 导出层级："all" 或 "1"/"2"/"3"（与结果表“层级筛选”口径一致，按地址首次被发现的层级算）。
+function exportDepth() {
+  const value = $("#export-depth") ? $("#export-depth").value : "all";
+  return value === "all" ? null : Number(value);
+}
+
+function depthTag(depth) {
+  return depth ? `-d${depth}` : "";
+}
+
 $("#export-json").addEventListener("click", () => {
   if (!state.lastResult) { toast("先完成一次关联扫描。", true); return; }
+  const depth = exportDepth();
+  const rows = (state.lastResult.related || []).filter(
+    (row) => depth === null || String(row.depth) === String(depth)
+  );
+  if (depth !== null && !rows.length) {
+    toast(`没有 ${depth} 级关联地址可导出；可把导出层级改回「全部层级」。`, true);
+    return;
+  }
   const exportData = {
     seed: state.lastResult.seed,
     max_depth: state.lastResult.max_depth,
@@ -1574,7 +1597,8 @@ $("#export-json").addEventListener("click", () => {
     data_cutoff_block: state.lastResult.data_cutoff_block,
     seed_balance_tao: state.lastResult.seed_balance_tao,
     policy: state.lastResult.policy,
-    related: (state.lastResult.related || []).map((row) => ({
+    export_depth: depth === null ? "all" : depth,
+    related: rows.map((row) => ({
       address: row.address,
       depth: row.depth,
       incoming_tao: row.incoming_tao,
@@ -1592,9 +1616,12 @@ $("#export-json").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `bittensor-link-${Date.now()}.json`;
+  link.download = `bittensor-link-${String(state.lastResult.seed || "").slice(0, 8)}${depthTag(depth)}-${Date.now()}.json`;
   link.click();
   URL.revokeObjectURL(link.href);
+  toast(depth === null
+    ? "已导出全部层级关联地址 JSON。"
+    : `已导出 ${rows.length} 个 ${depth} 级关联地址 JSON。`);
 });
 // 纯函数：从关联结果里挑出可导出的地址。地址库中已确认的交易所地址和
 // 验证者地址不导出，避免把公共地址当成待跟进钱包继续扩散。
@@ -1622,18 +1649,24 @@ function selectExportableAddresses(rows) {
 
 $("#export-addresses").addEventListener("click", () => {
   if (!state.lastResult) { toast("先完成一次关联扫描。", true); return; }
-  const { addresses, skippedExchange, skippedValidator } = selectExportableAddresses(state.lastResult.related);
+  const depth = exportDepth();
+  const rows = (state.lastResult.related || []).filter(
+    (row) => depth === null || String(row.depth) === String(depth)
+  );
+  const { addresses, skippedExchange, skippedValidator } = selectExportableAddresses(rows);
   if (!addresses.length) {
-    toast(`没有可导出的地址（已排除 ${skippedExchange} 个交易所、${skippedValidator} 个验证者）。`, true);
+    const depthNote = depth === null ? "" : `（${depth} 级关联里）`;
+    toast(`没有可导出的地址${depthNote}；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个。可把导出层级改回「全部层级」。`, true);
     return;
   }
   const blob = new Blob([addresses.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `bittensor-addresses-${String(state.lastResult.seed || "").slice(0, 8)}-${Date.now()}.txt`;
+  link.download = `bittensor-addresses-${String(state.lastResult.seed || "").slice(0, 8)}${depthTag(depth)}-${Date.now()}.txt`;
   link.click();
   URL.revokeObjectURL(link.href);
-  toast(`已导出 ${addresses.length} 个地址（每行一个）；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个。`);
+  const depthText = depth === null ? "全部层级" : `${depth} 级关联`;
+  toast(`已导出 ${depthText} ${addresses.length} 个地址（每行一个）；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个。`);
 });
 $("#seed").addEventListener("keydown", (event) => { if (event.key === "Enter") runRelations(); });
 $("#license-activate").addEventListener("click", activateLicense);
