@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from sqlalchemy import func, select
 
@@ -1462,6 +1462,7 @@ class LinkService:
         data_source: str = "local",
         filter_exchanges: bool = False,
         filter_validators: bool = False,
+        removed_addresses: Iterable[str] = (),
     ) -> RelationContext:
         """收集一次查询中不随轮次变化的部分：地址库、本地索引、过滤名单。"""
 
@@ -1547,6 +1548,13 @@ class LinkService:
         if filter_validators:
             excluded_addresses.update(manual_validator_addresses)
             excluded_addresses.update(auto_validator_addresses)
+        # 手动「移除关联」：地址既不进结果，也不再作为中转——它那条线索的
+        # 下游地址在重查时一并消失。
+        removed_addresses = {
+            value.strip()
+            for value in removed_addresses
+            if value.strip() and is_valid_ss58(value.strip()) and value.strip() != seed
+        }
         if filter_exchanges and exchange_addresses:
             warnings.append(f"已启用交易所过滤，跳过 {len(exchange_addresses)} 个已人工确认地址。")
         if noted_exchange_addresses and not filter_exchanges:
@@ -1563,6 +1571,11 @@ class LinkService:
                 "已启用验证者过滤，跳过 "
                 f"{len(manual_validator_addresses | auto_validator_addresses)} 个已识别地址"
                 f"（手工 {len(manual_validator_addresses)}，自动 {len(auto_validator_addresses)}）。"
+            )
+        if removed_addresses:
+            excluded_addresses.update(removed_addresses)
+            warnings.append(
+                f"已手动移除 {len(removed_addresses)} 个关联地址；刷新后这些地址及其线索的下游地址都不会出现。"
             )
         return RelationContext(
             seed=seed,
@@ -1636,6 +1649,7 @@ class LinkService:
         data_source: str = "local",
         filter_exchanges: bool = False,
         filter_validators: bool = False,
+        removed_addresses: Iterable[str] = (),
     ) -> dict[str, Any]:
         """单轮查询：只花掉一次请求预算，返回当前已取得的结果。"""
 
@@ -1649,6 +1663,7 @@ class LinkService:
             data_source=data_source,
             filter_exchanges=filter_exchanges,
             filter_validators=filter_validators,
+            removed_addresses=removed_addresses,
         )
         crawl = None
         if data_source == "taostats" and seed not in context.excluded_addresses:

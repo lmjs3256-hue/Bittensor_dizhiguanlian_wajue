@@ -104,6 +104,7 @@ class RelationJobManager:
         include_outgoing: bool = True,
         filter_exchanges: bool = False,
         filter_validators: bool = False,
+        removed_addresses: list[str] | None = None,
         round_interval: int | None = None,
         max_rounds: int | None = None,
     ) -> RelationJob:
@@ -117,6 +118,7 @@ class RelationJobManager:
             data_source="taostats",
             filter_exchanges=filter_exchanges,
             filter_validators=filter_validators,
+            removed_addresses=removed_addresses or (),
         )
         job = RelationJob(
             id=uuid.uuid4().hex[:12],
@@ -132,6 +134,7 @@ class RelationJobManager:
                 "include_outgoing": include_outgoing,
                 "filter_exchanges": filter_exchanges,
                 "filter_validators": filter_validators,
+                "removed_addresses": sorted(set(removed_addresses or ())),
             },
             created_at=time.time(),
             round_interval=float(round_interval or self.round_interval),

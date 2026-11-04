@@ -168,6 +168,8 @@ class RelationInput(BaseModel):
     data_source: str = Field(default="local", pattern="^(local|taostats)$")
     filter_exchanges: bool = False
     filter_validators: bool = False
+    # 手动「移除关联」的地址：不进结果，也不再作为中转跳点（其线索整体剪除）。
+    removed_addresses: list[str] = Field(default_factory=list, max_length=100)
 
 
 class RelationJobInput(BaseModel):
@@ -179,6 +181,7 @@ class RelationJobInput(BaseModel):
     include_outgoing: bool = True
     filter_exchanges: bool = False
     filter_validators: bool = False
+    removed_addresses: list[str] = Field(default_factory=list, max_length=100)
     round_interval_seconds: int | None = Field(default=None, ge=10, le=600)
     max_rounds: int | None = Field(default=None, ge=1, le=100)
 
@@ -564,6 +567,7 @@ def relations(payload: RelationInput, svc: Annotated[LinkService, Depends(servic
             data_source=payload.data_source,
             filter_exchanges=payload.filter_exchanges,
             filter_validators=payload.filter_validators,
+            removed_addresses=[value.strip() for value in payload.removed_addresses if value.strip()],
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -590,6 +594,7 @@ def start_relation_job(
             include_outgoing=payload.include_outgoing,
             filter_exchanges=payload.filter_exchanges,
             filter_validators=payload.filter_validators,
+            removed_addresses=[value.strip() for value in payload.removed_addresses if value.strip()],
             round_interval=payload.round_interval_seconds,
             max_rounds=payload.max_rounds,
         )

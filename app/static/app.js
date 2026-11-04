@@ -11,6 +11,9 @@ const state = {
   taostatsConfigured: null,
   taostatsKeyStorage: "",
   apiKeyBodyOpen: false,
+  // 手动「移除关联」的地址：本次会话内刷新重查时作为 removed_addresses 传给后端，
+  // 这些地址及其线索的下游都不会再出现。新查询（非刷新）会清空。
+  removedAddresses: new Set(),
   history: { offset: 0, total: 0, items: [] },
 };
 
@@ -329,7 +332,8 @@ function relatedTable(rows) {
     const pathButton = (row.path_transfers || []).length > 1
       ? `<button class="ghost note-save" data-path-toggle="${esc(row.address)}" type="button" title="从起始地址到该地址的逐笔转账记录">路径明细</button>`
       : "";
-    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code title="${esc(row.address)}">${esc(shortAddr(row.address))}</code><button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
+    const removeButton = `<button class="ghost copy-address remove-relation" data-remove-relation="${esc(row.address)}" title="确认非同一人？移除后点「刷新结果」，这条线索的下游地址也会一并消失" type="button">移除关联</button>`;
+    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code title="${esc(row.address)}">${esc(shortAddr(row.address))}</code><button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${removeButton}${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 
@@ -366,8 +370,36 @@ function refreshRelatedTable() {
   const rows = state.depthFilter === "all"
     ? allRows
     : allRows.filter((row) => String(row.depth) === state.depthFilter);
-  $("#count-related").textContent = number(rows.length);
-  $("#related").innerHTML = relatedTable(rows);
+  const visible = rows.filter((row) => !state.removedAddresses.has(row.address));
+  $("#count-related").textContent = number(visible.length);
+  $("#related").innerHTML = relatedTable(visible);
+  const removedNote = $("#removed-note");
+  if (removedNote) {
+    if (state.removedAddresses.size) {
+      removedNote.textContent = `已手动移除 ${state.removedAddresses.size} 个关联地址（点「刷新结果」后，这些地址线索的下游也会一并消失）`;
+      removedNote.classList.remove("hidden");
+    } else {
+      removedNote.classList.add("hidden");
+      removedNote.textContent = "";
+    }
+  }
+  updateRefreshButton();
+}
+
+function updateRefreshButton() {
+  const button = $("#refresh-result");
+  if (!button) return;
+  const count = state.removedAddresses.size;
+  button.textContent = count ? `刷新结果（已移除 ${count}）` : "刷新结果";
+  button.disabled = !state.lastResult;
+}
+
+function removeRelation(address) {
+  if (!state.removedAddresses.has(address)) {
+    state.removedAddresses.add(address);
+  }
+  refreshRelatedTable();
+  toast("已移除该关联。点「刷新结果」重查后，这条线索下游的地址也会一并消失；重新扫描会恢复全部关联。", false);
 }
 
 /* 0 个关联地址时，必须告诉用户"为什么是空表"，否则很容易被当成工具坏了。
@@ -642,7 +674,7 @@ function scanPayload(seed) {
   };
 }
 
-async function runRelations() {
+async function runRelations(keepRemovals = false) {
   const seed = $("#seed").value.trim();
   if (!seed) { toast("请先输入起始地址。", true); return; }
   if ($("#taostats-source").checked && state.taostatsConfigured === false) {
@@ -652,9 +684,13 @@ async function runRelations() {
   const button = $("#run-scan");
   button.disabled = true;
   button.textContent = "扫描中…";
+  if (!keepRemovals) state.removedAddresses.clear();
   try {
     const requestedSource = $("#taostats-source").checked ? "taostats" : "local";
     const payload = scanPayload(seed);
+    if (state.removedAddresses.size) {
+      payload.removed_addresses = [...state.removedAddresses];
+    }
     if (requestedSource === "taostats" && $("#multi-round").checked) {
       const rounds = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 5));
       $("#max-rounds").value = rounds;
@@ -1305,6 +1341,7 @@ async function viewHistoryRecord(id) {
       return;
     }
     navigate("scan");
+    state.removedAddresses.clear();
     renderResult(data.result);
     toast(`已载入历史记录 #${id}（${historyTime(data.item.created_at)}）：${(data.result.related || []).length} 个关联地址。`);
     const panel = $("#result");
@@ -1513,7 +1550,14 @@ $("#toggle-api-key").addEventListener("click", () => setApiKeyBody(!state.apiKey
 $("#taostats-api-key").addEventListener("keydown", (event) => {
   if (event.key === "Enter") saveTaostatsKey();
 });
-$("#run-scan").addEventListener("click", runRelations);
+$("#run-scan").addEventListener("click", () => runRelations(false));
+$("#refresh-result").addEventListener("click", () => {
+  if (!state.lastResult) {
+    toast("还没有查询结果；先输入起始地址点「扫描关联」。", true);
+    return;
+  }
+  runRelations(true);
+});
 $("#cancel-job").addEventListener("click", cancelActiveJob);
 $("#taostats-source").addEventListener("change", () => {
   $("#multi-round").disabled = !$("#taostats-source").checked;
@@ -1550,6 +1594,8 @@ document.addEventListener("click", (event) => {
   if (copyButton) copyAddress(copyButton.dataset.copyAddress, copyButton);
   const pathToggle = event.target.closest("[data-path-toggle]");
   if (pathToggle) togglePathDetail(pathToggle.dataset.pathToggle);
+  const removeRelationButton = event.target.closest("[data-remove-relation]");
+  if (removeRelationButton) removeRelation(removeRelationButton.dataset.removeRelation);
   const historyView = event.target.closest("[data-history-view]");
   if (historyView) viewHistoryRecord(historyView.dataset.historyView);
   const historyExport = event.target.closest("[data-history-export]");

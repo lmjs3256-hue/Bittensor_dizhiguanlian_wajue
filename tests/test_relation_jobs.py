@@ -502,3 +502,77 @@ def test_cancel_while_waiting_finishes_immediately(monkeypatch):
             assert any("已手动停止" in warning for warning in job.result["warnings"])
         finally:
             database.engine.dispose()
+
+
+def _ingest_chain(database):
+    """本地索引造一条 S → N0 → N1 / N0 → N2 的转账链。"""
+    records = [
+        ("local-1", SEED, NEIGHBORS[0]),
+        ("local-2", NEIGHBORS[0], NEIGHBORS[1]),
+        ("local-3", NEIGHBORS[0], NEIGHBORS[2]),
+    ]
+    rows = [
+        {
+            "event_key": key,
+            "tx_hash": key,
+            "block_number": 100 + index,
+            "block_hash": "0xblock",
+            "event_index": index,
+            "from_address": source,
+            "to_address": target,
+            "amount_rao": 1_000_000_000,
+            "amount_tao": 1,
+        }
+        for index, (key, source, target) in enumerate(records)
+    ]
+    database.ingest_transfers(rows)
+
+
+def test_relations_removed_addresses_cut_the_whole_clue():
+    """移除关联：该地址不进结果，其线索下游在重查时一并消失。"""
+    from decimal import Decimal  # noqa: F401
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "removed.db")
+        try:
+            _ingest_chain(database)
+            full = service.relations(
+                seed=SEED, depth=3, min_edge_tao="1", min_total_tao="1",
+                data_source="local",
+            )
+            assert {row["address"] for row in full["related"]} == set(NEIGHBORS[:3])
+
+            cut = service.relations(
+                seed=SEED, depth=3, min_edge_tao="1", min_total_tao="1",
+                data_source="local",
+                removed_addresses=[NEIGHBORS[0]],
+            )
+            assert cut["related"] == []
+            assert any("手动移除" in warning for warning in cut["warnings"])
+        finally:
+            database.engine.dispose()
+
+
+def test_relations_endpoint_accepts_removed_addresses():
+    """/api/relations 透传 removed_addresses（本地数据源无需 API key）。"""
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "removed-api.db")
+        database.initialize()
+        service = LinkService(database, "wss://example.invalid")
+        original = main_module.service
+        try:
+            _ingest_chain(database)
+            main_module.app.dependency_overrides[original] = lambda: service
+            with TestClient(main_module.app) as client:
+                payload = {
+                    "seed": SEED, "depth": 3, "data_source": "local",
+                    "min_edge_tao": "1", "min_total_tao": "1",
+                    "removed_addresses": [NEIGHBORS[0]],
+                }
+                response = client.post("/api/relations", json=payload)
+            assert response.status_code == 200
+            body = response.json()
+            assert {row["address"] for row in body["related"]} == set()
+        finally:
+            main_module.app.dependency_overrides.pop(original, None)
+            database.engine.dispose()
