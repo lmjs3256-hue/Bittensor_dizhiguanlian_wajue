@@ -258,7 +258,7 @@ function Test-Dependencies {
 
     # 单行脚本：避免多行字符串经 -c 传参时被解析破坏
     $code = "import importlib.util as u;" +
-        "names=('fastapi','uvicorn','sqlalchemy','pydantic','httpx','async_substrate_interface','multipart','pytest');" +
+        "names=('fastapi','uvicorn','sqlalchemy','pydantic','httpx','async_substrate_interface','multipart','pytest','cryptography');" +
         "missing=[n for n in names if u.find_spec(n) is None];" +
         "print('OK' if not missing else 'MISSING '+','.join(missing))"
 

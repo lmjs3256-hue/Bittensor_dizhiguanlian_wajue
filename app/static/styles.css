@@ -174,3 +174,23 @@ td.address code { word-break:break-all; }
 .history-sync-defaults select { width:auto; min-width:118px; padding:7px 9px; font-size:12px; border-radius:8px; }
 .history-sync-defaults input { width:168px; padding:7px 9px; font-size:12px; border-radius:8px; }
 @media (max-width:560px) { .category-add label, .category-add button { flex:1 1 100%; } .history-sync-defaults { width:100%; } .history-sync-defaults input { width:100%; } }
+
+/* 离线授权：未激活遮罩 + 右上角团队水印 */
+.license-gate { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--bg); overflow:auto; }
+.license-card { width:min(600px,100%); border:1px solid var(--line); border-radius:var(--radius); background:var(--panel); padding:30px 30px 26px; display:grid; gap:15px; box-shadow:0 26px 70px rgba(20,28,40,.12); }
+.license-badge { justify-self:start; font-family:var(--mono); font-size:10px; letter-spacing:1.8px; color:var(--warn); background:var(--warn-soft); border-radius:999px; padding:5px 11px; }
+.license-card h2 { margin:0; font-size:24px; }
+.license-card > p { margin:0; color:var(--muted); line-height:1.7; font-size:13px; }
+.license-machine { display:flex; align-items:center; gap:11px; flex-wrap:wrap; padding:13px 15px; border:1px solid var(--line); border-radius:11px; background:var(--bg); }
+.license-machine span { color:var(--muted); font-size:12px; }
+.license-machine code { font-family:var(--mono); font-size:16px; letter-spacing:.1em; color:var(--ink); }
+.license-machine button { margin-left:auto; padding:7px 11px !important; font-size:12px; }
+.license-input { gap:8px; }
+.license-input textarea { width:100%; padding:11px 12px; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:9px; font-family:var(--mono); font-size:12px; line-height:1.6; resize:vertical; outline:none; }
+.license-input textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+.license-card > button.primary { justify-self:start; min-width:132px; }
+.license-card > small { color:var(--muted); font-size:11.5px; line-height:1.7; }
+.license-card > small code { color:var(--ink); }
+body.license-locked .shell { filter:blur(2px); pointer-events:none; user-select:none; }
+.license-watermark { position:fixed; right:16px; bottom:10px; z-index:60; font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--muted); opacity:.45; pointer-events:none; user-select:none; }
+@media (max-width:560px) { .license-card { padding:22px 18px 20px; } .license-machine button { margin-left:0; } }

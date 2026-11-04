@@ -7,9 +7,27 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.6.5">
+  <link rel="stylesheet" href="/static/styles.css?v=0.6.6">
 </head>
 <body>
+  <div class="license-gate hidden" id="license-gate">
+    <div class="license-card">
+      <span class="license-badge">UNLICENSED</span>
+      <h2>这台电脑还没有激活</h2>
+      <p id="license-reason">工具需要授权码才能使用。</p>
+      <div class="license-machine">
+        <span>本机机器码</span>
+        <code id="license-machine">读取中…</code>
+        <button class="ghost" id="copy-machine" type="button">复制</button>
+      </div>
+      <label class="license-input">粘贴授权码
+        <textarea id="license-token" rows="4" spellcheck="false" placeholder="WL1.xxxxxxxx.xxxxxxxx（整行粘贴，管理员提供）"></textarea>
+      </label>
+      <button class="primary" id="license-activate" type="button">激活</button>
+      <small>把上面的机器码发给管理员换取授权码；授权与这台电脑绑定，换电脑需要重新申请。授权码只会写在本目录的 <code>license.key</code> 里，不联网上传。</small>
+    </div>
+  </div>
+  <div class="license-watermark" id="license-watermark" hidden></div>
   <div class="shell">
     <aside class="sidebar">
       <div class="brand"><div class="mark">WL</div><div><b>Wallet Link</b><span>Bittensor Intelligence</span></div></div>
@@ -141,6 +159,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.6.5"></script>
+  <script src="/static/app.js?v=0.6.6"></script>
 </body>
 </html>

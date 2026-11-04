@@ -121,6 +121,55 @@ async function api(url, options = {}) {
   return body;
 }
 
+/* -- 离线授权：未激活时只显示激活页，激活后页面右下角常驻团队水印 ------- */
+async function loadLicenseStatus() {
+  try {
+    return await api("/api/license");
+  } catch (_) {
+    // 服务不可用时不要误锁界面，健康检查会提示连接问题。
+    return { licensed: true, watermark: "" };
+  }
+}
+
+function applyLicenseStatus(status) {
+  const gate = $("#license-gate");
+  const mark = $("#license-watermark");
+  if (!status.licensed) {
+    $("#license-machine").textContent = status.machine || "-";
+    $("#license-reason").textContent = status.reason || "工具需要授权码才能使用。";
+    gate.classList.remove("hidden");
+    document.body.classList.add("license-locked");
+    return;
+  }
+  gate.classList.add("hidden");
+  document.body.classList.remove("license-locked");
+  if (status.watermark) {
+    mark.textContent = status.watermark;
+    mark.title = `授权给 ${status.team}${status.expires ? `，到期 ${status.expires}` : "，长期有效"}`;
+    mark.hidden = false;
+  }
+}
+
+async function activateLicense() {
+  const button = $("#license-activate");
+  const token = $("#license-token").value.trim();
+  if (!token) { toast("请先粘贴授权码。", true); return; }
+  button.disabled = true;
+  button.textContent = "校验中…";
+  try {
+    const data = await api("/api/license/activate", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+    toast(`激活成功：${data.team}。正在重新加载…`);
+    window.setTimeout(() => window.location.reload(), 600);
+  } catch (error) {
+    toast(`激活失败：${error.message}`, true);
+    button.disabled = false;
+    button.textContent = "激活";
+  }
+}
+
 function navigate(view, updateHash = true) {
   document.querySelectorAll(".nav").forEach((button) => {
     button.classList.toggle("active", button.dataset.nav === view);
@@ -1475,8 +1524,27 @@ $("#export-addresses").addEventListener("click", () => {
   toast(`已导出 ${addresses.length} 个地址（每行一个）；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个。`);
 });
 $("#seed").addEventListener("keydown", (event) => { if (event.key === "Enter") runRelations(); });
-const initialView = String(location.hash || "").replace("#", "");
-if (["history", "library", "method", "release"].includes(initialView)) navigate(initialView, false);
-loadOverview();
-loadVersionInfo();
-loadCategories();
+$("#license-activate").addEventListener("click", activateLicense);
+$("#copy-machine").addEventListener("click", async () => {
+  const code = $("#license-machine").textContent.trim();
+  if (!code || code === "读取中…") return;
+  try {
+    await navigator.clipboard.writeText(code);
+    toast("机器码已复制，发给管理员即可换取授权码。");
+  } catch (_) {
+    toast(`机器码：${code}`, true);
+  }
+});
+
+(async function bootstrap() {
+  const status = await loadLicenseStatus();
+  applyLicenseStatus(status);
+  if (!status.licensed) return; // 未激活时只留激活页，不请求业务接口
+  const initialView = String(location.hash || "").replace("#", "");
+  if (["history", "library", "method", "release"].includes(initialView)) {
+    navigate(initialView, false);
+  }
+  loadOverview();
+  loadVersionInfo();
+  loadCategories();
+})();

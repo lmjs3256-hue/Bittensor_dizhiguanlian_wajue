@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import license as license_mod
 from .config import database_path, settings
 from .db import Database
 from .inputs import InputError
@@ -58,6 +59,33 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 SERVICE = LinkService(DATABASE, CONFIG.rpc_url)
 JOBS = RelationJobManager()
+
+# 未激活时也要能打开的路径：首页显示激活页，健康检查和授权接口用于自检/激活。
+PUBLIC_PATHS = {
+    "/",
+    "/api/health",
+    "/api/version",
+    "/api/license",
+    "/api/license/activate",
+}
+
+
+@app.middleware("http")
+async def license_guard(request: Request, call_next):
+    path = request.url.path
+    if path in PUBLIC_PATHS or path.startswith("/static/"):
+        return await call_next(request)
+    if not license_mod.is_licensed():
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "工具未激活或授权已失效，请在首页粘贴管理员提供的授权码",
+                "code": "unlicensed",
+                "machine": license_mod.machine_code(),
+            },
+        )
+    return await call_next(request)
+
 
 
 async def _job_scheduler() -> None:
@@ -171,6 +199,10 @@ class CategoryInput(BaseModel):
     name: str = Field(min_length=1, max_length=32)
 
 
+class LicenseActivateInput(BaseModel):
+    token: str = Field(min_length=10, max_length=4000)
+
+
 @app.get("/", include_in_schema=False)
 def home():
     return FileResponse(ROOT / "templates" / "index.html")
@@ -178,12 +210,31 @@ def home():
 
 @app.get("/api/health")
 def health(svc: Annotated[LinkService, Depends(service)]):
+    status = license_mod.status()
     return {
         "ok": True,
         "service": "bittensor-wallet-link-intel",
         "version": VERSION_INFO["version"],
         "rpc_url": svc.rpc_url,
+        "licensed": status["licensed"],
+        "team": status["team"],
     }
+
+
+@app.get("/api/license")
+def license_status():
+    """当前授权状态；未激活时也开放，用于在激活页显示本机机器码。"""
+
+    return license_mod.status()
+
+
+@app.post("/api/license/activate")
+def license_activate(payload: LicenseActivateInput):
+    try:
+        row = license_mod.save_token(payload.token)
+    except license_mod.LicenseError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"ok": True, "team": row.team, "status": license_mod.status()}
 
 
 @app.get("/api/version")

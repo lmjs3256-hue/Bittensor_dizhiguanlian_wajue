@@ -27,6 +27,7 @@ from .db import (
     to_relation_records,
     utcnow,
 )
+from . import license as license_mod
 from .inputs import InputError, parse_plain_addresses, read_addresses
 from .relation import discover, exchange_balance_candidates
 from .relation_config import LibraryEntry, LinkPolicy
@@ -657,6 +658,10 @@ class LinkService:
                 "schema_version": 1,
                 "addresses": portable,
             }
+            licensed_to = license_mod.watermark()
+            if licensed_to:
+                # 只做溯源标记，导入时被忽略，不影响迁移。
+                payload["licensed_to"] = licensed_to
             return (
                 json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                 "application/json; charset=utf-8",
@@ -909,8 +914,13 @@ class LinkService:
             char for char in book_name if char not in '\\/:*?"<>|'
         ).strip() or "address-book"
         if file_format == "txt":
+            header = ""
+            licensed_to = license_mod.watermark()
+            if licensed_to:
+                # 这行以 # 开头，重新导入时会被当成注释忽略，不影响复用。
+                header = f"# Wallet Link · 授权给 {licensed_to}\n"
             return (
-                "\n".join(row.address for row in rows) + "\n",
+                header + "\n".join(row.address for row in rows) + "\n",
                 "text/plain; charset=utf-8",
                 f"{safe_name}.txt",
             )
@@ -1094,8 +1104,12 @@ class LinkService:
             raise InputError("历史记录内容已损坏，无法导出地址") from exc
         selection = select_exportable_addresses(payload.get("related") or [])
         date = (row.finished_at or row.created_at).strftime("%Y%m%d")
+        licensed_to = license_mod.watermark()
+        header = f"# Wallet Link · 授权给 {licensed_to}\n" if licensed_to else ""
         return (
-            "\n".join(selection["addresses"]) + ("\n" if selection["addresses"] else ""),
+            header
+            + "\n".join(selection["addresses"])
+            + ("\n" if selection["addresses"] else ""),
             "text/plain; charset=utf-8",
             f"bittensor-addresses-{row.seed[:8]}-{date}.txt",
         )

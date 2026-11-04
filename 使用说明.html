@@ -333,6 +333,15 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <li>手动在浏览器输入 <a href="http://127.0.0.1:8766/api/health">http://127.0.0.1:8766/api/health</a>，正常会返回一段 JSON，里面有 <code>"ok":true</code> 和版本号</li>
 <li>还是不行，看 <code>logs\wallet-link.stderr.log</code> 最后几行，通常会直接写原因</li>
 </ol>
+<h3 id="第一次启动需要激活授权绑定电脑">第一次启动需要激活（授权绑定电脑）</h3>
+<p>工具是授权使用的，防止拷贝外流。首次启动会看到“这台电脑还没有激活”的页面，上面直接显示一个 16 位<strong>机器码</strong>（形如 <code>KNT5-YFER-N3PA-5W7Z</code>）：</p>
+<ol>
+<li>点“复制”，把机器码发给管理员；</li>
+<li>管理员签发一串 <code>WL1.</code> 开头的授权码发回给你；</li>
+<li>粘贴到输入框，点 <strong>激活</strong>，页面自动刷新即可使用。</li>
+</ol>
+<p>激活信息保存在程序目录下的 <code>license.key</code> 里，全程不联网。激活后页面右下角会常驻“团队名 · 机器码后 6 位”水印，导出的地址 TXT/JSON 也会带上“授权给 …”标记——万一工具或数据外流，可以追溯到是哪个团队的副本。授权码默认一年有效，到期后重新找管理员要一个新码；换电脑或重装系统后机器码会变，同样需要重新申请。</p>
+<p>管理员怎么签发授权码，见 <a href="授权管理.md">授权管理.md</a>。</p>
 <hr />
 <h2 id="五第一次查询照着点就行">五、第一次查询（照着点就行）</h2>
 <p>打开页面后，顶部是“起始地址”，右边就是 <strong>扫描关联</strong> 按钮。</p>
@@ -608,6 +617,9 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
    - 如果新电脑没装 Python，脚本会尝试自动装，见 <a href="#三安装只需一次">三、安装</a>；</li>
 <li>装完双击桌面快捷方式即可使用。</li>
 </ol>
+<blockquote>
+<p>注意：授权码和电脑绑定，拷到新电脑后需要<strong>重新激活</strong>（新电脑页面会显示新的机器码，找管理员要一个新授权码即可）。<code>license.key</code> 拷过去也不会被认。</p>
+</blockquote>
 <h3 id="数据要不要一起带走">数据要不要一起带走</h3>
 <table>
 <thead>
