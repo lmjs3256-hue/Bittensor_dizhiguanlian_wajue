@@ -115,7 +115,7 @@ def _role_for_address(
     if exchange_related:
         return (
             "疑似中转钱包（交易所关联）",
-            "该地址与已确认的交易所公共地址存在直接转账；当前查询数据只包含 Balances.Transfer，未观察到子网交易语义。余额高低不影响此线索，但这不是全链历史中不存在子网交易的证明。",
+            "该地址与已确认的交易所公共地址存在直接转账；当前查询数据包含 Balances.Transfer 与子网 stake 转移，仍未覆盖质押、解质押和购买等完整子网交易语义。余额高低不影响此线索，但这不是全链历史中不存在子网交易的证明。",
         )
 
     if not activity:
@@ -168,7 +168,7 @@ def _role_for_address(
     if len(activity) >= 2 and len(counterparties) >= 2:
         return (
             "疑似中转钱包",
-            "当前数据范围内仅观察到转账记录；尚未接入子网质押、解质押和购买事件，不能据此确认其没有这些记录。",
+            "当前数据范围内仅观察到转账或子网 stake 转移记录；尚未接入子网质押、解质押和购买事件，不能据此确认其没有这些记录。",
         )
     return "", ""
 
@@ -187,6 +187,9 @@ def _canonical_dedupe(transfers: Iterable[TransferRecord]) -> list[TransferRecor
             amount_tao=transfer.amount_tao,
             block_hash=transfer.block_hash.strip(),
             timestamp=transfer.timestamp.strip(),
+            edge_type=transfer.edge_type,
+            netuid=transfer.netuid,
+            hotkey=transfer.hotkey,
         )
         if normalized.tx_hash:
             identity = (
@@ -303,6 +306,9 @@ def discover(
             depth=depth,
             reason="transit_edge" if transitive else ("direct_seed" if depth == 1 else "qualified_edge"),
             related_address=neighbor,
+            edge_type=transfer.edge_type,
+            netuid=transfer.netuid,
+            hotkey=transfer.hotkey,
         )
 
     while queue:
@@ -433,6 +439,9 @@ def discover(
                 role_reason=role_reason,
                 exchange_confirmed=entry.exchange_confirmed if entry else False,
                 exchange_rejected=entry.exchange_rejected if entry else False,
+                stake_transfer_count=sum(
+                    1 for edge in edge_rows if edge.edge_type == "stake_transfer"
+                ),
             )
         )
     related.sort(key=lambda row: (row.depth, -row.total_tao, row.address))
@@ -451,6 +460,12 @@ def discover(
         final_warnings.append("No transfer records supplied; no relations can be discovered.")
     if any(not row.tx_hash for row in edges):
         final_warnings.append("Some displayed edges have no tx_hash and are not independently auditable.")
+    stake_edges = [edge for edge in edges if edge.edge_type == "stake_transfer"]
+    if stake_edges:
+        final_warnings.append(
+            f"本次纳入 {len(stake_edges)} 条子网 stake 转移边（SubtensorModule.StakeTransferred）；"
+            "金额按事件的 TAO 等值计价，边类型与子网 ID 在导出数据中单独标识。"
+        )
     return ScanReport(
         seed=seed,
         max_depth=max_depth,

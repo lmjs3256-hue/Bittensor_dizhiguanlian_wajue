@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bittensor 地址关联挖掘 · 使用说明</title>
+<style>
+:root {
+  --bg: #1e2126;
+  --panel: #282c33;
+  --line: #3b424c;
+  --ink: #e8ecf2;
+  --muted: #a4afbd;
+  --accent: #7fb0ee;
+  --warn: #f0c072;
+  --danger: #f08078;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 0 20px 80px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.85 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 920px; margin: 0 auto; }
+header.doc-head { padding: 46px 0 22px; border-bottom: 1px solid var(--line); margin-bottom: 26px; }
+header.doc-head .eyebrow { color: var(--accent); font-size: 11.5px; letter-spacing: 2px; font-weight: 700; }
+header.doc-head h1 { margin: 10px 0 8px; font-size: 30px; letter-spacing: -.3px; }
+header.doc-head p { margin: 0; color: var(--muted); font-size: 13.5px; }
+nav.toc {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px 22px;
+  margin: 0 0 30px;
+}
+nav.toc .toc-title { color: var(--muted); font-size: 12px; letter-spacing: 1.6px; font-weight: 700; margin-bottom: 8px; }
+nav.toc ul { list-style: none; margin: 0; padding: 0; columns: 2; column-gap: 28px; }
+nav.toc > ul > li { font-size: 13.5px; margin: 3px 0; break-inside: avoid; }
+nav.toc ul ul { display: none; }
+nav.toc a { color: var(--ink); text-decoration: none; }
+nav.toc a:hover { color: var(--accent); }
+h2 {
+  margin: 46px 0 14px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  font-size: 21px;
+  letter-spacing: -.2px;
+}
+h3 { margin: 30px 0 10px; font-size: 16.5px; color: var(--ink); }
+h4 { margin: 22px 0 8px; font-size: 14.5px; color: var(--muted); }
+p { margin: 11px 0; }
+a { color: var(--accent); }
+strong { color: #fff; font-weight: 650; }
+ul, ol { padding-left: 24px; }
+li { margin: 6px 0; }
+code {
+  font-family: var(--mono);
+  font-size: 12.8px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: #16181c;
+  border: 1px solid var(--line);
+  color: #ffd9a0;
+}
+pre {
+  background: #16181c;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 14px 0;
+}
+pre code { border: 0; background: transparent; padding: 0; color: #d8e0ea; font-size: 12.8px; line-height: 1.7; }
+table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13.5px; }
+th, td { padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { background: #23272d; color: var(--muted); font-weight: 650; font-size: 12.5px; white-space: nowrap; }
+tbody tr:hover { background: #23272d; }
+blockquote {
+  margin: 18px 0;
+  padding: 12px 18px;
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+  border-radius: 0 8px 8px 0;
+  color: #dbe3ee;
+}
+blockquote p { margin: 4px 0; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 34px 0; }
+footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+@media (max-width: 640px) {
+  body { padding: 0 14px 60px; font-size: 14.5px; }
+  nav.toc ul { columns: 1; }
+  header.doc-head h1 { font-size: 24px; }
+  table { font-size: 12.5px; }
+  th, td { padding: 8px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="doc-head">
+  <div class="eyebrow">BITTENSOR ADDRESS LINK · USER GUIDE</div>
+  <h1>Bittensor 地址关联挖掘 · 使用说明</h1>
+  <p>面向第一次使用的人：安装、启动、查询、导出、常见问题。离线可看，无需联网。</p>
+</header>
+<nav class="toc"><div class="toc-title">目录</div><div class="toc">
+<ul>
+<li><a href="#一这个工具能做什么">一、这个工具能做什么</a></li>
+<li><a href="#二开始前你需要准备">二、开始前你需要准备</a></li>
+<li><a href="#三安装只需一次">三、安装（只需一次）</a></li>
+<li><a href="#四启动与关闭">四、启动与关闭</a></li>
+<li><a href="#五第一次查询照着点就行">五、第一次查询（照着点就行）</a></li>
+<li><a href="#六导出与查询记录">六、导出与查询记录</a></li>
+<li><a href="#七已知地址库">七、已知地址库</a></li>
+<li><a href="#八taostats-api-key可选但推荐">八、Taostats API key（可选，但推荐）</a></li>
+<li><a href="#九本地索引进阶可跳过">九、本地索引（进阶，可跳过）</a></li>
+<li><a href="#十拷贝到另一台电脑">十、拷贝到另一台电脑</a></li>
+<li><a href="#十一常见问题">十一、常见问题</a></li>
+<li><a href="#十二名词解释">十二、名词解释</a></li>
+<li><a href="#十三还想深入看">十三、还想深入看</a></li>
+</ul>
+</div>
+</nav>
+<article>
+<h1 id="bittensor-地址关联挖掘-使用说明">Bittensor 地址关联挖掘 · 使用说明</h1>
+<blockquote>
+<p>这份说明写给第一次使用的人，不需要懂编程。照着做，大约 5 分钟能让工具跑起来。
+只想快速开始？直接跳到 <a href="#三安装只需一次">三、安装</a> 和 <a href="#五第一次查询照着点就行">五、第一次查询</a>。
+开发与设计细节见 <a href="https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue/blob/main/README.md">README.md</a>，版本变化见 <a href="https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue/blob/main/CHANGELOG.md">CHANGELOG.md</a>。</p>
+</blockquote>
+<hr />
+<h2 id="一这个工具能做什么">一、这个工具能做什么</h2>
+<p>输入一个 Bittensor 钱包地址，查出<strong>和它发生过资金往来的其他钱包</strong>，并标注这些钱包是不是已知的交易所、验证者或黑名单地址。</p>
+<p>具体能回答这些问题：</p>
+<table>
+<thead>
+<tr>
+<th>你想知道</th>
+<th>工具给出的结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>这个地址和哪些钱包有资金往来</td>
+<td>关联地址清单，含层级、流入/流出/累计金额</td>
+</tr>
+<tr>
+<td>钱是不是经过中转</td>
+<td>1 级 = 直接转账，2/3 级 = 中间隔了几层中转</td>
+</tr>
+<tr>
+<td>对方是不是交易所</td>
+<td>命中地址库时显示“交易所地址”“疑似交易所（待确认）”等标签</td>
+</tr>
+<tr>
+<td>能不能拿去别处用</td>
+<td>一键导出 TXT（每行一个地址）或 JSON</td>
+</tr>
+<tr>
+<td>上次查的结果还在吗</td>
+<td>每次查询自动保存进“查询记录”，可回看、重导</td>
+</tr>
+</tbody>
+</table>
+<p><strong>它不能做什么</strong>（这点很重要，避免误用）：</p>
+<ul>
+<li>不能证明两个地址属于同一个人。工具表达的是“发生过资金关联”，不是身份结论。</li>
+<li>不能保证查到全部历史。公开节点和免费 API 都有覆盖范围限制，结果里会写明数据来源和截止区块。</li>
+<li>不会动你的钱包。全程只读公开数据，不签名、不转账、不需要助记词或私钥。</li>
+</ul>
+<blockquote>
+<p><strong>安全提示</strong>：任何情况下都不要把助记词、私钥、keystore 文件输入给这个工具或任何网站。这个工具只需要一个公开的收款地址。</p>
+</blockquote>
+<hr />
+<h2 id="二开始前你需要准备">二、开始前你需要准备</h2>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>要求</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>电脑</td>
+<td>Windows 10 / 11（64 位）</td>
+<td>目前只提供 Windows 一键脚本</td>
+</tr>
+<tr>
+<td>网络</td>
+<td>能访问互联网</td>
+<td>需要连 Bittensor 公共节点；用 Taostats 时还要能访问 taostats.io</td>
+</tr>
+<tr>
+<td>地址</td>
+<td>一个 Bittensor 地址</td>
+<td>48 位，通常以 <code>5</code> 开头，例如 <code>5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt</code></td>
+</tr>
+<tr>
+<td>Python</td>
+<td>3.10 – 3.13</td>
+<td><strong>不用自己装</strong>：文件夹 <code>installers\</code> 自带 Python 3.12 安装包，脚本会自动装</td>
+</tr>
+<tr>
+<td>Taostats key</td>
+<td>可选</td>
+<td>想要更完整的历史关联时再配，见 <a href="#八taostats-api-key可选但推荐">八、Taostats API key</a></td>
+</tr>
+</tbody>
+</table>
+<p>文件夹约 37 MB（含 Python 安装包和离线依赖包），装好后运行环境再加约 200 MB；数据库大小取决于你查了多少地址。</p>
+<hr />
+<h2 id="三安装只需一次">三、安装（只需一次）</h2>
+<h3 id="情况-a从-github-下载">情况 A：从 GitHub 下载</h3>
+<ol>
+<li>打开项目主页：<a href="https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue">https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue</a></li>
+<li>点绿色 <strong>Code</strong> 按钮 → <strong>Download ZIP</strong></li>
+<li>解压到一个固定位置，例如 <code>D:\Bittensor_dizhiwajue</code>
+   - 路径建议全英文、不带空格和 <code>#</code>、<code>&amp;</code> 等符号，可减少奇怪的报错
+   - 不要放在 C 盘的 <code>Program Files</code> 里（需要管理员权限）</li>
+<li>进入文件夹，双击 <strong><code>安装.cmd</code></strong></li>
+<li>等窗口跑完，看到 <strong>“安装完成”</strong> 就好了。首次安装约 2–5 分钟。</li>
+</ol>
+<p>整个过程<strong>不需要联网</strong>：电脑上没有 Python 时，脚本会直接用文件夹里 <code>installers\python-3.12.10-amd64.exe</code> 静默安装；依赖也从 <code>installers\wheels\</code> 本地安装。</p>
+<h3 id="情况-b别人直接拷给你的文件夹">情况 B：别人直接拷给你的文件夹</h3>
+<p>同样是双击 <strong><code>安装.cmd</code></strong>。</p>
+<p>如果这个文件夹在别的电脑上装过，里面的 <code>.venv</code> 运行环境会失效（它记录的是原电脑的路径），安装脚本会自动检测并重建，不用你手动删。</p>
+<h3 id="安装脚本到底做了什么">安装脚本到底做了什么</h3>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>动作</th>
+<th>失败时的表现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>找可用的 Python（3.10–3.13，包括装了但没加进 PATH 的情况）</td>
+<td>找不到就用 <code>installers\</code> 里的安装包静默安装，再不行才联网用 winget</td>
+</tr>
+<tr>
+<td>2</td>
+<td>创建独立运行环境 <code>.venv</code></td>
+<td>自动重建失效的环境</td>
+</tr>
+<tr>
+<td>3</td>
+<td>优先从 <code>installers\wheels\</code> 离线安装依赖，版本不匹配才联网（官方源失败自动切国内镜像）</td>
+<td>提示检查网络后重新双击</td>
+</tr>
+<tr>
+<td>4</td>
+<td>建 <code>data</code>、<code>logs</code> 目录，创建桌面快捷方式</td>
+<td>快捷方式失败不影响使用，改用 <code>启动.cmd</code></td>
+</tr>
+</tbody>
+</table>
+<p>安装过程<strong>不会</strong>修改系统 Python、不写注册表、不需要管理员权限（除 winget 装 Python 可能弹一次确认）。</p>
+<h3 id="如果电脑上没有-python">如果电脑上没有 Python</h3>
+<p>安装脚本会自动处理，不用你操心：</p>
+<ol>
+<li>先在常见位置找一遍（包括“装好了但没加进 PATH”的情况）；</li>
+<li>找不到就静默运行文件夹里的 <code>installers\python-3.12.10-amd64.exe</code>（装到当前用户目录、自动加 PATH、不需要管理员权限）；</li>
+<li>
+<p>只有上面两步都失败（例如系统策略禁止安装），才需要手动装：</p>
+</li>
+<li>
+<p>双击 <code>installers\python-3.12.10-amd64.exe</code></p>
+</li>
+<li>安装界面底部<strong>务必勾选 “Add python.exe to PATH”</strong>，点 Install Now</li>
+<li>装完回到文件夹，重新双击 <code>安装.cmd</code></li>
+</ol>
+<p>如果你手动装的是 3.13 而非 3.12，<code>installers\wheels\</code> 里的依赖包会不匹配，此时脚本会自动改为联网安装。</p>
+<hr />
+<h2 id="四启动与关闭">四、启动与关闭</h2>
+<h3 id="启动">启动</h3>
+<p>三种方式，任选一种：</p>
+<ul>
+<li>双击桌面上的 <strong>“Bittensor 地址关联挖掘”</strong> 快捷方式（推荐）</li>
+<li>双击文件夹里的 <strong><code>启动.cmd</code></strong></li>
+<li>需要换端口时，在本文件夹的 PowerShell 里执行 <code>.\start.ps1 -Port 8777</code></li>
+</ul>
+<p>启动成功后浏览器会自动打开 <a href="http://127.0.0.1:8766">http://127.0.0.1:8766</a>。</p>
+<blockquote>
+<p>服务在后台运行，关掉浏览器页面不影响；想再打开页面，直接访问上面的地址即可，不用重新启动。</p>
+</blockquote>
+<h3 id="关闭">关闭</h3>
+<p>双击 <strong><code>停止.cmd</code></strong>。电脑重启后服务不会自动启动，需要再次双击快捷方式。</p>
+<h3 id="如果页面打不开">如果页面打不开</h3>
+<ol>
+<li>看右下角：启动窗口是否报错？</li>
+<li>手动在浏览器输入 <a href="http://127.0.0.1:8766/api/health">http://127.0.0.1:8766/api/health</a>，正常会返回一段 JSON，里面有 <code>"ok":true</code> 和版本号</li>
+<li>还是不行，看 <code>logs\wallet-link.stderr.log</code> 最后几行，通常会直接写原因</li>
+</ol>
+<hr />
+<h2 id="五第一次查询照着点就行">五、第一次查询（照着点就行）</h2>
+<p>打开页面后，顶部是“起始地址”，右边就是 <strong>扫描关联</strong> 按钮。</p>
+<h3 id="填写顺序">填写顺序</h3>
+<table>
+<thead>
+<tr>
+<th>表单项</th>
+<th>建议值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>起始地址</strong></td>
+<td>粘贴你要查的地址</td>
+<td>48 位，粘贴后按回车也能直接开始</td>
+</tr>
+<tr>
+<td><strong>最大层级</strong></td>
+<td>3 级</td>
+<td>1 级只查直接转账；3 级会顺着中转再找两层，结果更多也更慢</td>
+</tr>
+<tr>
+<td><strong>单边最低 TAO</strong></td>
+<td>1</td>
+<td>两地址之间单笔/单边累计低于这个数就不算一条关系。<strong>调大 = 结果更少更准，调小 = 更多更杂</strong></td>
+</tr>
+<tr>
+<td><strong>累计最低 TAO</strong></td>
+<td>1</td>
+<td>最终地址累计金额门槛，通常与上一项保持一致</td>
+</tr>
+<tr>
+<td><strong>方向</strong></td>
+<td>流入 + 流出</td>
+<td>只看资金进、只看资金出，或两者都看</td>
+</tr>
+<tr>
+<td><strong>使用 Taostats 历史索引</strong></td>
+<td>勾选</td>
+<td>勾上才查外部历史；不勾只用本地已采集的区块，结果通常很少</td>
+</tr>
+<tr>
+<td><strong>自动分轮续查</strong></td>
+<td>勾选</td>
+<td>应对“每分钟只能查 5 次”的限制，见下一节</td>
+</tr>
+<tr>
+<td><strong>最多查询轮数</strong></td>
+<td>12</td>
+<td>12 轮 ≈ 60 次请求。设为 1 就是只查一轮（最快）</td>
+</tr>
+<tr>
+<td><strong>过滤交易所 / 验证者地址</strong></td>
+<td>按需</td>
+<td>勾上后结果里不再出现已确认的交易所和验证者，适合“只想看真实对手方”的场景</td>
+</tr>
+</tbody>
+</table>
+<p>点 <strong>扫描关联</strong> 开始。</p>
+<h3 id="分轮续查是怎么回事">分轮续查是怎么回事</h3>
+<p>Taostats 免费额度限制每分钟 5 次请求，一次查询装不下所有关联。所以工具会：</p>
+<ol>
+<li>第 1 轮用掉 5 次请求，查最优先的地址（1 级关联和转账明细优先，余额查询排最后）；</li>
+<li>等约 1 分钟，第 2 轮从<strong>上次没查完的两个地址</strong>继续；</li>
+<li>一直循环到查完、或达到你设的轮数上限。</li>
+</ol>
+<p>界面上会实时显示：<code>第 3 轮 / 12 轮</code>、这一轮准备查什么、还剩多少个待查对象。嫌慢或已经够用，随时点 <strong>停止续查</strong>——已经查到的结果会保留，可以照常查看和导出，并会告诉你还剩多少没查。</p>
+<h3 id="结果怎么看">结果怎么看</h3>
+<p>结果表每行是一个关联地址：</p>
+<table>
+<thead>
+<tr>
+<th>列</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>关联地址</td>
+<td>对方钱包地址，可点击复制</td>
+</tr>
+<tr>
+<td>层级</td>
+<td>1 = 与起始地址直接转账；2/3 = 通过 1 级/2 级地址中转</td>
+</tr>
+<tr>
+<td>流入 / 流出</td>
+<td>这个地址与起始地址方向的资金规模（TAO）</td>
+</tr>
+<tr>
+<td>累计</td>
+<td>往来总额，可用于排序判断亲密度</td>
+</tr>
+<tr>
+<td>标签</td>
+<td>地址库命中结果：交易所、验证者、黑名单、观察等</td>
+</tr>
+</tbody>
+</table>
+<p>用 <strong>层级筛选</strong> 可以只看 1 级（最可信的直接关系），或看全部。表格上方的“数据范围与限制”会写清这次用了哪个数据源、覆盖到哪个区块、有没有部分结果。</p>
+<hr />
+<h2 id="六导出与查询记录">六、导出与查询记录</h2>
+<h3 id="导出">导出</h3>
+<p>结果出来后，右上角有两个按钮：</p>
+<ul>
+<li><strong>导出地址 TXT</strong>：每行一个地址，方便直接粘到别的工具。会自动排除<strong>已确认的交易所和验证者地址</strong>，不用你再手动筛。</li>
+<li><strong>导出 JSON</strong>：完整结果快照，包含层级、金额、标签等字段，适合存档或二次处理。</li>
+</ul>
+<h3 id="查询记录忘导出也不怕">查询记录（忘导出也不怕）</h3>
+<p>左侧菜单 <strong>查询记录</strong> 保存了每一次查询的完整结果——分轮跑完的、中途停止的、单轮查询的都在，最多保留最近 500 条。</p>
+<p>在这里可以：</p>
+<ul>
+<li><strong>查看结果</strong>：回到扫描页，展示那次查到的地址，筛选和导出照常可用</li>
+<li><strong>导出地址 / 导出 JSON</strong>：规则和当前结果完全一致</li>
+<li><strong>同步地址库</strong>：把这次结果的关联地址 + 发起地址一次性写进已知地址库</li>
+<li><strong>删除 / 清空</strong>：删掉不需要的记录</li>
+</ul>
+<h3 id="批量补录找回升级前的结果">批量补录（找回升级前的结果）</h3>
+<p>0.3.0 之前的版本不保存查询记录，那些结果<strong>无法还原</strong>（当时只存在浏览器页面里，刷新就没了）。</p>
+<p>如果你还记得当时查过哪些地址，在“查询记录”页顶部的 <strong>批量补录</strong> 里：</p>
+<ol>
+<li>粘贴多个地址，每行一个；</li>
+<li>点 <strong>开始补录</strong>，工具会按当前设置逐个重跑并自动存进查询记录；</li>
+<li>进度条会显示成功/失败数量，可随时停止。</li>
+</ol>
+<p>重跑结果按现在的链上数据计算，和当时可能略有差异。</p>
+<hr />
+<h2 id="七已知地址库">七、已知地址库</h2>
+<p>左侧菜单 <strong>已知地址库</strong> 是工具的“常识库”：地址被标成交易所、验证者后，查询时才能过滤、才能在结果里显示标签。</p>
+<h3 id="分类含义">分类含义</h3>
+<table>
+<thead>
+<tr>
+<th>分类</th>
+<th>含义</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SEED</code></td>
+<td>起始地址</td>
+<td>可作为默认扫描地址</td>
+</tr>
+<tr>
+<td><code>WATCH</code></td>
+<td>观察名单</td>
+<td>关注的钱包，命中时提示</td>
+</tr>
+<tr>
+<td><code>BLACKLIST</code></td>
+<td>黑名单</td>
+<td>命中时提示风险</td>
+</tr>
+<tr>
+<td><code>EXCHANGE</code></td>
+<td>交易所</td>
+<td><strong>已人工确认</strong>的交易所地址，可被“过滤交易所”排除</td>
+</tr>
+<tr>
+<td><code>VALIDATOR</code></td>
+<td>验证者</td>
+<td>可被“过滤验证者”排除</td>
+</tr>
+</tbody>
+</table>
+<h3 id="添加与导入">添加与导入</h3>
+<ul>
+<li><strong>单个添加</strong>：填名称、分类、地址、备注，点“添加地址”。</li>
+<li><strong>批量导入文件</strong>：支持 TXT、CSV、JSON，点“导入文件”选择。</li>
+<li><strong>同步官方交易所地址</strong>：点这一项会用 Taostats 的交易所地址列表自动补进 <code>EXCHANGE</code> 分类（需要 API key）。</li>
+<li><strong>从查询结果同步</strong>：在结果页的“同步到已知地址库”里，把整批关联地址 + 发起地址去重写入，已存在的记录不会被覆盖。</li>
+</ul>
+<p>导入文件格式示例：</p>
+<pre><code class="language-txt"># TXT：每行一个地址
+5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt
+5DceuTr7XPqw67PNHW9ewzzo2cZ7Cm8HgfjwUqEpd8Mh8QNg
+</code></pre>
+<pre><code class="language-csv">address,category,label,note
+5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt,EXCHANGE,某交易所,热钱包
+</code></pre>
+<pre><code class="language-json">[{&quot;address&quot;: &quot;5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt&quot;, &quot;category&quot;: &quot;WATCH&quot;, &quot;label&quot;: &quot;重点观察&quot;}]
+</code></pre>
+<p>地址库也能 <strong>导出 CSV / JSON</strong>，方便备份或换电脑时迁移。</p>
+<hr />
+<h2 id="八taostats-api-key可选但推荐">八、Taostats API key（可选，但推荐）</h2>
+<p>没有 key 也能用，但只能查本地已经采集过的区块，实际价值有限。想让工具真正好用，配一个免费 key：</p>
+<ol>
+<li>打开 <a href="https://taostats.io/">https://taostats.io/</a> 注册账号（免费档即可）；</li>
+<li>在账号设置里找到 <strong>API Key</strong>，复制；</li>
+<li>回到页面，在“Taostats API key”输入框粘贴，点 <strong>保存 API key</strong>；</li>
+<li>状态显示“API key 已配置”，就可以正常查询了。</li>
+</ol>
+<p>关于 key 的几点说明：</p>
+<ul>
+<li>key 只保存在<strong>本机服务的内存</strong>里，不写数据库、不写文件、不进浏览器存储；</li>
+<li>因此<strong>每次重启服务后需要重新填写一次</strong>（这是刻意的安全取舍）；</li>
+<li>页面上的“Taostats 查询次数”统计的是本机真实发出的请求，缓存命中不计数；</li>
+<li>单次关联查询最多发起 5 次请求，所以才有“分轮续查”；</li>
+<li>免费额度按 credits 计算，具体以 Taostats 官网套餐说明为准。</li>
+</ul>
+<hr />
+<h2 id="九本地索引进阶可跳过">九、本地索引（进阶，可跳过）</h2>
+<p>页面中间有一块 <strong>更新链上索引</strong>：</p>
+<ul>
+<li><strong>扫描最新</strong>：抓取最新已最终确定的若干个区块，把里面的转账事件存进本地数据库；</li>
+<li><strong>继续水位</strong>：从上次停下的区块继续往后扫，避免重复。</li>
+</ul>
+<p>本地索引的好处是不消耗 API 额度；缺点是<strong>只包含你实际扫过的区块</strong>。公开节点会裁剪历史状态，所以不能指望靠它拿到全链历史。日常查关联建议直接用 Taostats 数据源。</p>
+<hr />
+<h2 id="十拷贝到另一台电脑">十、拷贝到另一台电脑</h2>
+<p>这个文件夹是可以整体搬走的，但<strong>运行环境不能直接搬</strong>。正确做法：</p>
+<ol>
+<li>在旧电脑双击 <code>停止.cmd</code> 关闭服务；</li>
+<li>把<strong>整个文件夹</strong>复制到新电脑（U 盘、网盘都行）；</li>
+<li>在新电脑进入文件夹，双击 <strong><code>安装.cmd</code></strong>；
+   - 脚本检测到 <code>.venv</code> 失效会自己重建，不需要你手动删除；
+   - 如果新电脑没装 Python，脚本会尝试自动装，见 <a href="#三安装只需一次">三、安装</a>；</li>
+<li>装完双击桌面快捷方式即可使用。</li>
+</ol>
+<h3 id="数据要不要一起带走">数据要不要一起带走</h3>
+<table>
+<thead>
+<tr>
+<th>文件夹</th>
+<th>内容</th>
+<th>建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>data\</code></td>
+<td>地址库、查询记录、本地索引数据库</td>
+<td><strong>想保留历史就一起拷</strong>；想从空白开始就删掉，启动时会自动重建</td>
+</tr>
+<tr>
+<td><code>logs\</code></td>
+<td>运行日志</td>
+<td>可不拷</td>
+</tr>
+<tr>
+<td><code>.venv\</code></td>
+<td>运行环境</td>
+<td>可以不拷（会自动重建），拷了也没问题</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>注意：<code>data\</code> 里有你查过的地址记录，如果把文件夹发给别人，建议先删掉 <code>data\</code>。</p>
+</blockquote>
+<hr />
+<h2 id="十一常见问题">十一、常见问题</h2>
+<p><strong>Q：双击 <code>安装.cmd</code> 后窗口一闪就没了？</strong>
+说明安装过程中出错并退出了。重新双击一次，窗口最后会停住显示错误信息；把信息截图或复制下来便于排查。最常见原因是没装 Python 或网络连不上 PyPI。</p>
+<p><strong>Q：安装时提示“禁止运行脚本”？</strong>
+<code>安装.cmd</code>、<code>启动.cmd</code> 已经用 <code>-ExecutionPolicy Bypass</code> 绕过这个限制，正常不会出现。如果仍被拦，多半是公司电脑的安全策略，需要找 IT 放开。</p>
+<p><strong>Q：页面打开是空白 / 样式错乱？</strong>
+按 <strong>Ctrl + F5</strong> 强制刷新。版本更新后浏览器可能还在用旧缓存。</p>
+<p><strong>Q：提示端口被占用 / 服务起不来？</strong>
+8766 端口被别的程序占了。在文件夹的 PowerShell 里执行 <code>.\start.ps1 -Port 8777</code>，然后访问 <a href="http://127.0.0.1:8777">http://127.0.0.1:8777</a>。</p>
+<p><strong>Q：查询结果的地址是 0 个？</strong>
+依次检查：① 是否勾选了“使用 Taostats 历史索引”；② 金额阈值是否设得太高（把 1 改成 0.1 试试）；③ 这个地址是不是新地址、本来就没有往来；④ 看结果下方的“数据范围与限制”写了什么。</p>
+<p><strong>Q：分轮查询到一半不动了？</strong>
+每分钟 5 次请求的限制会让每轮之间等约 1 分钟，属正常现象。如果超过 3 分钟没变化，点“停止续查”保留已有结果，稍后重试。</p>
+<p><strong>Q：Taostats 报 401 / 401 Unauthorized？</strong>
+key 没填、填错，或服务重启后没重新填。重新粘贴一次 key 再保存。</p>
+<p><strong>Q：能不能在 Mac 或 Linux 上用？</strong>
+可以，但需要手动建环境：装 Python 3.10–3.13，执行 <code>python -m venv .venv</code>、<code>.venv/bin/pip install -r requirements.txt</code>、<code>.venv/bin/python run.py</code>，然后访问同一地址。一键脚本只适配 Windows。</p>
+<p><strong>Q：数据存在哪？要不要备份？</strong>
+全部在 <code>data\wallet_link.db</code> 一个文件里（SQLite）。备份就复制这个文件；换电脑就带着 <code>data\</code> 文件夹。</p>
+<p><strong>Q：怎么彻底卸载？</strong>
+先双击 <code>停止.cmd</code>，删掉整个文件夹和桌面快捷方式即可。没有写注册表、没有后台服务、没有开机自启项。</p>
+<hr />
+<h2 id="十二名词解释">十二、名词解释</h2>
+<table>
+<thead>
+<tr>
+<th>名词</th>
+<th>通俗解释</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SS58 地址</td>
+<td>Bittensor 的钱包地址格式，48 位字符串，以 <code>5</code> 开头</td>
+</tr>
+<tr>
+<td>TAO</td>
+<td>Bittensor 的原生代币，金额单位</td>
+</tr>
+<tr>
+<td>冷钱包 / coldkey</td>
+<td>掌握资产的地址，转账通常发生在冷钱包之间</td>
+</tr>
+<tr>
+<td>热钱包 / hotkey</td>
+<td>用于质押和验证的地址</td>
+</tr>
+<tr>
+<td>子网 / subnet</td>
+<td>Bittensor 里的独立子网络，有自己的代币（alpha）</td>
+</tr>
+<tr>
+<td>stake 转移</td>
+<td>把一个子网的质押份额从一个冷钱包转到另一个冷钱包，也是资金关联的强信号</td>
+</tr>
+<tr>
+<td>层级（跳数）</td>
+<td>从起始地址出发经过几次转账到达该地址</td>
+</tr>
+<tr>
+<td>水位（cursor）</td>
+<td>本地索引已经扫到哪个区块，用来续扫不重复</td>
+</tr>
+<tr>
+<td>API 额度</td>
+<td>Taostats 免费账号的请求次数限制，按分钟和月份计算</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="十三还想深入看">十三、还想深入看</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue/blob/main/README.md">README.md</a></td>
+<td>完整功能清单、接口说明、参数含义</td>
+</tr>
+<tr>
+<td><a href="https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue/blob/main/CHANGELOG.md">CHANGELOG.md</a></td>
+<td>每个版本改了什么</td>
+</tr>
+<tr>
+<td><a href="https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue/blob/main/docs/DESIGN_FEASIBILITY.md">docs/DESIGN_FEASIBILITY.md</a></td>
+<td>数据模型、关联算法、可行性边界</td>
+</tr>
+<tr>
+<td><a href="https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue/blob/main/docs/VERIFICATION.md">docs/VERIFICATION.md</a></td>
+<td>实测记录与验收结果</td>
+</tr>
+<tr>
+<td><a href="https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue/blob/main/docs/HANDOFF.md">docs/HANDOFF.md</a></td>
+<td>开发交接说明</td>
+</tr>
+</tbody>
+</table>
+<p>遇到问题先看 <code>logs\wallet-link.stderr.log</code>，里面通常直接写了原因。</p>
+</article>
+<footer class="doc-foot">本页由 tools/build_usage_html.py 从 使用说明.md 自动生成，请勿直接编辑 HTML。</footer>
+</div>
+</body>
+</html>

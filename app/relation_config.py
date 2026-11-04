@@ -72,6 +72,9 @@ class TransferRecord:
     amount_tao: Decimal
     block_hash: str = ""
     timestamp: str = ""
+    edge_type: str = "tao_transfer"
+    netuid: int | None = None
+    hotkey: str = ""
 
 
 @dataclass
@@ -86,6 +89,9 @@ class Edge:
     depth: int = 1
     reason: str = ""
     related_address: str = ""
+    edge_type: str = "tao_transfer"
+    netuid: int | None = None
+    hotkey: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -128,6 +134,7 @@ class RelationResult:
     role_reason: str = ""
     exchange_confirmed: bool = False
     exchange_rejected: bool = False
+    stake_transfer_count: int = 0
 
 
 @dataclass

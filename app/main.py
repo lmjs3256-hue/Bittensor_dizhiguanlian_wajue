@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 from .config import database_path, settings
 from .db import Database
 from .inputs import InputError
+from .jobs import RelationJobManager
 from .validation import is_valid_ss58
 from .service import LinkService, ScanBusyError
 from .taostats import (
@@ -37,7 +39,15 @@ VERSION_INFO = read_version_info()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     DATABASE.initialize()
-    yield
+    scheduler = asyncio.create_task(_job_scheduler())
+    try:
+        yield
+    finally:
+        scheduler.cancel()
+        try:
+            await scheduler
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 关闭时不再关心
+            pass
 
 
 app = FastAPI(
@@ -47,6 +57,26 @@ app = FastAPI(
 )
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 SERVICE = LinkService(DATABASE, CONFIG.rpc_url)
+JOBS = RelationJobManager()
+
+
+async def _job_scheduler() -> None:
+    """定时推进到期的分轮作业。
+
+    每轮最多花掉 5 次 Taostats 请求，因此放在线程里执行，避免阻塞事件循环；
+    同一时刻只推进一轮，和本机 5 次/分钟的限速保持一致。
+    """
+
+    while True:
+        await asyncio.sleep(2)
+        try:
+            for job in JOBS.due():
+                await asyncio.to_thread(JOBS.run_round, job)
+            JOBS.cleanup()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 定时器不因单次失败退出
+            continue
 
 
 def service() -> LinkService:
@@ -95,6 +125,36 @@ class RelationInput(BaseModel):
     data_source: str = Field(default="local", pattern="^(local|taostats)$")
     filter_exchanges: bool = False
     filter_validators: bool = False
+
+
+class RelationJobInput(BaseModel):
+    seed: str = Field(min_length=1, max_length=64)
+    depth: int = Field(default=3, ge=1, le=3)
+    min_edge_tao: str = Field(default="1")
+    min_total_tao: str = Field(default="1")
+    include_incoming: bool = True
+    include_outgoing: bool = True
+    filter_exchanges: bool = False
+    filter_validators: bool = False
+    round_interval_seconds: int | None = Field(default=None, ge=10, le=600)
+    max_rounds: int | None = Field(default=None, ge=1, le=100)
+
+
+class RelationSyncInput(BaseModel):
+    seed: str = Field(default="", max_length=64)
+    addresses: list[str] = Field(default_factory=list, max_length=5000)
+    include_seed: bool = True
+    category: str = Field(
+        default="WATCH", pattern="^(SEED|WATCH|BLACKLIST|EXCHANGE|VALIDATOR)$"
+    )
+    label: str = Field(default="", max_length=160)
+    note: str = Field(default="", max_length=2000)
+    # 只同步「已经命中地址库的关联地址 + 发起地址」，用于把发起地址补进库。
+    only_library_matched: bool = False
+
+
+class HistoryDeleteInput(BaseModel):
+    ids: list[Annotated[int, Field(gt=0)]] = Field(min_length=1, max_length=5000)
 
 
 @app.get("/", include_in_schema=False)
@@ -337,6 +397,129 @@ def relations(payload: RelationInput, svc: Annotated[LinkService, Depends(servic
             filter_validators=payload.filter_validators,
         )
     except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/relations/jobs")
+def start_relation_job(
+    payload: RelationJobInput, svc: Annotated[LinkService, Depends(service)]
+):
+    """创建分轮查询作业：每分钟推进一轮，直到所有待查地址查完。"""
+
+    if not payload.seed.strip():
+        raise HTTPException(422, "seed must not be blank")
+    try:
+        job = JOBS.create(
+            svc,
+            seed=payload.seed.strip(),
+            depth=payload.depth,
+            min_edge_tao=payload.min_edge_tao,
+            min_total_tao=payload.min_total_tao,
+            include_incoming=payload.include_incoming,
+            include_outgoing=payload.include_outgoing,
+            filter_exchanges=payload.filter_exchanges,
+            filter_validators=payload.filter_validators,
+            round_interval=payload.round_interval_seconds,
+            max_rounds=payload.max_rounds,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return JOBS.payload(job)
+
+
+@app.get("/api/relations/jobs/{job_id}")
+def get_relation_job(job_id: str):
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    return JOBS.payload(job)
+
+
+@app.post("/api/relations/jobs/{job_id}/cancel")
+def cancel_relation_job(job_id: str):
+    job = JOBS.cancel(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    return JOBS.payload(job)
+
+
+@app.get("/api/relations/history")
+def relation_history(
+    svc: Annotated[LinkService, Depends(service)],
+    limit: int = Query(default=30, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """查询记录列表：每次关联查询（含中途停止）都会留下一条。"""
+
+    return svc.relation_history(limit=limit, offset=offset)
+
+
+@app.get("/api/relations/history/{archive_id}")
+def relation_history_detail(
+    archive_id: int, svc: Annotated[LinkService, Depends(service)]
+):
+    try:
+        return svc.relation_history_detail(archive_id)
+    except InputError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.get("/api/relations/history/{archive_id}/export")
+def export_relation_history(
+    archive_id: int,
+    svc: Annotated[LinkService, Depends(service)],
+    format: str = Query(default="txt", pattern="^(txt|json)$"),
+):
+    try:
+        content, media_type, filename = svc.export_relation_history(archive_id, format)
+    except InputError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.delete("/api/relations/history/{archive_id}")
+def delete_relation_history(
+    archive_id: int, svc: Annotated[LinkService, Depends(service)]
+):
+    deleted = svc.delete_relation_history([archive_id])
+    if not deleted:
+        raise HTTPException(404, "history record not found")
+    return {"deleted": deleted}
+
+
+@app.delete("/api/relations/history")
+def delete_relation_history_batch(
+    payload: HistoryDeleteInput, svc: Annotated[LinkService, Depends(service)]
+):
+    return {"deleted": svc.delete_relation_history(payload.ids)}
+
+
+@app.post("/api/relations/history/clear")
+def clear_relation_history(svc: Annotated[LinkService, Depends(service)]):
+    return {"deleted": svc.clear_relation_history()}
+
+
+@app.post("/api/relations/sync-library")
+def sync_relation_library(
+    payload: RelationSyncInput, svc: Annotated[LinkService, Depends(service)]
+):
+    """把关联地址和发起地址去重写入地址库，已存在的地址不覆盖。"""
+
+    try:
+        return svc.sync_relation_addresses(
+            seed=payload.seed.strip(),
+            addresses=payload.addresses,
+            include_seed=payload.include_seed,
+            category=payload.category,
+            label=payload.label,
+            note=payload.note,
+            only_library_matched=payload.only_library_matched,
+        )
+    except InputError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 

@@ -50,6 +50,34 @@ class AddressLibrary(Base):
     )
 
 
+class RelationArchive(Base):
+    """一次关联查询的完整快照。
+
+    分轮作业可能跑十几分钟，用户很可能来不及导出就被下一次查询覆盖界面。
+    这里把最终结果（含中途停止的部分结果）落库，历史页可以回看、重新导出，
+    并把关联地址补写进地址库。
+    """
+
+    __tablename__ = "relation_archives"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(32), default="", index=True)
+    kind: Mapped[str] = mapped_column(String(16), default="job", index=True)
+    seed: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="complete", index=True)
+    data_source: Mapped[str] = mapped_column(String(16), default="taostats")
+    depth: Mapped[int] = mapped_column(Integer, default=3)
+    rounds: Mapped[int] = mapped_column(Integer, default=0)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    related_count: Mapped[int] = mapped_column(Integer, default=0)
+    library_hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 完整结果 JSON；历史页的“查看结果”和导出都从这里还原。
+    payload: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class Transfer(Base):
     __tablename__ = "transfers"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -63,6 +91,11 @@ class Transfer(Base):
     amount_rao: Mapped[int] = mapped_column(Integer)
     amount_tao: Mapped[Decimal] = mapped_column(nullable=False)
     timestamp: Mapped[str] = mapped_column(String(32), default="")
+    edge_type: Mapped[str] = mapped_column(
+        String(24), default="tao_transfer", nullable=False, index=True
+    )
+    netuid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hotkey: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (
@@ -169,6 +202,25 @@ class Database:
                         "WHERE category = 'EXCHANGE'"
                     )
                 )
+            transfer_columns = {
+                row[1] for row in connection.execute(text("PRAGMA table_info(transfers)"))
+            }
+            if "edge_type" not in transfer_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE transfers ADD COLUMN edge_type "
+                        "VARCHAR(24) NOT NULL DEFAULT 'tao_transfer'"
+                    )
+                )
+            if "netuid" not in transfer_columns:
+                connection.execute(text("ALTER TABLE transfers ADD COLUMN netuid INTEGER"))
+            if "hotkey" not in transfer_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE transfers ADD COLUMN hotkey "
+                        "VARCHAR(64) NOT NULL DEFAULT ''"
+                    )
+                )
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -269,6 +321,9 @@ class Database:
                     amount_rao=row["amount_rao"],
                     amount_tao=row["amount_tao"],
                     timestamp=row.get("timestamp", ""),
+                    edge_type=row.get("edge_type", "tao_transfer"),
+                    netuid=row.get("netuid"),
+                    hotkey=row.get("hotkey", ""),
                 )
                 if db.query(Transfer.id).filter(Transfer.event_key == entity.event_key).first():
                     continue
@@ -290,6 +345,9 @@ def to_relation_records(transfers: list[Transfer]):
             amount_tao=Decimal(str(row.amount_tao)),
             block_hash=row.block_hash,
             timestamp=row.timestamp,
+            edge_type=row.edge_type,
+            netuid=row.netuid,
+            hotkey=row.hotkey,
         )
         for row in transfers
     ]

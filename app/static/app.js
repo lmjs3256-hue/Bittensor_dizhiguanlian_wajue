@@ -1,7 +1,12 @@
 "use strict";
 
 const $ = (selector) => document.querySelector(selector);
-const state = { lastResult: null, library: [], depthFilter: "all" };
+const state = {
+  lastResult: null,
+  library: [],
+  depthFilter: "all",
+  history: { offset: 0, total: 0, items: [] },
+};
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -113,14 +118,22 @@ async function api(url, options = {}) {
   return body;
 }
 
-function navigate(view) {
+function navigate(view, updateHash = true) {
   document.querySelectorAll(".nav").forEach((button) => {
     button.classList.toggle("active", button.dataset.nav === view);
   });
-  ["scan", "library", "method", "release"].forEach((name) => {
+  ["scan", "history", "library", "method", "release"].forEach((name) => {
     $(`#view-${name}`).classList.toggle("hidden", name !== view);
   });
+  if (updateHash) {
+    // 刷新或分享链接时仍停在同一页
+    try {
+      if (view === "scan") history.replaceState(null, "", location.pathname);
+      else history.replaceState(null, "", `#${view}`);
+    } catch (_) { /* 本地文件打开时忽略 */ }
+  }
   if (view === "library") loadLibrary();
+  if (view === "history") loadHistory();
   if (view === "release") loadVersionInfo();
 }
 
@@ -249,9 +262,10 @@ function renderResult(data) {
   $("#result").classList.remove("hidden");
   const sourcesLabel = (data.data_sources_used || []).map(sourceLabel).join(" + ") || "无数据来源";
   const apiUsage = data.data_source === "taostats"
-    ? ` · API 请求 ${data.api_requests} 次 · 返回转账 ${data.taostats_transfer_count} 条 · 缓存命中 ${data.api_cache_hits} 次`
+    ? ` · API 请求 ${data.api_requests}/${data.api_request_budget ?? "?"} 次（优先一级关联转账） · 返回转账 ${data.taostats_transfer_count} 条 · 缓存命中 ${data.api_cache_hits} 次`
     : "";
-  $("#result-subtitle").textContent = `${data.seed} · 最多 ${data.max_depth} 级 · 来源 ${sourcesLabel}${apiUsage} · 数据截止 ${data.data_cutoff_block ? number(data.data_cutoff_block) : "未采集"} 区块`;
+  const stakeUsage = data.stake_transfer_count > 0 ? ` · 子网 stake 转移 ${data.stake_transfer_count} 条` : "";
+  $("#result-subtitle").textContent = `${data.seed} · 最多 ${data.max_depth} 级 · 来源 ${sourcesLabel}${apiUsage}${stakeUsage} · 数据截止 ${data.data_cutoff_block ? number(data.data_cutoff_block) : "未采集"} 区块`;
   $("#seed-result-address").textContent = data.seed || "-";
   $("#seed-result-balance").textContent = formatTao(data.seed_balance_tao, true);
   const paginationBadge = data.data_source === "taostats" && data.pagination_complete === false
@@ -271,11 +285,165 @@ function renderResult(data) {
     $("#seed-library-hit-content").textContent = "";
   }
   refreshRelatedTable();
+  const libraryHitCount = (data.library_matches || []).length;
+  $("#sync-hint").textContent = `本次 ${(data.related || []).length} 个关联地址 + 发起地址；其中命中已知地址库 ${libraryHitCount} 个。`;
+  $("#sync-matched").disabled = libraryHitCount === 0;
   $("#warnings").innerHTML = [...data.warnings, ...data.limitations].map((text) => `<li>${esc(text)}</li>`).join("");
   document.querySelectorAll("[data-use-address]").forEach((button) => button.addEventListener("click", () => {
     $("#seed").value = button.dataset.useAddress;
     window.scrollTo({ top: 0, behavior: "smooth" });
   }));
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+let activeJob = null;
+let jobStopping = false;
+
+const JOB_KIND_LABELS = {
+  transfer_shallow: "一级关联转账",
+  stake_shallow: "一级子网转移",
+  transfer_deep: "二级及更深转账",
+  transfer_pages: "转账历史翻页",
+  stake_deep: "二级及更深子网转移",
+};
+
+function describeRound(counts, labels) {
+  const dict = labels || JOB_KIND_LABELS;
+  const parts = Object.entries(counts || {})
+    .filter(([, count]) => count > 0)
+    .map(([key, count]) => `${dict[key] || key} ${count} 个`);
+  return parts.join("、");
+}
+
+function showJobProgress(state) {
+  const box = $("#job-progress");
+  const text = $("#job-text");
+  const planLine = $("#job-plan");
+  if (!state) {
+    box.classList.add("hidden");
+    planLine.textContent = "";
+    jobStopping = false;
+    $("#cancel-job").disabled = false;
+    $("#cancel-job").textContent = "停止续查";
+    return;
+  }
+  box.classList.remove("hidden");
+  const parts = [];
+  if (state.status === "running") {
+    parts.push(`正在执行第 ${state.rounds_done + 1}/${state.max_rounds} 轮`);
+  } else if (state.status === "waiting") {
+    parts.push(`已完成第 ${state.rounds_done}/${state.max_rounds} 轮`);
+  }
+  parts.push(`累计请求 ${state.requests_total} 次`);
+  if (state.remaining_requests > 0) {
+    parts.push(`剩余 ${state.remaining_requests} 个请求（约 ${state.estimated_rounds_left} 轮）`);
+  } else {
+    parts.push("待查队列已清空");
+  }
+  parts.push(`已发现 ${state.queued_addresses} 个地址`);
+  if (state.status === "waiting" && state.next_round_in > 0) {
+    parts.push(`下一轮约 ${state.next_round_in} 秒后`);
+  }
+  if (state.error) parts.push(state.error);
+  text.textContent = parts.join(" · ");
+
+  const lines = [];
+  const last = state.last_round;
+  if (last && last.requests > 0) {
+    lines.push(`上一轮实际查询：${describeRound(last.counts, state.kind_labels) || "无"}（${last.requests} 次请求，新增 ${last.new_addresses} 个地址 / ${last.new_records} 条记录）`);
+  }
+  const plan = state.next_round_plan;
+  if (plan && plan.requests > 0) {
+    lines.push(`下一轮计划查询：${describeRound(plan.counts, state.kind_labels) || "无"}（${plan.requests} 次请求）`);
+  }
+  planLine.textContent = lines.join("　|　");
+}
+
+async function cancelActiveJob() {
+  if (!activeJob || jobStopping) return;
+  jobStopping = true;
+  const button = $("#cancel-job");
+  button.disabled = true;
+  button.textContent = "正在停止…";
+  $("#job-text").textContent = "正在停止：会把已查到的关联整理成结果，请稍候…";
+  // 停止请求会在后台合成部分结果，可能比轮询慢；这里不阻塞轮询。
+  api(`/api/relations/jobs/${activeJob}/cancel`, { method: "POST" }).catch((error) => {
+    jobStopping = false;
+    button.disabled = false;
+    button.textContent = "停止续查";
+    toast(error.message, true);
+  });
+}
+
+async function runRelationJob(payload) {
+  const created = await api("/api/relations/jobs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  const jobId = created.job_id;
+  activeJob = jobId;
+  showJobProgress(created);
+  let last = created;
+  while (activeJob === jobId) {
+    if (last.status === "complete") {
+      activeJob = null;
+      showJobProgress(null);
+      renderResult(last.result);
+      const libraryHitCount = (last.result.library_matches?.length || 0) + (last.result.seed_library_matches?.length || 0);
+      toast(`分轮查询完成：共 ${last.rounds_done} 轮、${last.requests_total} 次请求，${last.result.related.length} 个关联地址，${libraryHitCount} 个地址库命中。`);
+      return;
+    }
+    if (last.status === "cancelled") {
+      activeJob = null;
+      showJobProgress(null);
+      if (last.result) {
+        renderResult(last.result);
+        const remaining = last.remaining_requests || 0;
+        const summary = `已停止续查：完成 ${last.rounds_done} 轮、${last.requests_total} 次请求，当前得到 ${last.result.related.length} 个关联地址`;
+        toast(
+          remaining > 0
+            ? `${summary}；仍有 ${last.pending_transfer} 个转账明细 / ${last.pending_stake} 个子网请求（共 ${remaining} 个）未查询。`
+            : `${summary}；停止时待查队列已清空。`,
+          remaining > 0
+        );
+      } else {
+        toast("已停止续查。", true);
+      }
+      return;
+    }
+    if (last.status === "failed") {
+      activeJob = null;
+      showJobProgress(null);
+      toast(last.error || "分轮查询失败。", true);
+      return;
+    }
+    await sleep(3000);
+    if (activeJob !== jobId) return;
+    try {
+      last = await api(`/api/relations/jobs/${jobId}`);
+    } catch (error) {
+      activeJob = null;
+      showJobProgress(null);
+      throw error;
+    }
+    showJobProgress(last);
+  }
+}
+
+function scanPayload(seed) {
+  const direction = $("#direction").value;
+  return {
+    seed,
+    depth: Number($("#depth").value),
+    min_edge_tao: $("#min-edge").value,
+    min_total_tao: $("#min-total").value,
+    include_incoming: direction !== "outgoing",
+    include_outgoing: direction !== "incoming",
+    data_source: $("#taostats-source").checked ? "taostats" : "local",
+    filter_exchanges: $("#filter-exchanges").checked,
+    filter_validators: $("#filter-validators").checked,
+  };
 }
 
 async function runRelations() {
@@ -285,22 +453,17 @@ async function runRelations() {
   button.disabled = true;
   button.textContent = "扫描中…";
   try {
-    const direction = $("#direction").value;
     const requestedSource = $("#taostats-source").checked ? "taostats" : "local";
-    const data = await api("/api/relations", {
-      method: "POST",
-      body: JSON.stringify({
-        seed,
-        depth: Number($("#depth").value),
-        min_edge_tao: $("#min-edge").value,
-        min_total_tao: $("#min-total").value,
-        include_incoming: direction !== "outgoing",
-        include_outgoing: direction !== "incoming",
-        data_source: requestedSource,
-        filter_exchanges: $("#filter-exchanges").checked,
-        filter_validators: $("#filter-validators").checked,
-      }),
-    });
+    const payload = scanPayload(seed);
+    if (requestedSource === "taostats" && $("#multi-round").checked) {
+      const rounds = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 12));
+      $("#max-rounds").value = rounds;
+      payload.max_rounds = rounds;
+      button.textContent = "分轮查询中…";
+      await runRelationJob(payload);
+      return;
+    }
+    const data = await api("/api/relations", { method: "POST", body: JSON.stringify(payload) });
     if (requestedSource === "taostats" && data.data_source !== "taostats") {
       toast("当前后台尚未加载 Taostats 接入版本。请在项目 PowerShell 窗口执行 .\\stop.ps1，再执行 .\\start.ps1。", true);
       return;
@@ -311,8 +474,87 @@ async function runRelations() {
   } catch (error) {
     toast(error.message, true);
   } finally {
+    activeJob = null;
+    showJobProgress(null);
     button.disabled = false;
     button.textContent = "扫描关联";
+  }
+}
+
+/* 批量补录：0.3.0 之前的结果没有落库，只能按地址重跑一遍再归档。
+   地址之间留出间隔，避免 Taostats 每分钟 5 次的上限被连续打满。 */
+const backfill = { running: false, stop: false };
+
+function parseBackfillSeeds(text) {
+  const seen = new Set();
+  const seeds = [];
+  (text || "").split(/[\s,;，；、]+/).forEach((raw) => {
+    const value = raw.trim();
+    if (!value || seen.has(value)) return;
+    if (!/^[1-9A-HJ-NP-Za-km-z]{47,48}$/.test(value)) return;
+    seen.add(value);
+    seeds.push(value);
+  });
+  return seeds;
+}
+
+function renderBackfillProgress(text, error = false) {
+  const box = $("#backfill-progress");
+  if (!text) { box.classList.add("hidden"); box.textContent = ""; return; }
+  box.classList.remove("hidden");
+  box.classList.toggle("is-error", error);
+  box.textContent = text;
+}
+
+async function runBackfill() {
+  if (backfill.running) return;
+  const seeds = parseBackfillSeeds($("#backfill-seeds").value);
+  if (!seeds.length) {
+    toast("请先粘贴至少一个有效起始地址（每行一个，48 位 SS58 地址）。", true);
+    return;
+  }
+  const payloadBase = scanPayload("");
+  const interval = payloadBase.data_source === "taostats" ? 12000 : 2500;
+  backfill.running = true;
+  backfill.stop = false;
+  $("#start-backfill").disabled = true;
+  $("#stop-backfill").disabled = false;
+  let ok = 0;
+  let failed = 0;
+  let related = 0;
+  const failures = [];
+  try {
+    for (let index = 0; index < seeds.length; index += 1) {
+      if (backfill.stop) break;
+      const seed = seeds[index];
+      renderBackfillProgress(
+        `正在补录 ${index + 1}/${seeds.length}：${seed.slice(0, 8)}… · 成功 ${ok} / 失败 ${failed}`
+      );
+      try {
+        const data = await api("/api/relations", {
+          method: "POST",
+          body: JSON.stringify({ ...payloadBase, seed }),
+        });
+        ok += 1;
+        related += data.related.length;
+      } catch (error) {
+        failed += 1;
+        failures.push(`${seed.slice(0, 8)}… ${error.message}`);
+      }
+      renderBackfillProgress(
+        `已完成 ${index + 1}/${seeds.length} · 成功 ${ok} / 失败 ${failed} · 累计 ${related} 个关联地址`
+      );
+      if (index < seeds.length - 1 && !backfill.stop) await sleep(interval);
+    }
+    await loadHistory(0);
+    const stopped = backfill.stop && ok + failed < seeds.length;
+    const summary = `${stopped ? "已停止补录" : "补录完成"}：成功 ${ok} 个、失败 ${failed} 个，累计 ${related} 个关联地址，结果已写入查询记录。`;
+    renderBackfillProgress(failures.length ? `${summary}\n失败明细：${failures.slice(0, 5).join("；")}` : summary, failed > 0);
+    toast(summary, failed > 0 && !ok);
+  } finally {
+    backfill.running = false;
+    $("#start-backfill").disabled = false;
+    $("#stop-backfill").disabled = true;
   }
 }
 
@@ -583,6 +825,177 @@ async function syncExchangeLibrary() {
   }
 }
 
+// -- 查询记录（历史结果） -------------------------------------------------
+const HISTORY_PAGE_SIZE = 20;
+
+function historyTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function historyStatus(value) {
+  return ({
+    complete: ["已完成", ""],
+    cancelled: ["已停止", "warn"],
+    failed: ["失败", "bad"],
+  })[value] || [value || "-", ""];
+}
+
+function historyTable(items) {
+  if (!items.length) {
+    return '<div class="placeholder">还没有查询记录。完成一次关联查询（分轮或单轮）后会自动保存在这里。</div>';
+  }
+  return `<table><thead><tr><th>时间</th><th>发起地址</th><th>状态</th><th>关联地址</th><th>地址库命中</th><th>轮次 / 请求</th><th>操作</th></tr></thead><tbody>${items.map((item) => {
+    const [statusText, statusTone] = historyStatus(item.status);
+    const kindText = item.kind === "job" ? "分轮" : "单轮";
+    const hit = item.library_hit_count
+      ? `<span class="tag warn">${number(item.library_hit_count)}</span>`
+      : "-";
+    return `<tr><td class="mono history-time">${esc(historyTime(item.created_at))}</td><td class="mono address"><div class="address-main"><code title="${esc(item.seed)}">${esc(shortAddr(item.seed))}</code><button class="ghost copy-address" data-copy-address="${esc(item.seed)}" title="复制完整地址" type="button">复制</button></div></td><td><span class="tag ${statusTone}">${esc(statusText)}</span><span class="history-kind">${esc(kindText)}</span></td><td class="amount">${number(item.related_count)}</td><td class="amount">${hit}</td><td class="mono">${number(item.rounds)} / ${number(item.requests)}</td><td><div class="history-row-actions"><button class="secondary note-save" data-history-view="${item.id}" type="button">查看结果</button><button class="ghost note-save" data-history-export="txt" data-history-id="${item.id}" type="button">导出地址</button><button class="ghost note-save" data-history-export="json" data-history-id="${item.id}" type="button">导出 JSON</button><button class="ghost note-save" data-history-sync="${item.id}" type="button">同步地址库</button><button class="danger note-save" data-history-delete="${item.id}" type="button">删除</button></div></td></tr>`;
+  }).join("")}</tbody></table>`;
+}
+
+async function loadHistory(offset = state.history.offset) {
+  try {
+    const data = await api(`/api/relations/history?limit=${HISTORY_PAGE_SIZE}&offset=${offset}`);
+    state.history = { offset: data.offset, total: data.total, items: data.items };
+    $("#history-table").innerHTML = historyTable(data.items);
+    $("#history-count").textContent = `${number(data.total)} 条`;
+    const page = Math.floor(data.offset / HISTORY_PAGE_SIZE) + 1;
+    const pages = Math.max(1, Math.ceil(data.total / HISTORY_PAGE_SIZE));
+    $("#history-page").textContent = `第 ${page} / ${pages} 页`;
+    $("#history-prev").disabled = data.offset <= 0;
+    $("#history-next").disabled = data.offset + HISTORY_PAGE_SIZE >= data.total;
+  } catch (error) {
+    $("#history-table").innerHTML = `<div class="placeholder">查询记录加载失败：${esc(error.message)}</div>`;
+    toast(`查询记录加载失败：${error.message}`, true);
+  }
+}
+
+async function viewHistoryRecord(id) {
+  try {
+    const data = await api(`/api/relations/history/${id}`);
+    if (!data.result) {
+      toast("这条记录没有可展示的结果。", true);
+      return;
+    }
+    navigate("scan");
+    renderResult(data.result);
+    toast(`已载入历史记录 #${id}（${historyTime(data.item.created_at)}）：${(data.result.related || []).length} 个关联地址。`);
+    const panel = $("#result");
+    if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    toast(`历史记录读取失败：${error.message}`, true);
+  }
+}
+
+async function exportHistoryRecord(id, format) {
+  try {
+    const response = await fetch(`/api/relations/history/${id}/export?format=${encodeURIComponent(format)}`);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail || `导出失败 (${response.status})`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const matched = disposition.match(/filename="([^"]+)"/);
+    const filename = matched ? matched[1] : `bittensor-history-${id}.${format}`;
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+    toast(`历史记录 #${id} 已导出为 ${format.toUpperCase()}。`);
+  } catch (error) {
+    toast(`历史记录导出失败：${error.message}`, true);
+  }
+}
+
+async function deleteHistoryRecord(id) {
+  if (!window.confirm("确定删除这条查询记录？删除后无法恢复（地址库中的地址不受影响）。")) return;
+  try {
+    await api(`/api/relations/history/${id}`, { method: "DELETE" });
+    await loadHistory(Math.max(0, state.history.offset));
+    toast("查询记录已删除。");
+  } catch (error) {
+    toast(`删除失败：${error.message}`, true);
+  }
+}
+
+async function clearHistory() {
+  if (!state.history.total) { toast("当前没有查询记录。"); return; }
+  if (!window.confirm(`确定清空全部 ${state.history.total} 条查询记录？此操作不可撤销，地址库不受影响。`)) return;
+  try {
+    const result = await api("/api/relations/history/clear", { method: "POST" });
+    await loadHistory(0);
+    toast(`已清空 ${result.deleted} 条查询记录。`);
+  } catch (error) {
+    toast(`清空失败：${error.message}`, true);
+  }
+}
+
+// -- 关联地址同步进地址库 -------------------------------------------------
+async function syncAddresses({ seed, related, mode = "all", category = "WATCH", label = "" }) {
+  const addresses = (related || []).map((row) => row.address).filter(Boolean);
+  return api("/api/relations/sync-library", {
+    method: "POST",
+    body: JSON.stringify({
+      seed: seed || "",
+      addresses,
+      include_seed: true,
+      category,
+      label,
+      only_library_matched: mode === "matched",
+    }),
+  });
+}
+
+function syncSummary(result) {
+  const parts = [`新增 ${result.inserted} 个`, `已存在 ${result.existing} 个`];
+  if (result.matched) parts.push(`命中地址库 ${result.matched} 个`);
+  if (result.invalid) parts.push(`跳过无效 ${result.invalid} 个`);
+  return parts.join("，");
+}
+
+async function syncCurrentResult(mode) {
+  if (!state.lastResult) { toast("先完成一次关联查询。", true); return; }
+  const button = mode === "matched" ? $("#sync-matched") : $("#sync-all");
+  button.disabled = true;
+  try {
+    const result = await syncAddresses({
+      seed: state.lastResult.seed,
+      related: state.lastResult.related,
+      mode,
+      category: $("#sync-category").value,
+      label: $("#sync-label").value.trim(),
+    });
+    toast(`地址库同步完成：${syncSummary(result)}。`);
+  } catch (error) {
+    toast(`同步失败：${error.message}`, true);
+  } finally {
+    button.disabled = mode === "matched" && !(state.lastResult?.library_matches || []).length;
+  }
+}
+
+async function syncHistoryRecord(id) {
+  try {
+    const data = await api(`/api/relations/history/${id}`);
+    if (!data.result) { toast("这条记录没有可同步的地址。", true); return; }
+    const result = await syncAddresses({
+      seed: data.result.seed,
+      related: data.result.related,
+    });
+    toast(`历史记录 #${id} 已同步到地址库：${syncSummary(result)}。`);
+    await loadHistory(state.history.offset);
+  } catch (error) {
+    toast(`同步失败：${error.message}`, true);
+  }
+}
+
 document.querySelectorAll("[data-nav]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.nav)));
 const savedTheme = (() => {
   try {
@@ -603,6 +1016,21 @@ $("#taostats-api-key").addEventListener("keydown", (event) => {
   if (event.key === "Enter") saveTaostatsKey();
 });
 $("#run-scan").addEventListener("click", runRelations);
+$("#cancel-job").addEventListener("click", cancelActiveJob);
+$("#taostats-source").addEventListener("change", () => {
+  $("#multi-round").disabled = !$("#taostats-source").checked;
+});
+$("#multi-round").disabled = !$("#taostats-source").checked;
+function updateRoundHint() {
+  const rounds = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 12));
+  $("#round-hint").textContent = `≈ ${rounds * 5} 次请求`;
+}
+$("#max-rounds").addEventListener("input", updateRoundHint);
+$("#max-rounds").addEventListener("change", () => {
+  $("#max-rounds").value = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 12));
+  updateRoundHint();
+});
+updateRoundHint();
 $("#related-depth-filter").addEventListener("change", (event) => {
   state.depthFilter = event.target.value;
   refreshRelatedTable();
@@ -622,6 +1050,27 @@ document.addEventListener("click", (event) => {
   if (exchangeButton) decideExchange(exchangeButton.dataset.address, exchangeButton.dataset.exchangeDecision, exchangeButton);
   const copyButton = event.target.closest("[data-copy-address]");
   if (copyButton) copyAddress(copyButton.dataset.copyAddress, copyButton);
+  const historyView = event.target.closest("[data-history-view]");
+  if (historyView) viewHistoryRecord(historyView.dataset.historyView);
+  const historyExport = event.target.closest("[data-history-export]");
+  if (historyExport) exportHistoryRecord(historyExport.dataset.historyId, historyExport.dataset.historyExport);
+  const historySync = event.target.closest("[data-history-sync]");
+  if (historySync) syncHistoryRecord(historySync.dataset.historySync);
+  const historyDelete = event.target.closest("[data-history-delete]");
+  if (historyDelete) deleteHistoryRecord(historyDelete.dataset.historyDelete);
+});
+$("#sync-all").addEventListener("click", () => syncCurrentResult("all"));
+$("#sync-matched").addEventListener("click", () => syncCurrentResult("matched"));
+$("#refresh-history").addEventListener("click", () => loadHistory(state.history.offset));
+$("#clear-history").addEventListener("click", clearHistory);
+$("#history-prev").addEventListener("click", () => loadHistory(Math.max(0, state.history.offset - HISTORY_PAGE_SIZE)));
+$("#history-next").addEventListener("click", () => loadHistory(state.history.offset + HISTORY_PAGE_SIZE));
+$("#start-backfill").addEventListener("click", runBackfill);
+$("#stop-backfill").addEventListener("click", () => {
+  if (!backfill.running) return;
+  backfill.stop = true;
+  $("#stop-backfill").disabled = true;
+  renderBackfillProgress("正在停止：当前地址查询结束后就不再继续。");
 });
 $("#delete-selected").addEventListener("click", async () => {
   const ids = [...document.querySelectorAll("[data-library-select]:checked")]
@@ -658,6 +1107,7 @@ $("#export-json").addEventListener("click", () => {
       match: row.match,
       library_label: row.library_label,
       library_category: row.library_category,
+      stake_transfer_count: row.stake_transfer_count || 0,
     })),
     warnings: state.lastResult.warnings,
     limitations: state.lastResult.limitations,
@@ -669,6 +1119,47 @@ $("#export-json").addEventListener("click", () => {
   link.click();
   URL.revokeObjectURL(link.href);
 });
+// 纯函数：从关联结果里挑出可导出的地址。地址库中已确认的交易所地址和
+// 验证者地址不导出，避免把公共地址当成待跟进钱包继续扩散。
+function selectExportableAddresses(rows) {
+  const keep = [];
+  const seen = new Set();
+  let skippedExchange = 0;
+  let skippedValidator = 0;
+  for (const row of rows || []) {
+    const category = String(row.library_category || "").toUpperCase();
+    if (category === "EXCHANGE" && row.exchange_confirmed && !row.exchange_rejected) {
+      skippedExchange += 1;
+      continue;
+    }
+    if (category === "VALIDATOR") {
+      skippedValidator += 1;
+      continue;
+    }
+    if (!row.address || seen.has(row.address)) continue;
+    seen.add(row.address);
+    keep.push(row.address);
+  }
+  return { addresses: keep, skippedExchange, skippedValidator };
+}
+
+$("#export-addresses").addEventListener("click", () => {
+  if (!state.lastResult) { toast("先完成一次关联扫描。", true); return; }
+  const { addresses, skippedExchange, skippedValidator } = selectExportableAddresses(state.lastResult.related);
+  if (!addresses.length) {
+    toast(`没有可导出的地址（已排除 ${skippedExchange} 个交易所、${skippedValidator} 个验证者）。`, true);
+    return;
+  }
+  const blob = new Blob([addresses.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `bittensor-addresses-${String(state.lastResult.seed || "").slice(0, 8)}-${Date.now()}.txt`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  toast(`已导出 ${addresses.length} 个地址（每行一个）；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个。`);
+});
 $("#seed").addEventListener("keydown", (event) => { if (event.key === "Enter") runRelations(); });
+const initialView = String(location.hash || "").replace("#", "");
+if (["history", "library", "method", "release"].includes(initialView)) navigate(initialView, false);
 loadOverview();
 loadVersionInfo();

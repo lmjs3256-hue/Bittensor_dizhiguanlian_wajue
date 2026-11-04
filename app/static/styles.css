@@ -45,3 +45,87 @@ table input[type="checkbox"] { width:16px; height:16px; padding:0; accent-color:
 .seed-balance-card b { font-family:var(--mono); font-size:20px; }
 @media (max-width:560px) { .release-heading { display:block; } .release-meta { margin-top:7px; } }
 @media (max-width:560px) { .seed-balance-card { align-items:flex-start; flex-direction:column; } }
+
+/* 起始地址与扫描按钮同一行：按钮紧跟输入框，避免在设置区底部反复上下找 */
+.seed-field { display:grid; gap:7px; color:var(--muted); font-size:12px; }
+.seed-field .seed-row { display:flex; align-items:stretch; gap:10px; }
+.seed-field .seed-row input { flex:1 1 auto; min-width:0; }
+.seed-field .seed-row button { flex:0 0 auto; padding:11px 18px; }
+@media (max-width:560px) { .seed-field .seed-row { flex-wrap:wrap; } .seed-field .seed-row input { flex:1 1 100%; } .seed-field .seed-row button { flex:1 1 100%; } .actions button { flex:0 0 auto; } }
+
+/* 分轮续查进度条：显示轮次、请求次数和下次倒计时，可随时停止 */
+.job-progress { display:flex; align-items:center; gap:10px; margin-top:14px; padding:10px 14px; border:1px solid var(--accent-soft); border-radius:10px; background:var(--accent-soft); color:var(--ink); font-size:12.5px; line-height:1.5; }
+.job-progress #job-text { display:block; }
+.job-body { flex:1 1 auto; min-width:0; display:grid; gap:3px; }
+.job-body #job-plan { color:var(--muted); font-size:11.5px; line-height:1.6; }
+.job-body #job-plan:empty { display:none; }
+.job-progress button.ghost { padding:7px 12px; font-size:12px; background:var(--panel); }
+.job-dot { flex:0 0 auto; width:9px; height:9px; border-radius:50%; background:var(--accent); animation:job-pulse 1.4s infinite ease-in-out; }
+@keyframes job-pulse { 0%,100% { opacity:.35; transform:scale(.85); } 50% { opacity:1; transform:scale(1); } }
+@media (max-width:560px) { .job-progress { flex-wrap:wrap; } .job-progress #job-text { flex:1 1 100%; } }
+.source-choice .multi-round-choice { color:var(--ink); font-weight:650; }
+
+/* 分轮续查的两个设置项：开关 + 轮数上限，同一行显示 */
+.round-options { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+.round-options .round-limit-choice { display:flex; align-items:center; gap:7px; color:var(--ink); font-weight:500; }
+.round-options .round-limit-choice input { width:78px; padding:7px 9px; font-family:var(--mono); }
+@media (max-width:560px) { .round-options { gap:10px; } .round-options .round-limit-choice input { width:66px; } }
+.round-options .round-limit-choice small { color:var(--muted); font-weight:400; font-size:11.5px; }
+
+/* 基础表格：关联结果、地址库、查询记录共用 */
+.table-wrap { overflow-x:auto; }
+.table-wrap table { width:100%; border-collapse:collapse; font-size:12.5px; }
+.table-wrap thead th { padding:9px 12px; text-align:left; color:var(--muted); font-size:11.5px; font-weight:650; background:var(--bg); border-bottom:1px solid var(--line); white-space:nowrap; }
+.table-wrap tbody td { padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+.table-wrap tbody tr:last-child td { border-bottom:0; }
+.table-wrap tbody tr:hover { background:var(--bg); }
+.table-wrap code { font-family:var(--mono); }
+.table-wrap .amount { text-align:right; white-space:nowrap; font-family:var(--mono); }
+.placeholder { padding:16px 4px; color:var(--muted); font-size:12.5px; line-height:1.6; }
+.stats.stats-three { grid-template-columns:repeat(2,minmax(0,1fr)); }
+
+/* 空状态与提示条：无结果时说明下一步，操作结果用 toast 反馈 */
+.empty { padding:64px 24px; margin-bottom:18px; text-align:center; border:1px dashed var(--line); border-radius:var(--radius); background:var(--panel); }
+.empty h2 { margin:16px 0 6px; }
+.empty p { margin:0 auto; max-width:520px; }
+.empty-icon { width:56px; height:56px; margin:0 auto; display:grid; place-items:center; border-radius:16px; background:var(--accent-soft); color:var(--accent); font-weight:800; letter-spacing:1px; }
+.toast { position:fixed; left:50%; bottom:26px; z-index:50; max-width:min(720px,92vw); padding:12px 18px; border-radius:10px; background:var(--ink); color:var(--bg); font-size:13px; line-height:1.55; box-shadow:0 14px 34px rgba(0,0,0,.22); opacity:0; transform:translate(-50%,14px); transition:opacity .2s,transform .2s; pointer-events:none; }
+.toast.show { opacity:1; transform:translate(-50%,0); }
+.toast.error { background:var(--danger); color:#fff; }
+button.danger { border:1px solid var(--line); border-radius:9px; padding:11px 16px; background:var(--panel); color:var(--danger); white-space:nowrap; }
+button.danger:not(:disabled):hover { border-color:var(--danger); }
+
+/* 关联结果 → 地址库：分类/标签可控，两个入口按“是否已命中”区分 */
+.sync-panel { border-color:var(--accent-soft); }
+.sync-panel .section-title { align-items:flex-start; }
+.sync-panel .section-title small { color:var(--muted); font-size:12px; text-align:right; max-width:520px; line-height:1.6; }
+.sync-row { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
+.sync-row label { min-width:170px; }
+.sync-row label:nth-child(2) { flex:1 1 240px; }
+.sync-panel > small { display:block; margin-top:10px; color:var(--muted); line-height:1.6; }
+
+/* 查询记录 */
+.history-top { display:flex; justify-content:space-between; align-items:end; gap:24px; }
+.history-top > div:first-child { max-width:700px; }
+.history-top .inline-form { margin:0; }
+.history-row-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.history-kind { margin-left:6px; color:var(--muted); font-size:11px; }
+.history-time { color:var(--muted); white-space:nowrap; }
+.history-pager { display:flex; align-items:center; justify-content:flex-end; gap:12px; margin-top:14px; color:var(--muted); font-size:12px; }
+@media (max-width:950px) { .history-top { display:block; } .history-top .inline-form { margin-top:14px; } }
+@media (max-width:560px) { .sync-panel .section-title small { text-align:left; } .sync-row label, .sync-row button { flex:1 1 100%; } .history-pager { justify-content:space-between; } }
+.mono,td.mono { font-family:var(--mono); }
+td.address code { word-break:break-all; }
+.library-top { display:flex; justify-content:space-between; gap:24px; align-items:end; }
+.library-top > div:first-child { max-width:700px; }
+@media (max-width:950px) { .library-top { display:block; } .library-top .inline-form { margin-top:14px; } }
+
+/* 查询记录的批量补录：旧版本结果没落库，只能按地址重跑 */
+.backfill-panel #backfill-seeds { width:100%; min-height:96px; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--ink); font:12.5px/1.7 var(--mono); resize:vertical; }
+.backfill-panel #backfill-seeds:focus { outline:none; border-color:var(--accent); }
+.backfill-actions { display:flex; justify-content:space-between; align-items:center; gap:18px; margin-top:12px; flex-wrap:wrap; }
+.backfill-actions > small { color:var(--muted); font-size:12px; line-height:1.6; max-width:640px; }
+.backfill-buttons { display:flex; gap:8px; flex-shrink:0; }
+.backfill-progress { margin-top:12px; padding:11px 14px; border:1px solid var(--accent-soft); border-radius:9px; background:var(--accent-soft); color:var(--ink); font-size:12.5px; line-height:1.7; white-space:pre-line; }
+.backfill-progress.is-error { border-color:color-mix(in srgb, var(--danger) 45%, transparent); background:transparent; color:var(--ink); }
+@media (max-width:560px) { .backfill-actions { display:block; } .backfill-buttons { margin-top:10px; } .backfill-buttons button { flex:1; } }

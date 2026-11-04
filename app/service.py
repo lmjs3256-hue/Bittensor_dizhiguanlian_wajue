@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -10,14 +12,18 @@ from typing import Any
 from sqlalchemy import func, select
 
 from .collector import RPCCollector, query_account_balances
+from .crawl import CrawlState, TaostatsCrawl
+from .crawl import stake_counterparty as _stake_counterparty
 from .db import (
     AddressLibrary,
     ChainCursor,
     Database,
+    RelationArchive,
     ScanJob,
     ScanLock,
     Transfer,
     to_relation_records,
+    utcnow,
 )
 from .inputs import InputError, parse_plain_addresses, read_addresses
 from .relation import discover, exchange_balance_candidates
@@ -29,6 +35,7 @@ from .taostats import (
     TaostatsUnavailableError,
     get_active_validator_addresses,
     get_exchange_addresses,
+    get_stake_transfer_page,
     get_transfer_page,
 )
 from .validation import is_valid_ss58
@@ -38,6 +45,48 @@ MAX_MANUAL_SCAN_BLOCKS = 16
 MAX_TAOSTATS_REQUESTS_PER_QUERY = 5
 MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY = 5
 PUBLIC_MONTHLY_CREDIT_REFERENCE = 10_000
+# 历史记录只保留最近的若干条 / 总体积上限，避免一次重扫就把 SQLite 撑大。
+MAX_ARCHIVE_ROWS = 500
+MAX_ARCHIVE_TOTAL_BYTES = 200 * 1024 * 1024
+MAX_ARCHIVE_PAYLOAD_BYTES = 8 * 1024 * 1024
+MAX_SYNC_ADDRESSES = 5000
+SYNC_CATEGORIES = {"SEED", "WATCH", "BLACKLIST", "EXCHANGE", "VALIDATOR"}
+
+
+@dataclass
+class RelationContext:
+    """一次关联查询中与「爬取」无关的固定上下文。
+
+    分轮作业会把这份上下文和 :class:`CrawlState` 一起保留，下一轮只推进
+    爬取状态，不重新读地址库、不重复查验证者名单。
+    """
+
+    seed: str
+    depth: int
+    data_source: str
+    policy: LinkPolicy
+    filter_exchanges: bool
+    filter_validators: bool
+    library: list[LibraryEntry]
+    first_block: int | None
+    last_block: int | None
+    local_transfer_rows: list[Any]
+    warnings: list[str] = field(default_factory=list)
+    exchange_addresses: set[str] = field(default_factory=set)
+    unconfirmed_exchange_addresses: set[str] = field(default_factory=set)
+    manual_validator_addresses: set[str] = field(default_factory=set)
+    auto_validator_addresses: set[str] = field(default_factory=set)
+    excluded_addresses: set[str] = field(default_factory=set)
+    validator_api_requests: int = 0
+    validator_cache_hits: int = 0
+
+
+def _extend_unique(target: list[str], items: list[str]) -> None:
+    """追加提示语并保持原有顺序去重，避免分轮作业重复堆同样的告警。"""
+
+    for item in items:
+        if item not in target:
+            target.append(item)
 
 
 class ScanBusyError(RuntimeError):
@@ -83,10 +132,44 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
     }
 
 
+def select_exportable_addresses(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """从关联结果挑出可导出的地址。
+
+    已人工确认的交易所地址和验证者地址不导出，避免把公共地址当成待跟进
+    钱包继续扩散；疑似交易所（待确认）保留，方便人工核查。
+    """
+
+    keep: list[str] = []
+    seen: set[str] = set()
+    skipped_exchange = 0
+    skipped_validator = 0
+    for row in rows or []:
+        category = str(row.get("library_category") or "").upper()
+        if (
+            category == "EXCHANGE"
+            and row.get("exchange_confirmed")
+            and not row.get("exchange_rejected")
+        ):
+            skipped_exchange += 1
+            continue
+        if category == "VALIDATOR":
+            skipped_validator += 1
+            continue
+        address = str(row.get("address") or "")
+        if not address or address in seen:
+            continue
+        seen.add(address)
+        keep.append(address)
+    return {
+        "addresses": keep,
+        "skipped_exchange": skipped_exchange,
+        "skipped_validator": skipped_validator,
+    }
+
+
 def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
     import csv
     import io
-    import json
 
     suffix = Path(filename).suffix.lower()
     if suffix == ".txt":
@@ -435,6 +518,284 @@ class LinkService:
         writer.writerows(portable)
         return output.getvalue(), "text/csv; charset=utf-8"
 
+    # -- 关联查询历史 -----------------------------------------------------
+    def archive_relation(
+        self,
+        result: dict[str, Any],
+        *,
+        job_id: str = "",
+        kind: str = "job",
+        status: str = "complete",
+        rounds: int = 0,
+        requests: int = 0,
+    ) -> int:
+        """把一次关联查询的结果存进历史记录，返回记录 id。"""
+
+        snapshot = dict(result)
+        # 用量统计每次都会变，历史页展示没有意义，也省一份体积。
+        snapshot.pop("api_usage", None)
+        payload = json.dumps(snapshot, ensure_ascii=False)
+        if len(payload.encode("utf-8")) > MAX_ARCHIVE_PAYLOAD_BYTES:
+            snapshot.pop("edges", None)
+            snapshot["edges_omitted"] = True
+            payload = json.dumps(snapshot, ensure_ascii=False)
+        related = result.get("related") or []
+        hit_count = len(result.get("library_matches") or []) + len(
+            result.get("seed_library_matches") or []
+        )
+        with self.database.session() as db:
+            row = RelationArchive(
+                job_id=job_id,
+                kind=kind,
+                seed=str(result.get("seed") or ""),
+                status=status,
+                data_source=str(result.get("data_source") or ""),
+                depth=int(result.get("max_depth") or 0),
+                rounds=int(rounds),
+                requests=int(requests),
+                related_count=len(related),
+                library_hit_count=hit_count,
+                payload=payload,
+                finished_at=utcnow(),
+            )
+            db.add(row)
+            db.flush()
+            archive_id = row.id
+            self._trim_archives(db)
+        return archive_id
+
+    @staticmethod
+    def _trim_archives(db) -> None:
+        """按条数和总体积淘汰最旧的记录，避免历史页把数据库撑爆。"""
+
+        rows = (
+            db.query(RelationArchive.id, func.length(RelationArchive.payload))
+            .order_by(RelationArchive.id.desc())
+            .all()
+        )
+        total_bytes = 0
+        stale: list[int] = []
+        for index, (row_id, size) in enumerate(rows):
+            total_bytes += int(size or 0)
+            if index >= MAX_ARCHIVE_ROWS or total_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+                stale.append(row_id)
+        if stale:
+            db.query(RelationArchive).filter(RelationArchive.id.in_(stale)).delete(
+                synchronize_session=False
+            )
+
+    @staticmethod
+    def _archive_summary(row: RelationArchive) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "job_id": row.job_id,
+            "kind": row.kind,
+            "seed": row.seed,
+            "status": row.status,
+            "data_source": row.data_source,
+            "depth": row.depth,
+            "rounds": row.rounds,
+            "requests": row.requests,
+            "related_count": row.related_count,
+            "library_hit_count": row.library_hit_count,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        }
+
+    def relation_history(self, *, limit: int = 30, offset: int = 0) -> dict[str, Any]:
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        with self.database.session() as db:
+            total = db.query(RelationArchive).count()
+            rows = (
+                db.query(RelationArchive)
+                .order_by(RelationArchive.id.desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
+            return {
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "items": [self._archive_summary(row) for row in rows],
+            }
+
+    def _load_archive(self, archive_id: int) -> RelationArchive:
+        with self.database.session() as db:
+            row = db.get(RelationArchive, archive_id)
+            if row is None:
+                raise InputError("历史记录不存在")
+            return row
+
+    def relation_history_detail(self, archive_id: int) -> dict[str, Any]:
+        row = self._load_archive(archive_id)
+        try:
+            payload = json.loads(row.payload) if row.payload else None
+        except ValueError:
+            payload = None
+        return {"item": self._archive_summary(row), "result": payload}
+
+    def delete_relation_history(self, archive_ids: list[int]) -> int:
+        ids = {item for item in archive_ids if item > 0}
+        if not ids:
+            return 0
+        with self.database.session() as db:
+            return int(
+                db.query(RelationArchive)
+                .filter(RelationArchive.id.in_(ids))
+                .delete(synchronize_session=False)
+            )
+
+    def clear_relation_history(self) -> int:
+        with self.database.session() as db:
+            return int(
+                db.query(RelationArchive).delete(synchronize_session=False)
+            )
+
+    def export_relation_history(
+        self, archive_id: int, file_format: str = "txt"
+    ) -> tuple[str, str, str]:
+        """导出历史记录的关联地址（TXT）或完整结果（JSON）。"""
+
+        if file_format not in {"txt", "json"}:
+            raise InputError("导出格式只能是 txt 或 json")
+        row = self._load_archive(archive_id)
+        if file_format == "json":
+            return (
+                (row.payload or "{}") + "\n",
+                "application/json; charset=utf-8",
+                f"bittensor-link-archive-{archive_id}.json",
+            )
+        try:
+            payload = json.loads(row.payload) if row.payload else {}
+        except ValueError as exc:
+            raise InputError("历史记录内容已损坏，无法导出地址") from exc
+        selection = select_exportable_addresses(payload.get("related") or [])
+        date = (row.finished_at or row.created_at).strftime("%Y%m%d")
+        return (
+            "\n".join(selection["addresses"]) + ("\n" if selection["addresses"] else ""),
+            "text/plain; charset=utf-8",
+            f"bittensor-addresses-{row.seed[:8]}-{date}.txt",
+        )
+
+    # -- 关联地址同步进地址库 ---------------------------------------------
+    def sync_relation_addresses(
+        self,
+        *,
+        seed: str,
+        addresses: list[str],
+        include_seed: bool = True,
+        category: str = "WATCH",
+        label: str = "",
+        note: str = "",
+        only_library_matched: bool = False,
+    ) -> dict[str, Any]:
+        """把关联地址和发起地址去重写入地址库。
+
+        已存在的地址一律跳过，不覆盖原有分类、标签和备注；这样反复同步同一批
+        地址也不会把人工维护过的记录改掉。
+        """
+
+        seed = (seed or "").strip()
+        if seed and not is_valid_ss58(seed):
+            raise InputError("发起地址不是合法的 SS58 地址")
+        category = (category or "WATCH").upper()
+        if category not in SYNC_CATEGORIES:
+            raise InputError(f"分类只能是 {'、'.join(sorted(SYNC_CATEGORIES))}")
+        if len(addresses) > MAX_SYNC_ADDRESSES:
+            raise InputError(f"单次最多同步 {MAX_SYNC_ADDRESSES} 个地址")
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        invalid = 0
+
+        def push(value: str) -> None:
+            nonlocal invalid
+            value = (value or "").strip()
+            if not value or value in seen:
+                return
+            if not is_valid_ss58(value):
+                invalid += 1
+                return
+            seen.add(value)
+            candidates.append(value)
+
+        if include_seed and seed:
+            push(seed)
+        for address in addresses or []:
+            push(address)
+        related = [value for value in candidates if value != seed]
+
+        with self.database.session() as db:
+            existing: set[str] = set()
+            for index in range(0, len(candidates), 400):
+                chunk = candidates[index : index + 400]
+                existing.update(
+                    db.scalars(
+                        select(AddressLibrary.address).where(
+                            AddressLibrary.address.in_(chunk)
+                        )
+                    ).all()
+                )
+            matched = sum(1 for value in related if value in existing)
+            seed_in_library = bool(seed) and seed in existing
+            if only_library_matched:
+                # 「命中即同步」：只保留已经在库里的关联地址和发起地址。
+                # 命中地址本来就在库里会被跳过，实际新增的通常只有发起地址。
+                keep = [value for value in related if value in existing]
+                if include_seed and seed:
+                    keep.insert(0, seed)
+                candidates = list(dict.fromkeys(keep))
+            if not candidates:
+                return {
+                    "total": 0,
+                    "inserted": 0,
+                    "existing": 0,
+                    "matched": matched,
+                    "seed_in_library": seed_in_library,
+                    "invalid": invalid,
+                    "category": category,
+                    "label": label,
+                    "added": [],
+                }
+
+            default_label = label.strip() or f"关联同步 · {seed[:8] or '未命名'}"
+            note_text = note.strip() or (
+                f"由关联扫描同步：发起地址 {seed}" if seed else "由关联扫描同步"
+            )
+            source = f"relation-sync:{seed[:8]}" if seed else "relation-sync"
+            added: list[dict[str, Any]] = []
+            inserted = 0
+            for address in candidates:
+                if address in existing:
+                    continue
+                db.add(
+                    AddressLibrary(
+                        address=address,
+                        label=default_label,
+                        category=category,
+                        note=note_text,
+                        source=source,
+                        exchange_confirmed=category == "EXCHANGE",
+                        exchange_rejected=False,
+                    )
+                )
+                inserted += 1
+                if len(added) < 20:
+                    added.append({"address": address, "category": category})
+            return {
+                "total": len(candidates),
+                "inserted": inserted,
+                "existing": len(candidates) - inserted,
+                "matched": matched,
+                "seed_in_library": seed_in_library,
+                "invalid": invalid,
+                "category": category,
+                "label": default_label,
+                "added": added,
+            }
+
     def remove_address(self, row_id: int) -> bool:
         with self.database.session() as db:
             row = db.get(AddressLibrary, row_id)
@@ -599,7 +960,7 @@ class LinkService:
                         lock.lease_until = datetime.now(timezone.utc)
             raise
 
-    def relations(
+    def prepare_relation_context(
         self,
         *,
         seed: str,
@@ -611,7 +972,9 @@ class LinkService:
         data_source: str = "local",
         filter_exchanges: bool = False,
         filter_validators: bool = False,
-    ) -> dict[str, Any]:
+    ) -> RelationContext:
+        """收集一次查询中不随轮次变化的部分：地址库、本地索引、过滤名单。"""
+
         if data_source not in {"local", "taostats"}:
             raise ValueError("data_source must be local or taostats")
         policy = LinkPolicy.from_dict(
@@ -622,7 +985,7 @@ class LinkService:
                 "include_outgoing": include_outgoing,
             }
         )
-        warnings = []
+        warnings: list[str] = []
         with self.database.session() as db:
             library = [
                 LibraryEntry(
@@ -641,23 +1004,12 @@ class LinkService:
             local_transfer_rows = to_relation_records(
                 db.scalars(select(Transfer).order_by(Transfer.block_number)).all()
             )
-        transfer_rows = list(local_transfer_rows)
 
-        api_requests = 0
-        cache_hits = 0
-        validator_api_requests = 0
-        validator_cache_hits = 0
-        pagination_complete = True
-        provider_window_truncated = False
-        api_error = ""
-        balances: dict[str, Any] = {}
-        records_by_key: dict[str, Any] = {}
         exchange_addresses = {
             entry.address
             for entry in library
             if entry.category == "EXCHANGE" and entry.exchange_confirmed
         }
-        terminal_exchange_addresses = set(exchange_addresses)
         unconfirmed_exchange_addresses = {
             entry.address
             for entry in library
@@ -667,6 +1019,8 @@ class LinkService:
             entry.address for entry in library if entry.category == "VALIDATOR"
         }
         auto_validator_addresses: set[str] = set()
+        validator_api_requests = 0
+        validator_cache_hits = 0
         if filter_validators:
             try:
                 auto_validator_addresses, from_cache = get_active_validator_addresses()
@@ -674,7 +1028,6 @@ class LinkService:
                     validator_cache_hits += 1
                 else:
                     validator_api_requests += 1
-                    api_requests += 1
                     self.database.record_api_request("/v1/validators/active", success=True)
             except (TaostatsAuthError, TaostatsRateLimitError, TaostatsUnavailableError) as exc:
                 if getattr(exc, "request_made", False):
@@ -702,146 +1055,167 @@ class LinkService:
                 f"{len(manual_validator_addresses | auto_validator_addresses)} 个已识别地址"
                 f"（手工 {len(manual_validator_addresses)}，自动 {len(auto_validator_addresses)}）。"
             )
-        if data_source == "taostats" and seed not in excluded_addresses:
-            from collections import deque
-            from decimal import Decimal, InvalidOperation
+        return RelationContext(
+            seed=seed,
+            depth=depth,
+            data_source=data_source,
+            policy=policy,
+            filter_exchanges=filter_exchanges,
+            filter_validators=filter_validators,
+            library=library,
+            first_block=first_block,
+            last_block=last_block,
+            local_transfer_rows=local_transfer_rows,
+            warnings=warnings,
+            exchange_addresses=exchange_addresses,
+            unconfirmed_exchange_addresses=unconfirmed_exchange_addresses,
+            manual_validator_addresses=manual_validator_addresses,
+            auto_validator_addresses=auto_validator_addresses,
+            excluded_addresses=excluded_addresses,
+            validator_api_requests=validator_api_requests,
+            validator_cache_hits=validator_cache_hits,
+        )
 
-            from .relation_config import TransferRecord
+    def new_crawl(self, context: RelationContext) -> TaostatsCrawl:
+        """按上下文创建可续跑的爬取器（首次调用时才会排入起始地址）。"""
 
-            address_queue = deque([(seed, 0)])
-            page_queue = deque()
-            queued_pages = {(seed, 1)}
-            address_depth = {seed: 0}
-            while (address_queue or page_queue) and api_requests < MAX_TAOSTATS_REQUESTS_PER_QUERY:
-                if address_queue:
-                    address, current_depth = address_queue.popleft()
-                    page_number = 1
-                else:
-                    address, current_depth, page_number = page_queue.popleft()
-                if current_depth >= depth:
-                    continue
-                if address in terminal_exchange_addresses:
-                    continue
-                try:
-                    page = get_transfer_page(address, page_number)
-                    if page.from_cache:
-                        cache_hits += 1
-                    else:
-                        api_requests += 1
-                        self.database.record_api_request("/v1/transfers", success=True)
-                except TaostatsAuthError as exc:
-                    if getattr(exc, "request_made", False):
-                        self.database.record_api_request(
-                            "/v1/transfers",
-                            status_code=getattr(exc, "status_code", None),
-                            success=False,
-                        )
-                    api_error = str(exc)
-                    pagination_complete = False
-                    break
-                except TaostatsRateLimitError as exc:
-                    if getattr(exc, "request_made", False):
-                        self.database.record_api_request(
-                            "/v1/transfers",
-                            status_code=getattr(exc, "status_code", None),
-                            success=False,
-                        )
-                    api_error = str(exc)
-                    pagination_complete = False
-                    break
-                except TaostatsUnavailableError as exc:
-                    if getattr(exc, "request_made", False):
-                        self.database.record_api_request(
-                            "/v1/transfers",
-                            status_code=getattr(exc, "status_code", None),
-                            success=False,
-                        )
-                    api_error = str(exc)
-                    pagination_complete = False
-                    break
+        state = CrawlState(
+            seed=context.seed,
+            depth=context.depth,
+            policy=context.policy,
+            terminal_exchange_addresses=set(context.exchange_addresses),
+            excluded_addresses=set(context.excluded_addresses),
+        )
+        return TaostatsCrawl(
+            state,
+            fetch_transfer=lambda address, page: get_transfer_page(address, page),
+            fetch_stake=lambda address, page: get_stake_transfer_page(address, page),
+            record_request=self.database.record_api_request,
+        )
 
-                if page.truncated_by_window:
-                    provider_window_truncated = True
-                    pagination_complete = False
-                    warnings.append(
-                        "Taostats 的服务端分页窗口未覆盖该地址全部匹配记录；"
-                        "本次结果不是完整历史。"
-                    )
-                if page.next_page is not None:
-                    next_key = (address, page.next_page)
-                    if next_key not in queued_pages:
-                        queued_pages.add(next_key)
-                        page_queue.append((address, current_depth, page.next_page))
+    @staticmethod
+    def pending_budget_note(crawl: TaostatsCrawl | None, *, validator_requests: int = 0) -> str:
+        """只有真的把本轮额度用完、且还有待查任务时才提示「预算用尽」。
 
-                next_addresses: set[str] = set()
-                for item in page.rows:
-                    try:
-                        source = str(item["from"]).strip()
-                        target = str(item["to"]).strip()
-                        block_number = int(item["block_number"])
-                        raw_amount = Decimal(str(item["amount"]))
-                        tx_hash = str(item.get("transaction_hash") or "")
-                        transfer_id = str(item.get("id") or "")
-                        timestamp = str(item.get("timestamp") or "")
-                    except (KeyError, TypeError, ValueError, InvalidOperation):
-                        pagination_complete = False
-                        warnings.append("Taostats 返回记录中有字段无法解析，已跳过该记录。")
-                        continue
-                    if not source or not target or not raw_amount.is_finite() or raw_amount < 0:
-                        pagination_complete = False
-                        warnings.append("Taostats 返回记录中有无效地址或金额，已跳过该记录。")
-                        continue
-                    amount_rao = int(raw_amount)
-                    if raw_amount != amount_rao:
-                        pagination_complete = False
-                        warnings.append("Taostats 返回了非整数 RAO 金额，已跳过该记录。")
-                        continue
-                    if address not in {source, target}:
-                        pagination_complete = False
-                        warnings.append("Taostats 返回了与查询地址无关的转账记录，已跳过该记录。")
-                        continue
-                    key = transfer_id or f"{block_number}:{tx_hash}:{source}:{target}:{amount_rao}"
-                    amount_tao = Decimal(amount_rao) / Decimal(1_000_000_000)
-                    records_by_key[key] = TransferRecord(
-                        tx_hash=tx_hash,
-                        block_number=block_number,
-                        from_address=source,
-                        to_address=target,
-                        amount_tao=amount_tao,
-                        timestamp=timestamp,
-                    )
-                    if current_depth > 0 and amount_tao < policy.min_edge_tao:
-                        continue
-                    if source == address and policy.include_outgoing and target not in excluded_addresses:
-                        next_addresses.add(target)
-                    if target == address and policy.include_incoming and source not in excluded_addresses:
-                        next_addresses.add(source)
+        鉴权失败或限流导致的中断不属于预算耗尽，由调用错误本身说明原因。
+        """
 
-                for neighbor in sorted(next_addresses):
-                    next_depth = current_depth + 1
-                    if next_depth < depth and next_depth < address_depth.get(neighbor, depth + 1):
-                        if neighbor in terminal_exchange_addresses:
-                            # Keep the edge in records_by_key so the public
-                            # exchange appears in results, but never query or
-                            # traverse through its high-volume outgoing graph.
-                            continue
-                        address_depth[neighbor] = next_depth
-                        page_key = (neighbor, 1)
-                        if page_key not in queued_pages:
-                            queued_pages.add(page_key)
-                            # Query the first page of each newly found address
-                            # before spending the small free-tier budget on old pages.
-                            address_queue.append((neighbor, next_depth))
+        if crawl is None or not crawl.state.has_work:
+            return ""
+        if validator_requests + crawl.state.api_requests < MAX_TAOSTATS_REQUESTS_PER_QUERY:
+            return ""
+        parts = []
+        if crawl.state.pending_transfer:
+            parts.append(f"{crawl.state.pending_transfer} 个转账明细请求")
+        if crawl.state.pending_stake:
+            parts.append(f"{crawl.state.pending_stake} 个子网 stake 转移请求")
+        return (
+            f"本轮单次查询最多调用 {MAX_TAOSTATS_REQUESTS_PER_QUERY} 次 Taostats API，"
+            "已按“一级关联转账 → 一级关联子网转移 → 更深层级”的优先级用完；"
+            f"未执行：{'、'.join(parts)}。结果只包含已获取的部分历史。"
+        )
 
-            pending_queries = bool(address_queue or page_queue)
-            if pending_queries and api_requests >= MAX_TAOSTATS_REQUESTS_PER_QUERY:
+    def relations(
+        self,
+        *,
+        seed: str,
+        depth: int,
+        min_edge_tao: str,
+        min_total_tao: str,
+        include_incoming: bool = True,
+        include_outgoing: bool = True,
+        data_source: str = "local",
+        filter_exchanges: bool = False,
+        filter_validators: bool = False,
+    ) -> dict[str, Any]:
+        """单轮查询：只花掉一次请求预算，返回当前已取得的结果。"""
+
+        context = self.prepare_relation_context(
+            seed=seed,
+            depth=depth,
+            min_edge_tao=min_edge_tao,
+            min_total_tao=min_total_tao,
+            include_incoming=include_incoming,
+            include_outgoing=include_outgoing,
+            data_source=data_source,
+            filter_exchanges=filter_exchanges,
+            filter_validators=filter_validators,
+        )
+        crawl = None
+        if data_source == "taostats" and seed not in context.excluded_addresses:
+            crawl = self.new_crawl(context)
+            budget = max(
+                0, MAX_TAOSTATS_REQUESTS_PER_QUERY - context.validator_api_requests
+            )
+            crawl.run_round(budget)
+        result = self.finalize_relations(
+            context,
+            crawl,
+            pending_note=self.pending_budget_note(
+                crawl, validator_requests=context.validator_api_requests
+            ),
+        )
+        try:
+            result["archive_id"] = self.archive_relation(
+                result,
+                kind="single",
+                status="complete",
+                rounds=1,
+                requests=int(result.get("api_requests") or 0),
+            )
+        except Exception as exc:  # noqa: BLE001 - 记录失败不该让查询本身失败
+            result["archive_id"] = None
+            result.setdefault("warnings", []).append(f"查询记录保存失败：{exc}")
+        return result
+
+    def finalize_relations(
+        self,
+        context: RelationContext,
+        crawl: TaostatsCrawl | None = None,
+        *,
+        pending_note: str = "",
+        balance_budget_left: int | None = None,
+    ) -> dict[str, Any]:
+        """把上下文与已爬到的记录合成最终结果。"""
+
+        seed = context.seed
+        depth = context.depth
+        policy = context.policy
+        data_source = context.data_source
+        library = context.library
+        local_transfer_rows = context.local_transfer_rows
+        exchange_addresses = context.exchange_addresses
+        unconfirmed_exchange_addresses = context.unconfirmed_exchange_addresses
+        manual_validator_addresses = context.manual_validator_addresses
+        auto_validator_addresses = context.auto_validator_addresses
+        excluded_addresses = context.excluded_addresses
+        filter_exchanges = context.filter_exchanges
+        filter_validators = context.filter_validators
+        warnings = list(context.warnings)
+        transfer_rows = list(local_transfer_rows)
+        first_block = context.first_block
+        last_block = context.last_block
+        api_requests = context.validator_api_requests
+        cache_hits = 0
+        pagination_complete = True
+        provider_window_truncated = False
+        api_error = ""
+        records_by_key: dict[str, Any] = {}
+        if crawl is not None:
+            state = crawl.state
+            _extend_unique(warnings, state.warnings)
+            records_by_key = state.records_by_key
+            api_requests += state.api_requests
+            cache_hits += state.cache_hits
+            pagination_complete = state.pagination_complete
+            provider_window_truncated = state.provider_window_truncated
+            api_error = state.api_error
+            if state.has_work:
                 pagination_complete = False
-                warnings.append(
-                    f"本轮单次查询最多调用 {MAX_TAOSTATS_REQUESTS_PER_QUERY} 次 Taostats API；"
-                    "尚有待查询地址，结果只包含已获取的部分历史。"
-                )
+                if pending_note:
+                    _extend_unique(warnings, [pending_note])
             if api_error:
-                warnings.append(api_error)
+                _extend_unique(warnings, [api_error])
             remote_records = list(records_by_key.values())
             transfer_rows.extend(remote_records)
             if remote_records:
@@ -871,16 +1245,32 @@ class LinkService:
         else:
             freshness = "LOCAL_INDEX" if local_transfer_rows else "EMPTY_INDEX"
             coverage = "LOCAL_INDEX" if local_transfer_rows else "NO_DATA"
+        # 余额查询不占 Taostats 额度（走本地 RPC），但一律排在所有关联查询之后。
+        # 本轮额度已被关联查询用尽时，只保留起始地址余额，其余余额留给下一轮。
+        if balance_budget_left is None:
+            balance_budget_left = MAX_TAOSTATS_REQUESTS_PER_QUERY - api_requests
+        balance_budget_short = data_source == "taostats" and balance_budget_left <= 0
         detected_balance_candidates = [
             address
             for address in exchange_balance_candidates(transfer_rows, library)
             if is_valid_ss58(address)
         ]
-        balance_candidates = detected_balance_candidates[:MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY]
-        if len(detected_balance_candidates) > len(balance_candidates):
+        balance_candidates = (
+            []
+            if balance_budget_short
+            else detected_balance_candidates[:MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY]
+        )
+        if balance_budget_short:
+            if detected_balance_candidates:
+                warnings.append(
+                    "本轮 Taostats API 额度已全部用于关联查询，已跳过交易所候选余额检查；"
+                    "本轮不会自动标记疑似交易所。"
+                )
+        elif len(detected_balance_candidates) > len(balance_candidates):
             warnings.append(
                 f"本次仅检查前 {MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY} 个高频候选余额；其余地址不会自动标记疑似交易所。"
             )
+        balances: dict[str, Any] = {}
         if balance_candidates:
             try:
                 balances = query_account_balances(self.rpc_url, balance_candidates)
@@ -906,11 +1296,22 @@ class LinkService:
             excluded_addresses=excluded_addresses,
             balances=balances,
         )
-        balance_addresses = list(dict.fromkeys(
-            address
-            for address in [seed, *(row.address for row in report.related)]
-            if is_valid_ss58(address) and address not in balances
-        ))
+        if balance_budget_short:
+            # 额度已用完：只读取起始地址的余额（单次 RPC），不扩展到关联地址。
+            balance_addresses = (
+                [seed] if is_valid_ss58(seed) and seed not in balances else []
+            )
+            if report.related:
+                warnings.append(
+                    "本轮 Taostats API 额度已全部用于关联查询，已跳过关联地址余额查询；"
+                    "这些地址的余额栏会显示“未获取”。"
+                )
+        else:
+            balance_addresses = list(dict.fromkeys(
+                address
+                for address in [seed, *(row.address for row in report.related)]
+                if is_valid_ss58(address) and address not in balances
+            ))
         if balance_addresses:
             try:
                 balances.update(query_account_balances(self.rpc_url, balance_addresses))
@@ -948,9 +1349,10 @@ class LinkService:
                 provider_window_truncated if data_source == "taostats" else None
             ),
             "api_requests": api_requests,
+            "api_request_budget": MAX_TAOSTATS_REQUESTS_PER_QUERY,
             "api_cache_hits": cache_hits,
-            "validator_api_requests": validator_api_requests,
-            "validator_cache_hits": validator_cache_hits,
+            "validator_api_requests": context.validator_api_requests,
+            "validator_cache_hits": context.validator_cache_hits,
             "filter_exchanges": filter_exchanges,
             "filter_validators": filter_validators,
             "exchange_addresses_filtered": len(exchange_addresses) if filter_exchanges else 0,
@@ -962,7 +1364,13 @@ class LinkService:
             "exchange_balance_candidates": len(balance_candidates),
             "exchange_balance_checks": exchange_balance_checks,
             "local_transfer_count": len(local_transfer_rows),
-            "taostats_transfer_count": len(records_by_key) if data_source == "taostats" else 0,
+            "taostats_transfer_count": (
+                sum(1 for key in records_by_key if not key.startswith("stake:"))
+                if data_source == "taostats" else 0
+            ),
+            "stake_transfer_count": sum(
+                1 for row in transfer_rows if row.edge_type == "stake_transfer"
+            ),
             "data_sources_used": (
                 (["taostats"] if records_by_key else [])
                 + (["local"] if local_transfer_rows else [])

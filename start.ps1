@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$Port = 8766
 )
 
@@ -13,17 +13,13 @@ $HealthUrl = "http://127.0.0.1:$Port/api/health"
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 if (-not (Test-Path -LiteralPath $Python)) {
-    $sharedPython = if ($env:BITTENSOR_PYTHON) {
-        $env:BITTENSOR_PYTHON
-    } else {
-        'G:\jiaoben\.venv\Scripts\python.exe'
-    }
-    if (Test-Path -LiteralPath $sharedPython) {
+    $sharedPython = $env:BITTENSOR_PYTHON
+    if ($sharedPython -and (Test-Path -LiteralPath $sharedPython)) {
         $Python = $sharedPython
     } else {
         $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
         if ($null -eq $pythonCommand) {
-            throw "Python environment not found. Create .venv with: python -m venv .venv"
+            throw "未找到运行环境。请先双击本文件夹里的 安装.cmd，装完再启动。"
         }
         $Python = $pythonCommand.Source
     }
@@ -37,6 +33,17 @@ try {
     }
 } catch {
     # Not running yet.
+}
+
+# PowerShell 5.1 cannot enumerate the environment (and Start-Process fails)
+# when variable names differ only by case, e.g. HTTP_PROXY vs http_proxy.
+# Only in that case drop the lowercase spellings; normal environments are untouched.
+try {
+    $null = Get-ChildItem Env: -ErrorAction Stop
+} catch {
+    foreach ($name in @('http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')) {
+        [System.Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    }
 }
 
 $env:PYTHONUTF8 = '1'
@@ -61,4 +68,4 @@ while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
     }
 }
-throw "Service did not become healthy. Check $ErrLog"
+throw "服务没有在 30 秒内就绪。请检查是否已有其他程序占用端口 $Port，或查看日志：$ErrLog"

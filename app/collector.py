@@ -1,4 +1,4 @@
-"""Read-only Bittensor Balances.Transfer collection."""
+"""Read-only Bittensor transfer and subnet stake-transfer collection."""
 
 from __future__ import annotations
 
@@ -139,6 +139,89 @@ def extract_balance_transfers(
                 "amount_rao": amount_rao,
                 "amount_tao": Decimal(amount_rao) / RAO_PER_TAO,
                 "timestamp": "",
+                "edge_type": "tao_transfer",
+                "netuid": None,
+                "hotkey": "",
+            }
+        )
+    return rows
+
+
+def extract_stake_transfers(
+    events: list[Any],
+    *,
+    block_number: int,
+    block_hash: str,
+    extrinsics: list[Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Extract SubtensorModule.StakeTransferred edges between two coldkeys.
+
+    Events probed on the finney endpoint on 2026-11-04 expose positional
+    attributes: (origin_coldkey, destination_coldkey, hotkey, origin_netuid,
+    destination_netuid, amount). ``amount`` is a TAO value in RAO, not an alpha
+    quantity, so it shares the unit used by Balances.Transfer. Dict-shaped
+    attributes are accepted as a decoder-compatible fallback. Records whose two
+    coldkeys match are skipped because they do not link different wallets.
+    """
+
+    tx_hashes: dict[int, str] = {}
+    for index, extrinsic in enumerate(extrinsics or []):
+        value = getattr(extrinsic, "value", extrinsic)
+        if isinstance(value, dict):
+            tx_hashes[index] = str(value.get("extrinsic_hash") or "")
+    rows: list[dict[str, Any]] = []
+    for event_index, item in enumerate(events):
+        value = getattr(item, "value", item)
+        event = _event_value(item)
+        if (
+            event.get("module_id") != "SubtensorModule"
+            or event.get("event_id") != "StakeTransferred"
+        ):
+            continue
+        attributes = event.get("attributes")
+        if isinstance(attributes, dict):
+            source = attributes.get("origin_coldkey") or attributes.get("from")
+            target = attributes.get("destination_coldkey") or attributes.get("to")
+            hotkey = attributes.get("hotkey") or ""
+            netuid = attributes.get("origin_netuid")
+            amount = attributes.get("amount")
+        elif isinstance(attributes, (list, tuple)) and len(attributes) >= 6:
+            source, target, hotkey = attributes[0], attributes[1], attributes[2]
+            netuid = attributes[3]
+            amount = attributes[5]
+        else:
+            continue
+        if not source or not target or amount is None:
+            continue
+        source, target = str(source), str(target)
+        if source == target:
+            continue
+        try:
+            amount_rao = int(amount)
+            origin_netuid = int(netuid) if netuid is not None else None
+        except (TypeError, ValueError):
+            continue
+        phase = value.get("phase", {}) if isinstance(value, dict) else {}
+        if isinstance(phase, str):
+            extrinsic_index = value.get("extrinsic_idx") if isinstance(value, dict) else None
+        else:
+            extrinsic_index = phase.get("extrinsic_index") if isinstance(phase, dict) else None
+        tx_hash = tx_hashes.get(int(extrinsic_index), "") if extrinsic_index is not None else ""
+        rows.append(
+            {
+                "event_key": f"stake:{block_number}:{event_index}:{source}:{target}:{amount_rao}",
+                "tx_hash": tx_hash,
+                "block_number": block_number,
+                "block_hash": block_hash,
+                "event_index": event_index,
+                "from_address": source,
+                "to_address": target,
+                "amount_rao": amount_rao,
+                "amount_tao": Decimal(amount_rao) / RAO_PER_TAO,
+                "timestamp": "",
+                "edge_type": "stake_transfer",
+                "netuid": origin_netuid,
+                "hotkey": str(hotkey),
             }
         )
     return rows
@@ -181,12 +264,13 @@ class RPCCollector:
                     substrate.get_events(block_hash=block_hash),
                     self.timeout_seconds,
                 )
-                rows = extract_balance_transfers(
-                    events,
-                    block_number=block_number,
-                    block_hash=block_hash,
-                    extrinsics=block.get("extrinsics", []),
-                )
+                event_args = {
+                    "events": events,
+                    "block_number": block_number,
+                    "block_hash": block_hash,
+                    "extrinsics": block.get("extrinsics", []),
+                }
+                rows = extract_balance_transfers(**event_args) + extract_stake_transfers(**event_args)
                 await on_batch(rows, block_number, block_hash)
                 scanned += 1
                 transfers += len(rows)

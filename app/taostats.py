@@ -15,6 +15,7 @@ import httpx
 API_URL = "https://api.taostats.io/v1/transfers"
 VALIDATORS_ACTIVE_URL = "https://api.taostats.io/v1/validators/active"
 EXCHANGE_ADDRESSES_URL = "https://api.taostats.io/v1/exchange-addresses"
+STAKE_EVENTS_URL = "https://api.taostats.io/v1/subnets/stake-events"
 LOCAL_REQUESTS_PER_MINUTE = 5
 CACHE_TTL_SECONDS = 300
 
@@ -63,6 +64,7 @@ class TransferPage:
 _lock = threading.Lock()
 _request_times: deque[float] = deque()
 _cache: dict[tuple[str, int], tuple[float, TransferPage]] = {}
+_stake_cache: dict[tuple[str, int], tuple[float, TransferPage]] = {}
 _validator_cache: tuple[float, frozenset[str]] | None = None
 _exchange_cache: tuple[float, tuple[dict[str, str], ...]] | None = None
 _key_override: str | None = None
@@ -77,6 +79,7 @@ def configure_api_key(api_key: str) -> None:
         _key_override = api_key.strip()
         _key_override_active = True
         _cache.clear()
+        _stake_cache.clear()
         _validator_cache = None
         _exchange_cache = None
 
@@ -351,11 +354,109 @@ def get_transfer_page(address: str, page: int = 1) -> TransferPage:
     return result
 
 
+def get_stake_transfer_page(address: str, page: int = 1) -> TransferPage:
+    """Fetch dTAO stake-transfer legs that involve one coldkey.
+
+    The documented endpoint is /v1/subnets/stake-events with ``coldkey`` and
+    ``is_transfer`` filters. Pagination objects differ across Taostats endpoint
+    families, so only fields actually present in the response are consumed.
+    """
+
+    key = (address, page)
+    now = time.monotonic()
+    with _lock:
+        cached = _stake_cache.get(key)
+        if cached and now - cached[0] < CACHE_TTL_SECONDS:
+            value = cached[1]
+            return TransferPage(
+                value.rows,
+                value.next_page,
+                truncated_by_window=value.truncated_by_window,
+                from_cache=True,
+            )
+        if cached:
+            _stake_cache.pop(key, None)
+
+    api_key = _configured_api_key()
+    if not api_key:
+        raise TaostatsAuthError(
+            "未配置 Taostats API key。请在页面中的 Taostats 设置里填写并保存。"
+        )
+
+    _reserve_request()
+    try:
+        response = httpx.get(
+            STAKE_EVENTS_URL,
+            params={
+                "coldkey": address,
+                "is_transfer": "true",
+                "page": page,
+                "limit": 200,
+            },
+            headers={"Authorization": api_key},
+            timeout=20,
+        )
+    except httpx.HTTPError as exc:
+        raise TaostatsUnavailableError(
+            f"Taostats 请求失败：{exc}", request_made=True
+        ) from exc
+
+    if response.status_code in {401, 403}:
+        raise TaostatsAuthError(
+            "Taostats API key 无效或没有访问权限。",
+            request_made=True,
+            status_code=response.status_code,
+        )
+    if response.status_code == 429:
+        raise TaostatsRateLimitError(
+            "Taostats 返回限流，请稍后重试。",
+            request_made=True,
+            status_code=response.status_code,
+        )
+    if response.status_code >= 400:
+        raise TaostatsUnavailableError(
+            f"Taostats API 返回 HTTP {response.status_code}。",
+            request_made=True,
+            status_code=response.status_code,
+        )
+
+    try:
+        payload = response.json()
+        rows = payload["data"]
+        pagination = payload.get("pagination", {})
+        if not isinstance(rows, list):
+            raise TypeError("data is not a list")
+        if not isinstance(pagination, dict):
+            raise TypeError("pagination is not an object")
+        next_page = pagination.get("next_page")
+        next_page = int(next_page) if next_page is not None else None
+        if next_page is not None and (next_page <= page or next_page > 5000):
+            raise ValueError("pagination.next_page is out of range")
+        truncated = False
+        per_page = pagination.get("per_page")
+        total_items = pagination.get("total_items")
+        total_pages = pagination.get("total_pages")
+        if per_page is not None and total_items is not None and total_pages is not None:
+            truncated = int(total_items) > int(per_page) * int(total_pages)
+        result = TransferPage(
+            rows=rows,
+            next_page=next_page,
+            truncated_by_window=truncated,
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        raise TaostatsUnavailableError("Taostats 返回了无法识别的响应格式。") from exc
+
+    with _lock:
+        _stake_cache[key] = (time.monotonic(), result)
+    return result
+
+
 def reset_client_state_for_tests() -> None:
     global _key_override, _key_override_active, _validator_cache, _exchange_cache
     with _lock:
         _request_times.clear()
         _cache.clear()
+        _stake_cache.clear()
         _validator_cache = None
         _exchange_cache = None
         _key_override = None

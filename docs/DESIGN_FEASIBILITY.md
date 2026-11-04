@@ -30,7 +30,8 @@
 | 普通转账 | `Balances.Transfer` | 是 | `from → to`，金额按 1 TAO = 10^9 RAO 转换 |
 | 手续费扣除 | `Balances.Withdraw` | 否 | 同一交易可能伴随 Transfer，纳入会重复计算 |
 | 余额增加 | `Balances.Deposit` | 否 | 不是独立转账来源 |
-| 质押、解质押、跨子网流动 | `SubtensorModule` 等 | MVP 暂不自动纳入 | 需另建资产语义 |
+| 子网 stake 转移（钱包之间） | `SubtensorModule.StakeTransferred` | 是（0.1.6 起） | `origin_coldkey → destination_coldkey`，金额取事件的 TAO 等值，单独标注边类型与源子网 ID |
+| 质押、解质押、购买、跨子网移动 | `SubtensorModule` 等 | 暂不自动纳入 | 需另建资产语义 |
 | 代理身份关系 | `Proxy.ProxyExecuted` 等 | MVP 暂不自动纳入 | 在该事件中交给人别关系需来源链与规则核验 |
 
 ### 重要语义
@@ -78,8 +79,11 @@
 | `transfers` | block_number、block_hash、tx_hash、event_index、from、to、amount_rao、amount_tao | 本地资金边索引 |
 | `scan_jobs` | start/end、head、status、error、scanned_blocks | 扫描任务审计 |
 | `chain_cursors` | rpc_url、last_block、last_hash | 连续增量水位 |
+| `relation_archives` | seed、status、rounds、requests、related_count、payload、created_at | 每次关联查询的结果快照，供查询记录回看与重新导出；最多保留 500 条，总体积超过 200 MB 时淘汰最旧记录 |
 
 索引的唯一约束来自区块与事件序号，并另外对事件字段建立唯一键；导入重复不会重复累加金额。
+
+关联查询的归档不参与关联计算，只是结果的只读快照：`payload` 保存去掉用量统计后的完整 JSON（超过 8 MB 时丢弃逐笔 `edges` 明细），历史页据此还原表格和导出地址。同步地址库时按地址去重，已存在的行不覆盖，保证人工维护的分类与备注不会被自动流程改写。
 
 ## 五、已验证证据
 
