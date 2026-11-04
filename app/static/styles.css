@@ -129,3 +129,8 @@ td.address code { word-break:break-all; }
 .backfill-progress { margin-top:12px; padding:11px 14px; border:1px solid var(--accent-soft); border-radius:9px; background:var(--accent-soft); color:var(--ink); font-size:12.5px; line-height:1.7; white-space:pre-line; }
 .backfill-progress.is-error { border-color:color-mix(in srgb, var(--danger) 45%, transparent); background:transparent; color:var(--ink); }
 @media (max-width:560px) { .backfill-actions { display:block; } .backfill-buttons { margin-top:10px; } .backfill-buttons button { flex:1; } }
+
+/* API key 获取引导：直接给出创建页面，避免用户卡在“去哪拿 key” */
+.api-key-hint { grid-column:1/-1; color:var(--muted); font-size:12px; line-height:1.65; }
+.api-key-hint a { color:var(--accent); text-decoration:underline; text-underline-offset:2px; }
+.api-key-hint a:hover { text-decoration:none; }

@@ -241,27 +241,62 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <tbody>
 <tr>
 <td>1</td>
-<td>找可用的 Python（3.10–3.13，包括装了但没加进 PATH 的情况）</td>
+<td>找可用的 Python（3.10–3.13，包括装了但没加进 PATH 的情况）；已有就跳过</td>
 <td>找不到就用 <code>installers\</code> 里的安装包静默安装，再不行才联网用 winget</td>
 </tr>
 <tr>
 <td>2</td>
-<td>创建独立运行环境 <code>.venv</code></td>
+<td>创建独立运行环境 <code>.venv</code>；已有可用的就跳过</td>
 <td>自动重建失效的环境</td>
 </tr>
 <tr>
 <td>3</td>
-<td>优先从 <code>installers\wheels\</code> 离线安装依赖，版本不匹配才联网（官方源失败自动切国内镜像）</td>
+<td>优先从 <code>installers\wheels\</code> 离线安装依赖，版本不匹配才联网（官方源失败自动切国内镜像）；依赖已完整且清单没变就跳过</td>
 <td>提示检查网络后重新双击</td>
 </tr>
 <tr>
 <td>4</td>
-<td>建 <code>data</code>、<code>logs</code> 目录，创建桌面快捷方式</td>
+<td>建 <code>data</code>、<code>logs</code> 目录，创建桌面快捷方式；已存在就跳过</td>
 <td>快捷方式失败不影响使用，改用 <code>启动.cmd</code></td>
 </tr>
 </tbody>
 </table>
 <p>安装过程<strong>不会</strong>修改系统 Python、不写注册表、不需要管理员权限（除 winget 装 Python 可能弹一次确认）。</p>
+<h3 id="重复双击安装会重装吗">重复双击安装会重装吗？</h3>
+<p><strong>不会。</strong> 脚本每一步都先检查，已经具备的直接跳过，所以重复运行是安全的，通常 1–2 秒就结束：</p>
+<table>
+<thead>
+<tr>
+<th>检查项</th>
+<th>已就绪时看到什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Python</td>
+<td><code>[--] Python 3.12.x 已就绪</code>，不动它</td>
+</tr>
+<tr>
+<td><code>.venv</code></td>
+<td><code>[--] 已有可用的 .venv，跳过创建</code></td>
+</tr>
+<tr>
+<td>依赖</td>
+<td><code>[--] 依赖已完整（pip check 通过），跳过安装</code>，不会升级 pip、不会联网</td>
+</tr>
+<tr>
+<td>快捷方式</td>
+<td><code>[--] 桌面快捷方式已指向本项目，跳过创建</code></td>
+</tr>
+</tbody>
+</table>
+<p>结尾会明确写一行 <strong>“环境已就绪：本次没有重复安装任何组件。”</strong></p>
+<p>需要它重新装的情况：</p>
+<ul>
+<li>你改了 <code>requirements.txt</code> → 脚本发现指纹变了，只重装依赖；</li>
+<li>环境被误删或被杀毒软件清理 → 自检不通过，自动补装；</li>
+<li>想彻底重来 → 先双击 <code>停止.cmd</code>，再在本文件夹的 PowerShell 里执行 <code>.\setup.ps1 -Force</code>（删除 <code>.venv</code> 后重装，约 15 秒）。</li>
+</ul>
 <h3 id="如果电脑上没有-python">如果电脑上没有 Python</h3>
 <p>安装脚本会自动处理，不用你操心：</p>
 <ol>
@@ -486,20 +521,30 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <p>地址库也能 <strong>导出 CSV / JSON</strong>，方便备份或换电脑时迁移。</p>
 <hr />
 <h2 id="八taostats-api-key可选但推荐">八、Taostats API key（可选，但推荐）</h2>
-<p>没有 key 也能用，但只能查本地已经采集过的区块，实际价值有限。想让工具真正好用，配一个免费 key：</p>
-<ol>
-<li>打开 <a href="https://taostats.io/">https://taostats.io/</a> 注册账号（免费档即可）；</li>
-<li>在账号设置里找到 <strong>API Key</strong>，复制；</li>
-<li>回到页面，在“Taostats API key”输入框粘贴，点 <strong>保存 API key</strong>；</li>
-<li>状态显示“API key 已配置”，就可以正常查询了。</li>
-</ol>
+<p>没有 key 也能用，但只能查本地已经采集过的区块，实际价值有限。想让工具真正好用，配一个免费 key。</p>
+<h3 id="1-打开注册页">1. 打开注册页</h3>
+<p><a href="https://taostats.io/zh/pro">https://taostats.io/zh/pro</a></p>
+<p>用邮箱或钱包登录，免费档（Free）就够用，不需要付费。</p>
+<h3 id="2-创建-api-key">2. 创建 API key</h3>
+<p>登录后打开 <strong>API 密钥页</strong>：</p>
+<p><a href="https://taostats.io/zh/pro/api-keys">https://taostats.io/zh/pro/api-keys</a></p>
+<p>点页面上的 <strong>新建 / Create API Key</strong>，按提示先建一个项目（Project，名字随便填，例如 <code>wallet-link</code>），再生成密钥。生成后<strong>立即复制</strong>——密钥通常只完整显示一次，关掉页面就看不到了。</p>
+<blockquote>
+<p>如果你在这一页找不到按钮，直接看官方图文步骤：<a href="https://taostats.io/zh/docs/start-here/getting-started-with-taostats-api">https://taostats.io/zh/docs/start-here/getting-started-with-taostats-api</a></p>
+</blockquote>
+<h3 id="3-粘到工具里">3. 粘到工具里</h3>
+<p>回到本工具页面，在“Taostats API key”输入框粘贴，点 <strong>保存 API key</strong>。状态显示“API key 已配置”就成了。</p>
+<blockquote>
+<p>填错了不用慌：点“清除”重来即可；也可以在 Taostats 后台删掉重新生成一个。</p>
+</blockquote>
+<h3 id="4-额度与用量">4. 额度与用量</h3>
+<p>免费档按 credits 计费，页面上的“Taostats 查询次数”统计的是本机真实发出的请求，缓存命中不计数。具体额度以官方套餐页为准：<a href="https://taostats.io/zh/pro">https://taostats.io/zh/pro</a></p>
 <p>关于 key 的几点说明：</p>
 <ul>
 <li>key 只保存在<strong>本机服务的内存</strong>里，不写数据库、不写文件、不进浏览器存储；</li>
 <li>因此<strong>每次重启服务后需要重新填写一次</strong>（这是刻意的安全取舍）；</li>
 <li>页面上的“Taostats 查询次数”统计的是本机真实发出的请求，缓存命中不计数；</li>
-<li>单次关联查询最多发起 5 次请求，所以才有“分轮续查”；</li>
-<li>免费额度按 credits 计算，具体以 Taostats 官网套餐说明为准。</li>
+<li>单次关联查询最多发起 5 次请求，所以才有“分轮续查”。</li>
 </ul>
 <hr />
 <h2 id="九本地索引进阶可跳过">九、本地索引（进阶，可跳过）</h2>
@@ -565,7 +610,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <p><strong>Q：分轮查询到一半不动了？</strong>
 每分钟 5 次请求的限制会让每轮之间等约 1 分钟，属正常现象。如果超过 3 分钟没变化，点“停止续查”保留已有结果，稍后重试。</p>
 <p><strong>Q：Taostats 报 401 / 401 Unauthorized？</strong>
-key 没填、填错，或服务重启后没重新填。重新粘贴一次 key 再保存。</p>
+key 没填、填错，或服务重启后没重新填（key 只存在内存里，重启即失效）。到 <a href="https://taostats.io/zh/pro/api-keys">https://taostats.io/zh/pro/api-keys</a> 重新复制一次，粘贴保存即可。如果提示 key 已失效，在后台删掉重新生成。</p>
 <p><strong>Q：能不能在 Mac 或 Linux 上用？</strong>
 可以，但需要手动建环境：装 Python 3.10–3.13，执行 <code>python -m venv .venv</code>、<code>.venv/bin/pip install -r requirements.txt</code>、<code>.venv/bin/python run.py</code>，然后访问同一地址。一键脚本只适配 Windows。</p>
 <p><strong>Q：数据存在哪？要不要备份？</strong>
