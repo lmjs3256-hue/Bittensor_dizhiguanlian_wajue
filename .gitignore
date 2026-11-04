@@ -28,3 +28,6 @@ license.key
 
 # 签发出来的授权码备份
 授权码/
+
+# 外发包（由 tools/make_release.py 生成，不进仓库）
+*.zip

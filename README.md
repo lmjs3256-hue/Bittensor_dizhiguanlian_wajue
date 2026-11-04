@@ -221,12 +221,15 @@ JSON：
 - `app/`：FastAPI 后端、关联算法、Taostats 客户端和前端页面。
 - `tests/`：单元测试和 API 测试。
 - `tools/build_usage_html.py`：由 `使用说明.md` 生成 `使用说明.html`（改完说明后运行一次）。
+- `tools/make_release.py`：打外发包，生成 `Bittensor地址关联挖掘-<版本>-外发包.zip`（自动排除 `.venv`、`data`、`logs`、`license.key`、管理员与开发文件）；加 `--with-admin` 则连 `tools`、`docs`、`授权管理.md`、`签发授权.cmd` 一起打。
 - `tools/issue_license.py`：授权码签发/校验工具（`--interactive` 即双击脚本走的问答模式）。
 - `docs/HANDOFF.md`：中文开发交接和运行状态。
 - `docs/DESIGN_FEASIBILITY.md`：技术方案和可行性边界。
 - `docs/VERIFICATION.md`：实际测试与验收记录。
 
 仓库只保存源代码和文档。`data/`、`logs/`、`.venv/`、Python 缓存和测试缓存已加入 `.gitignore`，避免把本地数据库、运行日志或用户地址库直接发布。
+
+> **外发时不要直接右键压缩整个文件夹**：服务运行时 `data\wallet_link.db` 被 SQLite 占用，Windows 压缩会报“文件正由另一进程使用”然后失败；而且整目录里还有自己的查询记录和 `license.key`。用 `tools\make_release.py` 打包，它只装运行需要的文件（约 40 MB，已验证解压后可离线安装并启动）。
 
 ## 测试
 
