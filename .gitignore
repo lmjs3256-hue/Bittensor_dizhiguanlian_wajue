@@ -25,3 +25,6 @@ desktop.ini
 # 离线授权与本地密钥（授权绑定机器，不进仓库）
 license.key
 .license-keys/
+
+# 签发出来的授权码备份
+授权码/

@@ -208,6 +208,8 @@ JSON：
 - `安装.cmd`：一键安装（检测 Python、建 `.venv`、装依赖、建目录和桌面快捷方式）；可重复运行，已就绪的步骤自动跳过。
 - `installers\`：离线安装素材 —— Python 3.12.10 官方安装包 + 项目依赖的 wheels（约 37 MB）。没有 Python 时脚本会自动静默安装，装依赖也优先走本地 wheels，**全程无需联网**。
 - `启动.cmd` / `停止.cmd`：双击启动、停止本地服务。
+- `查看机器码.cmd`：双击显示本机机器码（申请授权时用）。
+- `签发授权.cmd`：管理员双击，按问答给团队成员的电脑签发授权码（需要项目上一级目录的 `.license-keys\` 私钥）。用法见 [授权管理.md](授权管理.md)。
 - `使用说明.md` / `使用说明.html`：面向普通人的完整图文说明，HTML 可离线双击查看。
 - `VERSION`：当前应用版本。
 - `CHANGELOG.md`：版本变更记录。页面底部会显示当前版本号，点击“查看更新日志”可看各版本发布日期和功能变更。
@@ -217,6 +219,7 @@ JSON：
 - `app/`：FastAPI 后端、关联算法、Taostats 客户端和前端页面。
 - `tests/`：单元测试和 API 测试。
 - `tools/build_usage_html.py`：由 `使用说明.md` 生成 `使用说明.html`（改完说明后运行一次）。
+- `tools/issue_license.py`：授权码签发/校验工具（`--interactive` 即双击脚本走的问答模式）。
 - `docs/HANDOFF.md`：中文开发交接和运行状态。
 - `docs/DESIGN_FEASIBILITY.md`：技术方案和可行性边界。
 - `docs/VERIFICATION.md`：实际测试与验收记录。

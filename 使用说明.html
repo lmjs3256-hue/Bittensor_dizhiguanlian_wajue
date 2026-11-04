@@ -341,6 +341,9 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <li>粘贴到输入框，点 <strong>激活</strong>，页面自动刷新即可使用。</li>
 </ol>
 <p>激活信息保存在程序目录下的 <code>license.key</code> 里，全程不联网。激活后页面右下角会常驻“团队名 · 机器码后 6 位”水印，导出的地址 TXT/JSON 也会带上“授权给 …”标记——万一工具或数据外流，可以追溯到是哪个团队的副本。授权码默认一年有效，到期后重新找管理员要一个新码；换电脑或重装系统后机器码会变，同样需要重新申请。</p>
+<blockquote>
+<p>小提示：激活<strong>不需要另外装 Python</strong>，双击 <code>启动.cmd</code> 用的就是文件夹里的 <code>.venv</code>。<code>tools\</code> 目录里的 <code>.py</code> 文件双击不会运行（这是正常的，Windows 不认），需要动手时都用配套的双击脚本：管理员签发授权码用 <code>签发授权.cmd</code>，查看本机机器码用 <code>查看机器码.cmd</code>。</p>
+</blockquote>
 <p>管理员怎么签发授权码，见 <a href="授权管理.md">授权管理.md</a>。</p>
 <hr />
 <h2 id="五第一次查询照着点就行">五、第一次查询（照着点就行）</h2>

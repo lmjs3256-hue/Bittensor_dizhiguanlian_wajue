@@ -98,7 +98,7 @@ def build_token(payload: dict) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="签发 Wallet Link 离线授权码")
-    parser.add_argument("--team", required=True, help="团队名称，会显示在页面和导出文件的水印里")
+    parser.add_argument("--team", default="", help="团队名称，会显示在页面和导出文件的水印里")
     parser.add_argument(
         "--machine",
         action="append",
@@ -116,7 +116,176 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--init-key", action="store_true", help="私钥不存在时生成一对新密钥（旧授权码会失效）"
     )
+    parser.add_argument(
+        "--interactive", "-i", action="store_true", help="一步步问答式签发（双击 签发授权.cmd 用的就是这个）"
+    )
     return parser.parse_args()
+
+
+def format_machine(code: str) -> str:
+    """把 16 位机器码排成 XXXX-XXXX-XXXX-XXXX，方便核对。"""
+
+    compact = normalize_machine(code)
+    if len(compact) != 16:
+        return code
+    return "-".join(compact[index : index + 4] for index in range(0, 16, 4))
+
+
+def issue(team: str, machines: list[str], expires_text: str, note: str = "") -> tuple[dict, str]:
+    """签发一个授权码，并立刻自检签名。"""
+
+    if not team.strip():
+        raise SystemExit("团队名称不能为空")
+    if not machines:
+        raise SystemExit("至少需要一个机器码")
+    if len(machines) > 50:
+        raise SystemExit("一个授权码最多绑定 50 台机器，请拆成多个授权")
+
+    payload = {
+        "v": 1,
+        "team": team.strip(),
+        "machines": machines,
+        "expires": expires_text,
+        "issued": date.today().isoformat(),
+        "note": note.strip(),
+    }
+    token = build_token(payload)
+    verify_token(token, check_machine=False)  # 避免把坏码发出去
+    return payload, token
+
+
+def copy_to_clipboard(text: str) -> bool:
+    try:
+        import tkinter
+
+        root = tkinter.Tk()
+        root.withdraw()
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        root.update()
+        root.destroy()
+        return True
+    except Exception:  # noqa: BLE001 - 没装 tk 时退回系统 clip
+        pass
+    try:
+        import subprocess
+
+        subprocess.run("clip", input=text.encode("ascii"), check=True, shell=True)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def ask(prompt: str, default: str = "") -> str:
+    try:
+        raw = input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        print("\n已取消。")
+        raise SystemExit(1)
+    return raw.strip() or default
+
+
+def interactive() -> None:
+    """双击 签发授权.cmd 后走的一步步问答流程。"""
+
+    print("=" * 60)
+    print("  Wallet Link 授权码签发")
+    print("=" * 60)
+    print("对方打开工具时，未激活的页面上会显示 16 位机器码，")
+    print("形如 KNT5-YFER-N3PA-5W7Z，让他点“复制”后发给你。")
+    print()
+
+    machines: list[str] = []
+    while True:
+        raw = ask(f"① 粘贴机器码（第 {len(machines) + 1} 台，直接回车结束）: ")
+        if not raw:
+            break
+        for part in raw.replace("，", ",").replace(" ", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            code = "*" if part == "*" else normalize_machine(part)
+            if code != "*" and len(code) != 16:
+                print(f"   ！{part} 不是 16 位机器码，已跳过（请让对方复制激活页上的完整机器码）。")
+                continue
+            if code in machines:
+                print(f"   = {code} 已经加过了")
+                continue
+            machines.append(code)
+            print(f"   + 已记录 {format_machine(code)}")
+
+    if not machines:
+        print("没有输入机器码，已退出。")
+        return
+
+    team = ask("② 团队名称（会显示在对方页面右下角的水印里）[内部团队]: ", "内部团队")
+
+    while True:
+        raw = ask("③ 有效期天数（直接回车 = 365 天，输入 0 = 长期有效）[365]: ", "365")
+        try:
+            days = int(raw)
+        except ValueError:
+            print("   请输入数字，例如 180。")
+            continue
+        if days < 0:
+            print("   天数不能是负数。")
+            continue
+        break
+    if days == 0:
+        expires_text = ""
+    else:
+        expires_text = (date.today() + timedelta(days=max(1, days))).isoformat()
+
+    print()
+    print("-" * 60)
+    print(f"团队　：{team}")
+    print(f"机器　：{', '.join(format_machine(item) for item in machines)}（共 {len(machines)} 台）")
+    print(f"到期　：{expires_text or '长期有效'}")
+    print("-" * 60)
+    if ask("确认签发？(Y/n): ", "y").lower() not in {"y", "yes"}:
+        print("已取消，没有生成授权码。")
+        return
+
+    payload, token = issue(team, machines, expires_text)
+
+    print()
+    print("授权码（整行复制发给对方，粘贴时不要带多余空行）：")
+    print()
+    print(token)
+    print()
+
+    copied = copy_to_clipboard(token)
+    print("已复制到剪贴板。" if copied else "（没能自动复制，请手动选中上面那行复制。）")
+
+    out_dir = ROOT_DIR / "授权码"
+    safe_team = "".join(ch for ch in team if ch not in '\\/:*?"<>|').strip() or "license"
+    out_path = out_dir / f"{date.today().isoformat()}-{safe_team}.txt"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            "\n".join(
+                [
+                    f"团队：{payload['team']}",
+                    f"机器码：{', '.join(format_machine(item) for item in machines)}",
+                    f"到期：{expires_text or '长期有效'}",
+                    f"签发日：{date.today().isoformat()}",
+                    "",
+                    "授权码：",
+                    token,
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        print(f"同时备份到了：{out_path}")
+    except OSError as exc:
+        print(f"（备份文件没写成：{exc}，不影响使用）")
+
+    print()
+    print("对方怎么激活：打开工具页面 → 粘贴到“粘贴授权码”框 → 点“激活”。")
+    print("授权码和机器绑定，只能在这台电脑上用；换电脑要重新签发。")
+    print()
+    input("按回车键关闭这个窗口…")
 
 
 def main() -> None:
@@ -138,6 +307,13 @@ def main() -> None:
         print(f"校验通过：团队={row.team} 到期={row.expires or '长期'} 机器={','.join(row.machines)}")
         return
 
+    if args.interactive:
+        interactive()
+        return
+
+    if not args.team.strip():
+        raise SystemExit("请用 --team 指定团队名称（或直接运行 签发授权.cmd 走问答模式）")
+
     machines = []
     for item in args.machine:
         machines.extend(part for part in str(item).replace("，", ",").split(",") if part.strip())
@@ -145,8 +321,6 @@ def main() -> None:
     machines = [item for item in machines if item]
     if not machines:
         raise SystemExit("请用 --machine 至少指定一个机器码（或 * 表示不绑定）")
-    if len(machines) > 50:
-        raise SystemExit("一个授权码最多绑定 50 台机器，请拆成多个授权")
 
     if args.permanent:
         expires_text = ""
@@ -158,18 +332,7 @@ def main() -> None:
     else:
         expires_text = (date.today() + timedelta(days=max(1, args.days))).isoformat()
 
-    payload = {
-        "v": 1,
-        "team": args.team.strip(),
-        "machines": machines,
-        "expires": expires_text,
-        "issued": date.today().isoformat(),
-        "note": args.note.strip(),
-    }
-    token = build_token(payload)
-
-    # 自检：签完立刻验一遍机器无关的部分，避免发出坏码
-    verify_token(token, check_machine=False)
+    payload, token = issue(args.team.strip(), machines, expires_text, args.note.strip())
 
     print("授权码（复制整行发出去）：")
     print(token)

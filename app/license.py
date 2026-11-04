@@ -340,4 +340,5 @@ def watermark() -> str:
 
 
 if __name__ == "__main__":  # python -m app.license 直接打印本机机器码
+    print("本机机器码（发给管理员换授权码）：")
     print(machine_code())
