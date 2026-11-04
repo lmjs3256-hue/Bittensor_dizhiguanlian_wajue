@@ -5,6 +5,7 @@ const state = {
   lastResult: null,
   library: [],
   books: [],
+  categories: [],
   bookFilter: "",
   depthFilter: "all",
   history: { offset: 0, total: 0, items: [] },
@@ -577,7 +578,7 @@ async function scanBlocks(advance) {
 }
 
 function libraryRowsTable(rows) {
-  return `<table><thead><tr><th class="selection-cell"></th><th>地址</th><th>名称</th><th>分类</th><th>备注</th><th>地址库</th><th>来源</th><th></th></tr></thead><tbody>${rows.map((row) => { const exchangeControl = row.category === "EXCHANGE" ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销确认</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">重新确认</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销否定</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>` : ""; const bookCell = row.book ? `<span class="tag">${esc(row.book)}</span>` : "-"; return `<tr><td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td><td class="mono address">${esc(row.address)}</td><td>${esc(row.label || "-")}</td><td><span class="lib-category ${esc(row.category)}">${esc(row.category)}</span>${exchangeControl}</td><td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td><td>${bookCell}</td><td>${esc(row.source || "-")}</td><td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td></tr>`; }).join("")}</tbody></table>`;
+  return `<table><thead><tr><th class="selection-cell"></th><th>地址</th><th>名称</th><th>分类</th><th>备注</th><th>地址库</th><th>来源</th><th></th></tr></thead><tbody>${rows.map((row) => { const exchangeControl = row.category === "EXCHANGE" ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销确认</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">重新确认</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销否定</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>` : ""; const bookCell = row.book ? `<span class="tag">${esc(row.book)}</span>` : "-"; return `<tr><td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td><td class="mono address">${esc(row.address)}</td><td>${esc(row.label || "-")}</td><td><span class="lib-category" data-category="${esc(row.category)}">${esc(row.category_label || categoryLabel(row.category))}</span>${exchangeControl}</td><td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td><td>${bookCell}</td><td>${esc(row.source || "-")}</td><td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td></tr>`; }).join("")}</tbody></table>`;
 }
 
 function libraryTable(rows) {
@@ -588,7 +589,7 @@ function libraryTable(rows) {
   }
   const groups = new Map();
   rows.forEach((row) => {
-    const label = (row.label || `${row.category} · 未命名`).trim();
+    const label = (row.label || `${categoryLabel(row.category)} · 未命名`).trim();
     // 自建地址库优先按库名归组，其余仍按「分类 + 名称」。
     const key = row.book ? `book\u0000${row.book}` : `${row.category}\u0000${label}`;
     if (!groups.has(key)) {
@@ -604,7 +605,7 @@ function libraryTable(rows) {
   return `<div class="library-groups">${[...groups.values()].map((group, index) => {
     const groupId = `library-group-${index}`;
     const categoryTag = group.category
-      ? `<span class="lib-category ${esc(group.category)}">${esc(group.category)}</span>`
+      ? `<span class="lib-category" data-category="${esc(group.category)}">${esc(categoryLabel(group.category))}</span>`
       : '<span class="lib-category book-tag">自建库</span>';
     return `<section class="library-group"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="false" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-details hidden" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
   }).join("")}</div>`;
@@ -637,7 +638,7 @@ function renderLibraryList() {
 
 function bookCard(book) {
   const categories = Object.entries(book.categories || {})
-    .map(([key, count]) => `${key} ${count}`)
+    .map(([key, count]) => `${categoryLabel(key)} ${count}`)
     .join(" / ");
   const meta = [
     book.seed ? `来源查询 ${shortAddr(book.seed)}` : "手工创建",
@@ -718,8 +719,109 @@ async function dissolveBook(name) {
   }
 }
 
+// -- 地址库分类：大V / 群友 / 其他 + 自建 ---------------------------------
+const NEW_CATEGORY = "__new__";
+
+function categoryLabel(value) {
+  return ({ EXCHANGE: "交易所（系统）", VALIDATOR: "验证者（系统）" })[value] || value || "未分类";
+}
+
+function categoryOptionsMarkup(selected) {
+  const options = state.categories.map((item) => {
+    const suffix = item.count ? ` · ${number(item.count)}` : "";
+    const isSelected = item.name === selected ? " selected" : "";
+    return `<option value="${esc(item.name)}"${isSelected}>${esc(item.name)}${suffix}</option>`;
+  });
+  return options.join("") + `<option value="${NEW_CATEGORY}">＋ 新建分类…</option>`;
+}
+
+function fillCategorySelects() {
+  const names = state.categories.map((item) => item.name);
+  document.querySelectorAll("[data-category-select]").forEach((select) => {
+    const keep = names.includes(select.value) ? select.value : names[0] || "";
+    select.innerHTML = categoryOptionsMarkup(keep);
+  });
+}
+
+function renderCategories() {
+  const list = $("#category-list");
+  if (!list) return;
+  $("#category-count").textContent = `${state.categories.length} 个`;
+  list.innerHTML = state.categories
+    .map((item) => `<div class="category-item">
+      <div><b>${esc(item.name)}</b><small>${number(item.count)} 个地址</small></div>
+      ${item.builtin
+        ? '<span class="tag">预置</span>'
+        : `<button class="danger note-save" data-category-delete="${esc(item.name)}" type="button">删除</button>`}
+    </div>`)
+    .join("");
+}
+
+async function loadCategories() {
+  try {
+    const data = await api("/api/library/categories");
+    state.categories = data.items || [];
+    fillCategorySelects();
+    renderCategories();
+  } catch (_) {
+    // 分类列表拉不到不影响主流程，下拉保留原有选项。
+  }
+}
+
+async function createCategory(name) {
+  const value = String(name || "").trim();
+  if (!value) return "";
+  try {
+    const result = await api("/api/library/categories", {
+      method: "POST",
+      body: JSON.stringify({ name: value }),
+    });
+    await loadCategories();
+    return result.name;
+  } catch (error) {
+    toast(`新增分类失败：${error.message}`, true);
+    return "";
+  }
+}
+
+async function promptNewCategory(select) {
+  const name = window.prompt("新分类名称（最多 12 个字），例如：项目方、做市商", "");
+  const created = await createCategory(name);
+  if (created && select) {
+    select.value = created;
+    toast(`已新增分类「${created}」。`);
+    if (select.id === "book-category") updateBookHint();
+  } else {
+    fillCategorySelects();
+  }
+}
+
+async function deleteCategory(name) {
+  if (!window.confirm(`删除分类「${name}」？\n\n该分类下的地址会回到“其他”，地址本身不会被删除。`)) return;
+  try {
+    const result = await api(`/api/library/categories/${encodeURIComponent(name)}`, { method: "DELETE" });
+    await loadCategories();
+    await loadLibrary();
+    toast(`已删除分类「${name}」，${result.moved_to_default} 个地址回到“其他”。`);
+  } catch (error) {
+    toast(`删除分类失败：${error.message}`, true);
+  }
+}
+
+async function addCategoryFromPanel() {
+  const input = $("#new-category-name");
+  const name = input.value.trim();
+  if (!name) { toast("请先填写分类名称。", true); input.focus(); return; }
+  const created = await createCategory(name);
+  if (created) {
+    input.value = "";
+    toast(`已新增分类「${created}」。`);
+  }
+}
+
 async function loadLibrary() {
   try {
+    if (!state.categories.length) await loadCategories();
     const [data, bookData] = await Promise.all([
       api("/api/library"),
       api("/api/library/books").catch(() => ({ items: [] })),
@@ -1056,7 +1158,7 @@ async function clearHistory() {
 }
 
 // -- 关联地址同步进地址库 -------------------------------------------------
-async function syncAddresses({ seed, related, mode = "all", category = "WATCH", label = "" }) {
+async function syncAddresses({ seed, related, mode = "all", category = "其他", label = "" }) {
   const addresses = (related || []).map((row) => row.address).filter(Boolean);
   return api("/api/relations/sync-library", {
     method: "POST",
@@ -1073,6 +1175,7 @@ async function syncAddresses({ seed, related, mode = "all", category = "WATCH", 
 
 function syncSummary(result) {
   const parts = [`新增 ${result.inserted} 个`, `已存在 ${result.existing} 个`];
+  if (result.recategorized) parts.push(`归入「${result.category}」${result.recategorized} 个`);
   if (result.matched) parts.push(`命中地址库 ${result.matched} 个`);
   if (result.invalid) parts.push(`跳过无效 ${result.invalid} 个`);
   return parts.join("，");
@@ -1166,11 +1269,15 @@ async function syncHistoryRecord(id) {
   try {
     const data = await api(`/api/relations/history/${id}`);
     if (!data.result) { toast("这条记录没有可同步的地址。", true); return; }
+    const category = $("#history-sync-category")?.value || "其他";
+    const label = $("#history-sync-label")?.value.trim() || "";
     const result = await syncAddresses({
       seed: data.result.seed,
       related: data.result.related,
+      category,
+      label,
     });
-    toast(`历史记录 #${id} 已同步到地址库：${syncSummary(result)}。`);
+    toast(`历史记录 #${id} 已按「${category}」同步到地址库：${syncSummary(result)}。`);
     await loadHistory(state.history.offset);
   } catch (error) {
     toast(`同步失败：${error.message}`, true);
@@ -1245,15 +1352,26 @@ document.addEventListener("click", (event) => {
   if (bookExport) exportBook(bookExport.dataset.bookName, bookExport.dataset.bookExport);
   const bookDissolve = event.target.closest("[data-book-dissolve]");
   if (bookDissolve) dissolveBook(bookDissolve.dataset.bookDissolve);
+  const categoryDelete = event.target.closest("[data-category-delete]");
+  if (categoryDelete) deleteCategory(categoryDelete.dataset.categoryDelete);
 });
 $("#sync-all").addEventListener("click", () => syncCurrentResult("all"));
 $("#sync-matched").addEventListener("click", () => syncCurrentResult("matched"));
 $("#create-book").addEventListener("click", createBookFromResult);
 $("#book-include-seed").addEventListener("change", updateBookHint);
 $("#book-category").addEventListener("change", () => {
-  if ($("#book-category").value === "BLACKLIST") {
-    toast("导入为 BLACKLIST 时，地址库里会显示为黑名单分类，仅作标记，不影响扫描过滤。");
-  }
+  if ($("#book-category").value === NEW_CATEGORY) promptNewCategory($("#book-category"));
+  else updateBookHint();
+});
+document.querySelectorAll("[data-category-select]").forEach((select) => {
+  if (select.id === "book-category") return;
+  select.addEventListener("change", () => {
+    if (select.value === NEW_CATEGORY) promptNewCategory(select);
+  });
+});
+$("#add-category").addEventListener("click", addCategoryFromPanel);
+$("#new-category-name").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") addCategoryFromPanel();
 });
 $("#book-name").addEventListener("keydown", (event) => {
   if (event.key === "Enter") createBookFromResult();
@@ -1361,3 +1479,4 @@ const initialView = String(location.hash || "").replace("#", "");
 if (["history", "library", "method", "release"].includes(initialView)) navigate(initialView, false);
 loadOverview();
 loadVersionInfo();
+loadCategories();

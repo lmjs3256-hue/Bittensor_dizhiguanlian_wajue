@@ -58,7 +58,7 @@ def test_create_address_book_imports_seed_and_skips_public_addresses():
                 addresses = {row.address for row in rows}
                 assert addresses == {SEED, NEIGHBORS[2]}
                 row = db.query(AddressLibrary).filter_by(address=SEED).one()
-                assert row.category == "WATCH"
+                assert row.category == "其他"
                 assert row.label == "疑似同一实体"
                 assert row.source == "book:疑似同一实体"
                 assert "新建并导入" in row.note

@@ -126,7 +126,7 @@ def test_notes_can_be_saved_for_library_rows_and_new_relation_addresses():
 
             created = service.save_note(ADDRESSES[1], "关联地址备注")
             assert created["created"] is True
-            assert created["item"]["category"] == "WATCH"
+            assert created["item"]["category"] == "其他"
             assert created["item"]["note"] == "关联地址备注"
             saved = {item["address"]: item for item in service.library()}
             assert saved[ADDRESSES[1]]["note"] == "关联地址备注"

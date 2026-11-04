@@ -85,7 +85,8 @@ def service() -> LinkService:
 
 class AddressInput(BaseModel):
     address: str = Field(min_length=1, max_length=64)
-    category: str = Field(default="WATCH", pattern="^(SEED|WATCH|BLACKLIST|EXCHANGE|VALIDATOR)$")
+    # 分类是用户自定义的（大V / 群友 / 其他 + 自建），不再限定枚举。
+    category: str = Field(default="其他", max_length=32)
     label: str = Field(default="", max_length=160)
     note: str = Field(default="", max_length=2000)
 
@@ -144,9 +145,7 @@ class RelationSyncInput(BaseModel):
     seed: str = Field(default="", max_length=64)
     addresses: list[str] = Field(default_factory=list, max_length=5000)
     include_seed: bool = True
-    category: str = Field(
-        default="WATCH", pattern="^(SEED|WATCH|BLACKLIST|EXCHANGE|VALIDATOR)$"
-    )
+    category: str = Field(default="其他", max_length=32)
     label: str = Field(default="", max_length=160)
     note: str = Field(default="", max_length=2000)
     # 只同步「已经命中地址库的关联地址 + 发起地址」，用于把发起地址补进库。
@@ -164,8 +163,12 @@ class AddressBookInput(BaseModel):
     seed: str = Field(default="", max_length=64)
     addresses: list[str] = Field(default_factory=list, max_length=5000)
     include_seed: bool = True
-    category: str = Field(default="WATCH", pattern="^(WATCH|BLACKLIST|SEED)$")
+    category: str = Field(default="其他", max_length=32)
     note: str = Field(default="", max_length=2000)
+
+
+class CategoryInput(BaseModel):
+    name: str = Field(min_length=1, max_length=32)
 
 
 @app.get("/", include_in_schema=False)
@@ -262,6 +265,29 @@ def list_address_books(svc: Annotated[LinkService, Depends(service)]):
     """自建地址库清单（按库名归组，含地址数与分类统计）。"""
 
     return {"items": svc.address_books()}
+
+
+@app.get("/api/library/categories")
+def list_categories(svc: Annotated[LinkService, Depends(service)]):
+    """地址库分类清单：大V / 群友 / 其他 + 用户自建，含各分类地址数。"""
+
+    return {"items": svc.categories()}
+
+
+@app.post("/api/library/categories")
+def create_category(payload: CategoryInput, svc: Annotated[LinkService, Depends(service)]):
+    try:
+        return svc.add_category(payload.name)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.delete("/api/library/categories/{name}")
+def delete_category(name: str, svc: Annotated[LinkService, Depends(service)]):
+    try:
+        return svc.delete_category(name)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/library/books")

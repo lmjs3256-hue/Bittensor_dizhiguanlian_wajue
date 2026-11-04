@@ -239,7 +239,12 @@ def discover(
     for entry in library:
         address = entry.address.strip()
         current = library_map.get(address)
-        if current is None or entry.category == "BLACKLIST":
+        # 同一地址出现多条记录时，系统分类（交易所/验证者）优先于用户分类，
+        # 否则过滤公共地址会失效。
+        if current is None or (
+            entry.category in {"EXCHANGE", "VALIDATOR"}
+            and current.category not in {"EXCHANGE", "VALIDATOR"}
+        ):
             library_map[address] = LibraryEntry(
                 address=address,
                 label=entry.label,

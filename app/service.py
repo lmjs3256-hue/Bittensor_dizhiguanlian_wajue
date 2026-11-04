@@ -16,6 +16,7 @@ from .crawl import CrawlState, TaostatsCrawl
 from .crawl import stake_counterparty as _stake_counterparty
 from .db import (
     AddressBook,
+    AddressCategory,
     AddressLibrary,
     ChainCursor,
     Database,
@@ -51,12 +52,49 @@ MAX_ARCHIVE_ROWS = 500
 MAX_ARCHIVE_TOTAL_BYTES = 200 * 1024 * 1024
 MAX_ARCHIVE_PAYLOAD_BYTES = 8 * 1024 * 1024
 MAX_SYNC_ADDRESSES = 5000
-SYNC_CATEGORIES = {"SEED", "WATCH", "BLACKLIST", "EXCHANGE", "VALIDATOR"}
-# 新建地址库只允许“观察 / 黑名单 / 发起地址”三类，避免把关联地址误标成
-# 交易所或验证者，导致后续扫描把它们当作公共地址过滤掉。
-BOOK_CATEGORIES = {"WATCH", "BLACKLIST", "SEED"}
+# 用户分类（大V / 群友 / 其他 + 自建）之外的系统分类：只用于“过滤交易所/
+# 验证者”，不提供在分类下拉里给用户挑，避免关联地址被误标成公共地址。
+SYSTEM_CATEGORIES = {"EXCHANGE", "VALIDATOR"}
+SYSTEM_CATEGORY_LABELS = {"EXCHANGE": "交易所（系统）", "VALIDATOR": "验证者（系统）"}
+# 0.4.x 及以前的英文分类，导入旧备份或旧 CSV 时自动折算到“其他”。
+LEGACY_CATEGORY_MAP = {"WATCH": "其他", "SEED": "其他", "BLACKLIST": "其他"}
+# 自建分类不能占用这些名字，否则迁移和系统判断会混乱。
+RESERVED_CATEGORY_NAMES = {
+    "WATCH",
+    "SEED",
+    "BLACKLIST",
+    "EXCHANGE",
+    "VALIDATOR",
+    "ALL",
+}
+DEFAULT_CATEGORY = "其他"
+CATEGORY_NAME_MAX_LENGTH = 12
 BOOK_NAME_MAX_LENGTH = 60
 MAX_BOOK_ADDRESSES = 5000
+
+
+def normalize_category(value: str | None, *, allow_system: bool = True) -> str:
+    """把输入折算成合法的分类名。
+
+    兼容旧数据：WATCH / SEED / BLACKLIST 一律折成“其他”。系统分类
+    （EXCHANGE / VALIDATOR）只在 ``allow_system`` 时保留，普通导入和同步
+    不允许把地址标成公共地址。
+    """
+
+    raw = " ".join(str(value or "").split())
+    if not raw:
+        return DEFAULT_CATEGORY
+    upper = raw.upper()
+    if upper in LEGACY_CATEGORY_MAP:
+        return LEGACY_CATEGORY_MAP[upper]
+    if upper in SYSTEM_CATEGORIES:
+        return upper if allow_system else DEFAULT_CATEGORY
+    return raw[:CATEGORY_NAME_MAX_LENGTH]
+
+
+def category_label(category: str) -> str:
+    return SYSTEM_CATEGORY_LABELS.get(category, category)
+
 
 
 @dataclass
@@ -129,6 +167,7 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
         "address": row.address,
         "label": label,
         "category": row.category,
+        "category_label": category_label(row.category),
         "note": row.note,
         "source": row.source,
         "book": getattr(row, "book", "") or "",
@@ -181,7 +220,7 @@ def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
     suffix = Path(filename).suffix.lower()
     if suffix == ".txt":
         return [
-            {"address": address, "category": "WATCH", "label": "", "note": ""}
+            {"address": address, "category": "", "label": "", "note": ""}
             for address in parse_plain_addresses(text)
         ]
     if suffix == ".json":
@@ -216,11 +255,7 @@ def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
         address = str(row.get("address") or row.get("coldkey") or "").strip()
         if not address:
             raise InputError(f"row {position} has no address")
-        category = str(row.get("category") or "WATCH").strip().upper()
-        if category not in {"SEED", "WATCH", "BLACKLIST", "EXCHANGE", "VALIDATOR"}:
-            raise InputError(
-                f"row {position}: category must be SEED, WATCH, BLACKLIST, EXCHANGE or VALIDATOR"
-            )
+        category = str(row.get("category") or "").strip()
         result.append(
             {
                 "address": address,
@@ -250,11 +285,14 @@ class LinkService:
                 address = str(row["address"]).strip()
                 if not is_valid_ss58(address):
                     raise InputError(f"row {position}: invalid SS58 address")
+                raw_category = str(row.get("category") or "").strip()
+                category = normalize_category(raw_category)
+                if raw_category:
+                    self._ensure_category(db, category)
                 current = db.scalar(
                     select(AddressLibrary).where(AddressLibrary.address == address)
                 )
                 if current is None:
-                    category = row.get("category", "WATCH").upper()
                     rejected = bool(row.get("exchange_rejected", False))
                     confirmed = bool(
                         row.get("exchange_confirmed", category == "EXCHANGE")
@@ -280,11 +318,15 @@ class LinkService:
                 if incoming_book and not current.book:
                     current.book = incoming_book[:BOOK_NAME_MAX_LENGTH]
                     changed = True
-                for field in ("label", "category", "note"):
+                for field in ("label", "note"):
                     incoming = row.get(field, "")
                     if incoming and getattr(current, field) != incoming:
                         setattr(current, field, incoming)
                         changed = True
+                # 分类只在文件里明确写了才改，避免用纯地址 TXT 覆盖人工分类。
+                if raw_category and current.category != category:
+                    current.category = category
+                    changed = True
                 if current.category == "EXCHANGE":
                     rejected = bool(row.get("exchange_rejected", current.exchange_rejected))
                     confirmed = bool(row.get("exchange_confirmed", current.exchange_confirmed))
@@ -341,7 +383,7 @@ class LinkService:
                 current = AddressLibrary(
                     address=address,
                     label="",
-                    category="WATCH",
+                    category=DEFAULT_CATEGORY,
                     note=note,
                     source="relation-note",
                 )
@@ -476,14 +518,119 @@ class LinkService:
         )
         return result
 
+    # -- 地址库分类：大V / 群友 / 其他 + 自定义 -----------------------------
+    def categories(self) -> list[dict[str, Any]]:
+        """列出所有可选分类及各自地址数。
+
+        表里没有、但地址记录里出现过的分类名（老 CSV 导入留下的）也会列出来，
+        免得地址在清单里显示成一个选不到的分类。
+        """
+
+        with self.database.session() as db:
+            rows = db.scalars(
+                select(AddressCategory).order_by(
+                    AddressCategory.sort_order, AddressCategory.id
+                )
+            ).all()
+            counts = {
+                name: int(count)
+                for name, count in db.execute(
+                    select(AddressLibrary.category, func.count(AddressLibrary.id)).group_by(
+                        AddressLibrary.category
+                    )
+                ).all()
+            }
+        items = [
+            {
+                "name": row.name,
+                "builtin": bool(row.builtin),
+                "sort_order": row.sort_order,
+                "count": counts.get(row.name, 0),
+            }
+            for row in rows
+        ]
+        known = {item["name"] for item in items}
+        for name in sorted(name for name in counts if name and name not in known):
+            if name.upper() in SYSTEM_CATEGORIES:
+                continue
+            items.append(
+                {"name": name, "builtin": False, "sort_order": 999, "count": counts[name]}
+            )
+        return items
+
+    def add_category(self, name: str) -> dict[str, Any]:
+        value = " ".join(str(name or "").split())
+        if not value:
+            raise InputError("分类名称不能为空")
+        if len(value) > CATEGORY_NAME_MAX_LENGTH:
+            raise InputError(f"分类名称不能超过 {CATEGORY_NAME_MAX_LENGTH} 个字符")
+        if value.upper() in RESERVED_CATEGORY_NAMES:
+            raise InputError(f"「{value}」是系统保留名称，请换一个")
+        with self.database.session() as db:
+            existing = db.scalar(
+                select(AddressCategory).where(AddressCategory.name == value)
+            )
+            if existing is not None:
+                return {"created": False, "name": existing.name}
+            top = db.scalar(select(func.max(AddressCategory.sort_order))) or 0
+            db.add(AddressCategory(name=value, sort_order=int(top) + 1, builtin=False))
+            return {"created": True, "name": value}
+
+    def delete_category(self, name: str) -> dict[str, Any]:
+        """删除自建分类；该分类下的地址回落到“其他”，不会丢地址。"""
+
+        value = " ".join(str(name or "").split())
+        if not value:
+            raise InputError("分类名称不能为空")
+        if value.upper() in SYSTEM_CATEGORIES:
+            raise InputError("系统分类不能删除")
+        with self.database.session() as db:
+            row = db.scalar(select(AddressCategory).where(AddressCategory.name == value))
+            if row is None:
+                raise InputError("分类不存在")
+            if row.builtin:
+                raise InputError("预置分类不能删除，可以改用其他分类整理地址")
+            moved = int(
+                db.query(AddressLibrary)
+                .filter(AddressLibrary.category == value)
+                .update({AddressLibrary.category: DEFAULT_CATEGORY}, synchronize_session=False)
+            )
+            if db.scalar(
+                select(AddressCategory).where(AddressCategory.name == DEFAULT_CATEGORY)
+            ) is None:
+                db.add(AddressCategory(name=DEFAULT_CATEGORY, sort_order=98, builtin=True))
+            db.delete(row)
+        return {"deleted": True, "name": value, "moved_to_default": moved}
+
+    def _ensure_category(self, db, name: str) -> None:
+        """导入时把没登记过的分类补进分类表，保证下拉里能选到。"""
+
+        if not name or name.upper() in SYSTEM_CATEGORIES:
+            return
+        if db.scalar(select(AddressCategory).where(AddressCategory.name == name)) is not None:
+            return
+        top = db.scalar(select(func.max(AddressCategory.sort_order))) or 0
+        db.add(AddressCategory(name=name[:CATEGORY_NAME_MAX_LENGTH], sort_order=int(top) + 1))
+
     def library(self) -> list[dict[str, Any]]:
+        order = {item["name"]: item["sort_order"] for item in self.categories()}
         with self.database.session() as db:
             rows = db.scalars(
                 select(AddressLibrary).order_by(
                     AddressLibrary.category, AddressLibrary.label, AddressLibrary.id
                 )
             ).all()
-            return [address_dict(row) for row in rows]
+            return [
+                address_dict(row)
+                for row in sorted(
+                    rows,
+                    key=lambda row: (
+                        order.get(row.category, 500),
+                        row.label or "",
+                        row.id,
+                    ),
+                )
+            ]
 
     def export_library(self, file_format: str) -> tuple[str, str]:
         """Return a portable address-library backup and its media type."""
@@ -596,7 +743,7 @@ class LinkService:
         seed: str = "",
         addresses: list[str] | None = None,
         include_seed: bool = True,
-        category: str = "WATCH",
+        category: str = DEFAULT_CATEGORY,
         note: str = "",
     ) -> dict[str, Any]:
         """新建（或追加到同名）地址库，把查询得到的关联地址导入进去。
@@ -607,9 +754,11 @@ class LinkService:
         """
 
         book_name = self._clean_book_name(name)
-        category = (category or "WATCH").upper()
-        if category not in BOOK_CATEGORIES:
-            raise InputError("新建地址库的分类只能是 WATCH、BLACKLIST 或 SEED")
+        # 新建地址库只允许用户分类，避免把关联地址误标成交易所/验证者后被
+        # 当成公共地址过滤掉。
+        if str(category or "").strip().upper() in SYSTEM_CATEGORIES:
+            raise InputError("新建地址库不能使用交易所/验证者这类系统分类")
+        category = normalize_category(category, allow_system=False)
         seed = (seed or "").strip()
         if seed and not is_valid_ss58(seed):
             raise InputError("发起地址不是合法的 SS58 地址")
@@ -641,6 +790,7 @@ class LinkService:
         )
         source = f"book:{book_name}"[:255]
         with self.database.session() as db:
+            self._ensure_category(db, category)
             existing: dict[str, AddressLibrary] = {}
             for index in range(0, len(candidates), 400):
                 chunk = candidates[index : index + 400]
@@ -667,6 +817,10 @@ class LinkService:
                         continue
                     if not row.book:
                         row.book = book_name
+                        # 原本还没归类的地址（分类是默认的“其他”）按这次选的
+                        # 分类走；已经人工分好类的保持不动。
+                        if row.category == DEFAULT_CATEGORY and category != DEFAULT_CATEGORY:
+                            row.category = category
                         attached += 1
                     elif row.book == book_name:
                         already += 1
@@ -953,7 +1107,7 @@ class LinkService:
         seed: str,
         addresses: list[str],
         include_seed: bool = True,
-        category: str = "WATCH",
+        category: str = DEFAULT_CATEGORY,
         label: str = "",
         note: str = "",
         only_library_matched: bool = False,
@@ -967,9 +1121,9 @@ class LinkService:
         seed = (seed or "").strip()
         if seed and not is_valid_ss58(seed):
             raise InputError("发起地址不是合法的 SS58 地址")
-        category = (category or "WATCH").upper()
-        if category not in SYNC_CATEGORIES:
-            raise InputError(f"分类只能是 {'、'.join(sorted(SYNC_CATEGORIES))}")
+        if str(category or "").strip().upper() in SYSTEM_CATEGORIES:
+            raise InputError("同步地址库不能使用交易所/验证者这类系统分类")
+        category = normalize_category(category, allow_system=False)
         if len(addresses) > MAX_SYNC_ADDRESSES:
             raise InputError(f"单次最多同步 {MAX_SYNC_ADDRESSES} 个地址")
 
@@ -995,16 +1149,15 @@ class LinkService:
         related = [value for value in candidates if value != seed]
 
         with self.database.session() as db:
-            existing: set[str] = set()
+            self._ensure_category(db, category)
+            existing_rows: dict[str, AddressLibrary] = {}
             for index in range(0, len(candidates), 400):
                 chunk = candidates[index : index + 400]
-                existing.update(
-                    db.scalars(
-                        select(AddressLibrary.address).where(
-                            AddressLibrary.address.in_(chunk)
-                        )
-                    ).all()
-                )
+                for row in db.scalars(
+                    select(AddressLibrary).where(AddressLibrary.address.in_(chunk))
+                ).all():
+                    existing_rows[row.address] = row
+            existing = set(existing_rows)
             matched = sum(1 for value in related if value in existing)
             seed_in_library = bool(seed) and seed in existing
             if only_library_matched:
@@ -1024,6 +1177,7 @@ class LinkService:
                     "invalid": invalid,
                     "category": category,
                     "label": label,
+                    "recategorized": 0,
                     "added": [],
                 }
 
@@ -1034,8 +1188,18 @@ class LinkService:
             source = f"relation-sync:{seed[:8]}" if seed else "relation-sync"
             added: list[dict[str, Any]] = []
             inserted = 0
+            recategorized = 0
             for address in candidates:
                 if address in existing:
+                    row = existing_rows[address]
+                    # 已经人工分好类的地址不动；还挂在默认“其他”上的地址，
+                    # 允许这次选择的分类把它归位，否则选了分类也没效果。
+                    if (
+                        row.category == DEFAULT_CATEGORY
+                        and category != DEFAULT_CATEGORY
+                    ):
+                        row.category = category
+                        recategorized += 1
                     continue
                 db.add(
                     AddressLibrary(
@@ -1060,6 +1224,7 @@ class LinkService:
                 "invalid": invalid,
                 "category": category,
                 "label": default_label,
+                "recategorized": recategorized,
                 "added": added,
             }
 
@@ -1083,11 +1248,14 @@ class LinkService:
             )
 
     def seed_address(self) -> str | None:
+        """查询页默认填入的地址：取最近整理过的一条非公共地址。"""
+
         with self.database.session() as db:
             return db.scalar(
-                select(AddressLibrary.address).where(
-                    AddressLibrary.category == "SEED"
-                ).order_by(AddressLibrary.id)
+                select(AddressLibrary.address)
+                .where(AddressLibrary.category.notin_(SYSTEM_CATEGORIES))
+                .order_by(AddressLibrary.updated_at.desc(), AddressLibrary.id.desc())
+                .limit(1)
             )
 
     def index_summary(self) -> dict[str, Any]:

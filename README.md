@@ -1,6 +1,6 @@
 # Bittensor 地址关联挖掘工具
 
-版本：**0.4.0**
+版本：**0.5.0**
 
 这是一个独立运行的 Bittensor 地址关联分析工具。输入公开地址后，工具可以调用 Taostats 历史转账索引，或查询本地 SQLite 索引，查找最多三级的普通 TAO 转账和子网 stake 转移关系。工具会把关联地址与人工维护的已知地址库匹配，并支持交易所、验证者和备注管理。
 
@@ -18,7 +18,7 @@
 1. 输入 SS58 地址，最多执行三级 `Balances.Transfer` 关联扫描。
 2. 支持流入、流出、双向查询，以及单边金额与关系累计金额阈值。
 3. 第一跳支持低于阈值的金额，第二、三跳必须通过单边金额门槛；系统账户默认排除。
-4. 人工导入 TXT、CSV、JSON 地址库；支持 SEED、WATCH、BLACKLIST、EXCHANGE、VALIDATOR 分类。
+4. 人工导入 TXT、CSV、JSON 地址库；分类预置「大V / 群友 / 其他」，支持自定义新增；EXCHANGE / VALIDATOR 为系统分类（过滤公共地址用）。
 5. 查询结果只显示关联钱包地址、层级、流入/流出/累计金额和地址库标签，不展示交易明细；导出 JSON 也采用同一简化字段；另有“导出地址 TXT”，每行一个关联地址，便于直接复制到其他工具，并自动排除地址库中已确认的交易所地址和验证者地址。
 6. 写入 SQLite 的转账均按事件去重，保留区块号、区块哈希、交易哈希与事件序号。
 7. 扫描只读取公开链上事件，不签名、不转账、不修改钱包。
@@ -143,7 +143,7 @@ python -m venv .venv
 
 ## 地址库文件格式
 
-TXT：每行一个地址，`#` 之后可写备注。TXT 导入的地址默认归为 `WATCH`。
+TXT：每行一个地址，`#` 之后可写备注。TXT 导入的地址默认归为「其他」。
 
 ```text
 5ColdkeyAddressHere # team treasury
@@ -153,7 +153,7 @@ CSV（导出地址库使用相同字段）：
 
 ```csv
 address,label,category,note
-5ColdkeyAddressHere,Team treasury,SEED,verified source
+5ColdkeyAddressHere,Team treasury,大V,verified source
 ```
 
 应用导出的地址库 CSV 还会包含 `exchange_confirmed` 和 `exchange_rejected` 两列，用于迁移交易所人工判断；JSON 以 `addresses` 数组保存相同字段。
@@ -166,14 +166,14 @@ JSON：
     {
       "address": "5ColdkeyAddressHere",
       "label": "Team treasury",
-      "category": "WATCH",
+      "category": "大V",
       "note": "source and evidence"
     }
   ]
 }
 ```
 
-地址库分类：`EXCHANGE` 用于已人工确认的交易所地址，`VALIDATOR` 用于验证者地址。CSV/JSON 可以直接写入 `category`；TXT 默认导入为 `WATCH`。关联结果中的“疑似交易所（待确认）”可点击确认，确认后才进入交易所过滤集合。地址库页支持勾选多条记录后批量删除。同步官方交易所地址前，需要先在首页填写 Taostats API key；同步结果会去重、校验 SS58，并标记来源为 `taostats:/v1/exchange-addresses`。
+地址库分类：用户分类（大V / 群友 / 其他 + 自建）记录地址身份，CSV/JSON 可以直接写入 `category`，未知分类会自动登记进分类清单；`EXCHANGE` 与 `VALIDATOR` 是系统分类，只由“确认交易所”操作或官方名单产生，用于过滤公共地址，旧文件里的 `WATCH` / `SEED` / `BLACKLIST` 导入时自动折算为「其他」。TXT 默认导入为「其他」。关联结果中的“疑似交易所（待确认）”可点击确认，确认后才进入交易所过滤集合。地址库页支持勾选多条记录后批量删除。同步官方交易所地址前，需要先在首页填写 Taostats API key；同步结果会去重、校验 SS58，并标记来源为 `taostats:/v1/exchange-addresses`。
 
 ## 索引和查询口径
 

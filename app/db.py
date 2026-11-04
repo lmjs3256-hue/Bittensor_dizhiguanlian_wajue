@@ -30,8 +30,27 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# 新建库时预置的分类；用户可以再加自己的。
+DEFAULT_CATEGORY_NAMES = ("大V", "群友", "其他")
+
+
 class Base(DeclarativeBase):
     pass
+
+
+class AddressCategory(Base):
+    """地址库分类：用户自己维护的关系分组（大V、群友、其他…）。
+
+    ``address_library.category`` 存的是这里的名字；EXCHANGE / VALIDATOR 属于
+    系统分类，只用于“过滤交易所/验证者”，不放进这张表供用户挑选。
+    """
+
+    __tablename__ = "address_categories"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AddressBook(Base):
@@ -57,7 +76,7 @@ class AddressLibrary(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     address: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     label: Mapped[str] = mapped_column(String(160), default="")
-    category: Mapped[str] = mapped_column(String(16), default="WATCH", index=True)
+    category: Mapped[str] = mapped_column(String(32), default="其他", index=True)
     note: Mapped[str] = mapped_column(Text, default="")
     source: Mapped[str] = mapped_column(String(255), default="manual")
     # 所属地址库名称；空字符串表示未归入任何自建地址库。
@@ -254,6 +273,27 @@ class Database:
                         "VARCHAR(64) NOT NULL DEFAULT ''"
                     )
                 )
+            # 0.5.0：地址库分类改成用户自定义（大V / 群友 / 其他）。
+            # 旧的 WATCH / SEED / BLACKLIST 语义已经没用了，统一归到“其他”，
+            # EXCHANGE / VALIDATOR 是系统分类（过滤用），保持原样。
+            seeded = connection.execute(
+                text("SELECT COUNT(*) FROM address_categories")
+            ).scalar()
+            if not seeded:
+                for order, name in enumerate(DEFAULT_CATEGORY_NAMES):
+                    connection.execute(
+                        text(
+                            "INSERT INTO address_categories (name, sort_order, builtin, created_at) "
+                            "VALUES (:name, :order, 1, :created)"
+                        ),
+                        {"name": name, "order": order, "created": utcnow().isoformat()},
+                    )
+            connection.execute(
+                text(
+                    "UPDATE address_library SET category = '其他' "
+                    "WHERE category IN ('WATCH', 'SEED', 'BLACKLIST')"
+                )
+            )
 
     @contextmanager
     def session(self) -> Iterator[Session]:
