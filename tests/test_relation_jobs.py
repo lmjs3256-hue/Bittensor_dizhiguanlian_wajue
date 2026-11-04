@@ -421,3 +421,84 @@ def test_repeated_empty_rounds_stop_instead_of_idling(monkeypatch):
             assert any("连续 3 轮没有取得任何数据" in warning for warning in job.result["warnings"])
         finally:
             database.engine.dispose()
+
+
+def test_cancel_stops_mid_round_and_skips_balance_queries(monkeypatch):
+    """停止续查应当即时生效：本轮剩余请求不再执行，结果合成不再查余额。"""
+
+    calls: list[tuple[str, str, int]] = []
+
+    def fake_transfer(address, page):
+        calls.append(("transfer", address, page))
+        if address == SEED:
+            return TransferPage(
+                [transfer_row(i, SEED, neighbor) for i, neighbor in enumerate(NEIGHBORS)],
+                None,
+            )
+        return TransferPage([], None)
+
+    monkeypatch.setattr(service_module, "get_transfer_page", fake_transfer)
+    monkeypatch.setattr(
+        service_module,
+        "get_stake_transfer_page",
+        lambda *a: calls.append(("stake", a[0], a[1])) or TransferPage([], None),
+    )
+
+    def no_balance_query(*_a, **_k):
+        raise AssertionError("停止续查后不应再发起余额查询")
+
+    monkeypatch.setattr(service_module, "query_account_balances", no_balance_query)
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "cancel.db")
+        try:
+            manager = RelationJobManager(round_interval=60, max_rounds=12)
+            job = manager.create(
+                service, seed=SEED, depth=2, min_edge_tao="0.1", min_total_tao="0.1"
+            )
+            assert job.status == "waiting"
+
+            # 模拟"正在跑一轮"时点了停止：should_stop 在第 3 个请求后生效。
+            job.cancel_requested = True
+            spent = job.crawl.run_round(5, should_stop=lambda: len(calls) >= 8)
+            assert spent == 3  # 第一轮已用 5 次 + 本轮 3 次即触发停止
+
+            manager._finish(job, status="cancelled", cap_note="停止")
+            assert job.status == "cancelled"
+            assert job.result is not None
+            assert "related" in job.result
+            # 余额被跳过：起始地址余额为"未获取"（None）。
+            assert job.result["seed_balance_tao"] is None
+        finally:
+            database.engine.dispose()
+
+
+def test_cancel_while_waiting_finishes_immediately(monkeypatch):
+    def fake_transfer(address, page):
+        if address == SEED:
+            return TransferPage(
+                [transfer_row(i, SEED, neighbor) for i, neighbor in enumerate(NEIGHBORS)],
+                None,
+            )
+        return TransferPage([], None)
+
+    monkeypatch.setattr(service_module, "get_transfer_page", fake_transfer)
+    monkeypatch.setattr(
+        service_module, "get_stake_transfer_page", lambda *_a: TransferPage([], None)
+    )
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "waiting.db")
+        try:
+            manager = RelationJobManager(round_interval=60, max_rounds=12)
+            job = manager.create(
+                service, seed=SEED, depth=2, min_edge_tao="0.1", min_total_tao="0.1"
+            )
+            assert job.status == "waiting"
+            stopped = manager.cancel(job.id)
+            assert stopped is job
+            assert job.status == "cancelled"
+            assert job.result is not None
+            assert any("已手动停止" in warning for warning in job.result["warnings"])
+        finally:
+            database.engine.dispose()

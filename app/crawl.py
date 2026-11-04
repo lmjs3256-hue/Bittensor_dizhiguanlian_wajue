@@ -165,8 +165,12 @@ class TaostatsCrawl:
             self.queue_stake(neighbor, next_depth)
 
     # -- 推进 -------------------------------------------------------------
-    def run_round(self, budget: int) -> int:
-        """花掉至多 ``budget`` 次请求；返回本轮实际请求数。"""
+    def run_round(self, budget: int, *, should_stop=None) -> int:
+        """花掉至多 ``budget`` 次请求；返回本轮实际请求数。
+
+        ``should_stop`` 在每个请求开始前检查，返回 True 时立即收尾本轮。
+        「停止续查」靠它做到：不用等本轮剩余请求（每个超时 20 秒）跑完。
+        """
 
         state = self.state
         state.round_requests = 0
@@ -175,6 +179,8 @@ class TaostatsCrawl:
         addresses_before = len(state.address_depth)
         records_before = len(state.records_by_key)
         while state.queue and state.round_requests < budget:
+            if should_stop is not None and should_stop():
+                break
             tier, current_depth, _, kind, address, page_number = heapq.heappop(
                 state.queue
             )

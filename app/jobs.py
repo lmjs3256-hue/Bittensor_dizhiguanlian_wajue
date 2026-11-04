@@ -239,7 +239,12 @@ class RelationJobManager:
         job.status = "running"
         state.api_error = ""
         try:
-            spent = job.crawl.run_round(MAX_TAOSTATS_REQUESTS_PER_QUERY)
+            # should_stop 让"停止续查"在本轮任意两个请求之间生效：
+            # 当前请求一结束就收尾，不等本轮剩余请求（每个最长 20 秒）。
+            spent = job.crawl.run_round(
+                MAX_TAOSTATS_REQUESTS_PER_QUERY,
+                should_stop=lambda: job.cancel_requested,
+            )
         except Exception as exc:  # pragma: no cover - 兜底，正常错误在 crawl 内部处理
             job.status = "failed"
             job.error = f"{type(exc).__name__}: {exc}"
@@ -291,6 +296,8 @@ class RelationJobManager:
                 pending_note="",
                 # 爬取已经结束，余额查询不再和关联请求抢额度。
                 balance_budget_left=MAX_TAOSTATS_REQUESTS_PER_QUERY,
+                # 停止续查时跳过余额 RPC：用户要的是马上看到已有结果。
+                include_balances=status != "cancelled",
             )
         except Exception as exc:  # pragma: no cover - 兜底，避免作业卡在 running
             job.status = "failed"
@@ -344,6 +351,7 @@ class RelationJobManager:
         return {
             "job_id": job.id,
             "status": job.status,
+            "cancel_requested": job.cancel_requested and not job.is_finished,
             "seed": job.context.seed,
             "created_at": job.created_at,
             "rounds_done": job.rounds_done,

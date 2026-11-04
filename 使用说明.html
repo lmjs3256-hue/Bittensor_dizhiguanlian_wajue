@@ -411,8 +411,8 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </tr>
 <tr>
 <td><strong>最多查询轮数</strong></td>
-<td>12</td>
-<td>12 轮 ≈ 60 次请求。设为 1 就是只查一轮（最快）</td>
+<td>5（默认，可改）</td>
+<td>5 轮 ≈ 25 次请求；想查得更全可以调高，比如 12 轮 ≈ 60 次请求。设为 1 就是只查一轮（最快）</td>
 </tr>
 <tr>
 <td><strong>过滤交易所 / 验证者地址</strong></td>
@@ -429,7 +429,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <li>等约 1 分钟，第 2 轮从<strong>上次没查完的两个地址</strong>继续；</li>
 <li>一直循环到查完、或达到你设的轮数上限。</li>
 </ol>
-<p>界面上会实时显示：<code>第 3 轮 / 12 轮</code>、这一轮准备查什么、还剩多少个待查对象。嫌慢或已经够用，随时点 <strong>停止续查</strong>——已经查到的结果会保留，可以照常查看和导出，并会告诉你还剩多少没查。</p>
+<p>界面上会实时显示：<code>第 3 轮 / 5 轮</code>、这一轮准备查什么、还剩多少个待查对象。嫌慢或已经够用，随时点 <strong>停止续查</strong>——当前请求一结束（最长约 20 秒）就出结果，已查到的关联会保留，可以照常查看和导出，并会告诉你还剩多少没查。</p>
 <h3 id="结果怎么看">结果怎么看</h3>
 <p>结果表每行是一个关联地址：</p>
 <table>

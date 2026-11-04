@@ -1624,8 +1624,13 @@ class LinkService:
         *,
         pending_note: str = "",
         balance_budget_left: int | None = None,
+        include_balances: bool = True,
     ) -> dict[str, Any]:
-        """把上下文与已爬到的记录合成最终结果。"""
+        """把上下文与已爬到的记录合成最终结果。
+
+        ``include_balances=False`` 用于停止续查：不再花时间做余额 RPC，
+        让部分结果立刻返回（余额栏显示“未获取”）。
+        """
 
         seed = context.seed
         depth = context.depth
@@ -1720,7 +1725,7 @@ class LinkService:
                 f"本次仅检查前 {MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY} 个高频候选余额；其余地址不会自动标记疑似交易所。"
             )
         balances: dict[str, Any] = {}
-        if balance_candidates:
+        if balance_candidates and include_balances:
             try:
                 balances = query_account_balances(self.rpc_url, balance_candidates)
             except Exception as exc:
@@ -1761,7 +1766,7 @@ class LinkService:
                 for address in [seed, *(row.address for row in report.related)]
                 if is_valid_ss58(address) and address not in balances
             ))
-        if balance_addresses:
+        if balance_addresses and include_balances:
             try:
                 balances.update(query_account_balances(self.rpc_url, balance_addresses))
             except Exception as exc:

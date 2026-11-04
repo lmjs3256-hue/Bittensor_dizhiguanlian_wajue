@@ -490,6 +490,9 @@ function showJobProgress(state) {
     parts.push(`下一轮约 ${state.next_round_in} 秒后`);
   }
   if (state.error) parts.push(state.error);
+  if (state.cancel_requested) {
+    parts.push("已收到停止指令：当前请求一结束立即出结果（最长约 20 秒）");
+  }
   text.textContent = parts.join(" · ");
 
   const lines = [];
@@ -510,7 +513,7 @@ async function cancelActiveJob() {
   const button = $("#cancel-job");
   button.disabled = true;
   button.textContent = "正在停止…";
-  $("#job-text").textContent = "正在停止：会把已查到的关联整理成结果，请稍候…";
+  $("#job-text").textContent = "正在停止：当前请求结束后立即出结果，请稍候…";
   // 停止请求会在后台合成部分结果，可能比轮询慢；这里不阻塞轮询。
   api(`/api/relations/jobs/${activeJob}/cancel`, { method: "POST" }).catch((error) => {
     jobStopping = false;
@@ -567,7 +570,8 @@ async function runRelationJob(payload) {
       toast(last.error || "分轮查询失败。", true);
       return;
     }
-    await sleep(3000);
+    // 停止期间加快轮询，让"正在停止"尽快切换成结果。
+    await sleep(jobStopping ? 800 : 3000);
     if (activeJob !== jobId) return;
     try {
       last = await api(`/api/relations/jobs/${jobId}`);
@@ -609,7 +613,7 @@ async function runRelations() {
     const requestedSource = $("#taostats-source").checked ? "taostats" : "local";
     const payload = scanPayload(seed);
     if (requestedSource === "taostats" && $("#multi-round").checked) {
-      const rounds = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 12));
+      const rounds = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 5));
       $("#max-rounds").value = rounds;
       payload.max_rounds = rounds;
       button.textContent = "分轮查询中…";
@@ -1467,12 +1471,12 @@ $("#taostats-source").addEventListener("change", () => {
 });
 $("#multi-round").disabled = !$("#taostats-source").checked;
 function updateRoundHint() {
-  const rounds = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 12));
+  const rounds = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 5));
   $("#round-hint").textContent = `≈ ${rounds * 5} 次请求`;
 }
 $("#max-rounds").addEventListener("input", updateRoundHint);
 $("#max-rounds").addEventListener("change", () => {
-  $("#max-rounds").value = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 12));
+  $("#max-rounds").value = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 5));
   updateRoundHint();
 });
 updateRoundHint();
