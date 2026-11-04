@@ -14,6 +14,9 @@
 *.txt text eol=lf
 
 # 二进制/数据文件不做换行转换
+*.exe binary
+*.whl binary
+*.zip binary
 *.db binary
 *.sqlite binary
 *.png binary
