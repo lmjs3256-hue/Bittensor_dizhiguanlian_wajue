@@ -1495,11 +1495,25 @@ class LinkService:
                 db.scalars(select(Transfer).order_by(Transfer.block_number)).all()
             )
 
+        # 关联终点交易所：人工确认的 EXCHANGE 分类，或用户分类下标签/备注里
+        # 写明「交易所」的地址。它们仍出现在结果里，但不再向下扩展（省额度）。
         exchange_addresses = {
+            entry.address
+            for entry in library
+            if (
+                entry.category == "EXCHANGE" and entry.exchange_confirmed
+            ) or (
+                entry.category not in {"EXCHANGE", "VALIDATOR"}
+                and not entry.exchange_rejected
+                and ("交易所" in entry.note or "交易所" in entry.label)
+            )
+        }
+        confirmed_exchange_addresses = {
             entry.address
             for entry in library
             if entry.category == "EXCHANGE" and entry.exchange_confirmed
         }
+        noted_exchange_addresses = exchange_addresses - confirmed_exchange_addresses
         unconfirmed_exchange_addresses = {
             entry.address
             for entry in library
@@ -1535,6 +1549,11 @@ class LinkService:
             excluded_addresses.update(auto_validator_addresses)
         if filter_exchanges and exchange_addresses:
             warnings.append(f"已启用交易所过滤，跳过 {len(exchange_addresses)} 个已人工确认地址。")
+        if noted_exchange_addresses and not filter_exchanges:
+            warnings.append(
+                f"有 {len(noted_exchange_addresses)} 个地址因人工备注/标签写明「交易所」，"
+                "作为关联终点不再向下扩展其转账。"
+            )
         if filter_exchanges and unconfirmed_exchange_addresses:
             warnings.append(
                 f"有 {len(unconfirmed_exchange_addresses)} 个交易所候选尚未人工确认，已保留在结果中，未执行过滤。"

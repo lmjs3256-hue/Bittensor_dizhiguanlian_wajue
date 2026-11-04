@@ -180,6 +180,87 @@ def test_exchange_related_intermediary_needs_only_one_transfer():
     assert row.address_role == "疑似中转钱包（交易所关联）"
 
 
+def test_related_result_carries_path_transfer_details():
+    """2 级关联要能展示从起始地址到该地址的逐笔转账明细。"""
+
+    report = discover(
+        "S",
+        [
+            TransferRecord("0x01", 100, "S", "A", Decimal("2"), timestamp="2026-11-01T10:00:00Z"),
+            TransferRecord("0x02", 200, "A", "B", Decimal("3"), timestamp="2026-11-02T11:30:00Z"),
+        ],
+        max_depth=3,
+    )
+
+    rows = {row.address: row for row in report.related}
+    assert [row.address for row in report.related] == ["A", "B"]
+    path_a = rows["A"].path_transfers
+    assert len(path_a) == 1
+    assert path_a[0]["from_address"] == "S"
+    assert path_a[0]["to_address"] == "A"
+    assert path_a[0]["amount_tao"] == "2"
+    assert path_a[0]["timestamp"] == "2026-11-01T10:00:00Z"
+    assert path_a[0]["block_number"] == 100
+
+    path_b = rows["B"].path_transfers
+    assert len(path_b) == 2
+    assert [(hop["from_address"], hop["to_address"]) for hop in path_b] == [("S", "A"), ("A", "B")]
+    assert path_b[1]["amount_tao"] == "3"
+
+
+def test_noted_exchange_address_is_terminal():
+    """备注写明「交易所」的地址：保留在结果里，但不再向下扩展。"""
+
+    report = discover(
+        "S",
+        [
+            TransferRecord("0x01", 1, "S", "HOTWALLET", Decimal("1")),
+            TransferRecord("0x02", 2, "HOTWALLET", "BEYOND", Decimal("100")),
+        ],
+        max_depth=3,
+        library=[
+            LibraryEntry(
+                "HOTWALLET", "热钱包", "其他", "人工确认：某交易所充值地址", "manual",
+                exchange_confirmed=False,
+            )
+        ],
+    )
+
+    rows = {row.address for row in report.related}
+    assert "HOTWALLET" in rows
+    assert "BEYOND" not in rows
+    assert any("交易所" in warning and "关联终点" in warning for warning in report.warnings)
+
+
+def test_noted_exchange_in_label_is_terminal_but_rejected_is_not():
+    """标签写「交易所」同样生效；被人工否定的地址不剪枝。"""
+
+    records = [
+        TransferRecord("0x01", 1, "S", "LABELLED", Decimal("1")),
+        TransferRecord("0x02", 2, "LABELLED", "BEYOND1", Decimal("100")),
+        TransferRecord("0x03", 3, "S", "REJECTED", Decimal("1")),
+        TransferRecord("0x04", 4, "REJECTED", "BEYOND2", Decimal("100")),
+    ]
+    report = discover(
+        "S",
+        records,
+        max_depth=3,
+        library=[
+            LibraryEntry("LABELLED", "某交易所直充", "其他", "", "manual", exchange_confirmed=False),
+            LibraryEntry(
+                "REJECTED", "候选", "EXCHANGE", "疑似交易所", "manual",
+                exchange_confirmed=False, exchange_rejected=True,
+            ),
+        ],
+    )
+
+    rows = {row.address for row in report.related}
+    assert "LABELLED" in rows
+    assert "BEYOND1" not in rows
+    assert "REJECTED" in rows
+    assert "BEYOND2" in rows
+
+
 def test_default_policy_starts_at_one_tao_and_reports_seed_library():
     report = discover(
         "S",

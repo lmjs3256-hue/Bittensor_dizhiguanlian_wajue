@@ -255,10 +255,18 @@ def discover(
                 exchange_rejected=entry.exchange_rejected,
             )
 
+    # 关联终点：已人工确认的交易所地址，以及人工在标签/备注里写明「交易所」
+    # 的地址。它们仍会作为关联地址出现在结果里，但不再向下扩展其转账。
     terminal_exchange_addresses = {
         address
         for address, entry in library_map.items()
-        if entry.category == "EXCHANGE" and entry.exchange_confirmed
+        if (
+            entry.category == "EXCHANGE" and entry.exchange_confirmed
+        ) or (
+            entry.category not in {"EXCHANGE", "VALIDATOR"}
+            and not entry.exchange_rejected
+            and ("交易所" in entry.note or "交易所" in entry.label)
+        )
     }
 
     if seed in excluded:
@@ -422,6 +430,20 @@ def discover(
         unique_tx = {edge.tx_hash for edge in edge_rows if edge.tx_hash}
         incoming = [edge for edge in edge_rows if edge.to_address == address]
         outgoing = [edge for edge in edge_rows if edge.from_address == address]
+        # 起始地址到该地址的逐笔路径：BFS 走过的每一跳原始转账记录。
+        path_transfers = [
+            {
+                "tx_hash": row.tx_hash,
+                "block_number": row.block_number,
+                "from_address": row.from_address,
+                "to_address": row.to_address,
+                "amount_tao": str(row.amount_tao),
+                "timestamp": row.timestamp,
+                "edge_type": row.edge_type,
+                "netuid": row.netuid,
+            }
+            for row in (paths.get(address) or [])
+        ]
         related.append(
             RelationResult(
                 address=address,
@@ -447,6 +469,7 @@ def discover(
                 stake_transfer_count=sum(
                     1 for edge in edge_rows if edge.edge_type == "stake_transfer"
                 ),
+                path_transfers=path_transfers,
             )
         )
     related.sort(key=lambda row: (row.depth, -row.total_tao, row.address))
@@ -455,7 +478,8 @@ def discover(
     visible_terminal_exchanges = terminal_exchange_addresses & set(visible)
     if visible_terminal_exchanges:
         final_warnings.append(
-            f"已识别 {len(visible_terminal_exchanges)} 个已确认交易所地址；交易所公共地址作为关联终点，不继续扩展其下游转账。"
+            f"已识别 {len(visible_terminal_exchanges)} 个交易所地址（人工确认，或标签/备注中写明「交易所」）；"
+            "这些地址作为关联终点，不再向下扩展其转账。"
         )
     if missing_hash_rows:
         final_warnings.append(

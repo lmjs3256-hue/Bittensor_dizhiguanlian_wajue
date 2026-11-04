@@ -325,8 +325,40 @@ function relatedTable(rows) {
     const exchangeActions = row.address_role === "疑似交易所（待确认）"
       ? `<div class="exchange-decision"><button class="secondary note-save" data-exchange-decision="confirm" data-address="${esc(row.address)}" type="button">确认交易所</button><button class="ghost note-save" data-exchange-decision="reject" data-address="${esc(row.address)}" type="button">否定</button></div>`
       : "";
-    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code title="${esc(row.address)}">${esc(shortAddr(row.address))}</code><button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td>${row.depth}</td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
+    // 2/3 级关联：展示「路径明细」按钮，展开从起始地址到该地址的逐笔转账。
+    const pathButton = (row.path_transfers || []).length > 1
+      ? `<button class="ghost note-save" data-path-toggle="${esc(row.address)}" type="button" title="从起始地址到该地址的逐笔转账记录">路径明细</button>`
+      : "";
+    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code title="${esc(row.address)}">${esc(shortAddr(row.address))}</code><button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
   }).join("")}</tbody></table>`;
+}
+
+function pathDetailRowHtml(row) {
+  const hops = row.path_transfers || [];
+  const body = hops.map((hop, index) => {
+    const kind = hop.edge_type === "stake_transfer"
+      ? `子网 stake 转移${hop.netuid != null ? ` · 子网 ${hop.netuid}` : ""}`
+      : "普通转账";
+    return `<tr><td>第 ${index + 1} 跳</td><td class="address"><div class="address-main"><code title="${esc(hop.from_address)}">${esc(shortAddr(hop.from_address))}</code><span class="path-arrow">→</span><code title="${esc(hop.to_address)}">${esc(shortAddr(hop.to_address))}</code></div></td><td>${esc(kind)}</td><td class="amount">${esc(formatTao(hop.amount_tao))}</td><td class="mono history-time">${esc(historyTime(hop.timestamp))}</td><td class="mono">${esc(hop.block_number)}</td></tr>`;
+  }).join("");
+  return `<tr class="path-detail-row" data-path-detail="${esc(row.address)}"><td colspan="8"><div class="path-detail"><div class="path-detail-title">从起始地址到 <code>${esc(shortAddr(row.address))}</code> 的关联路径（共 ${hops.length} 笔转账，按时间先后即路径顺序）</div><table><thead><tr><th>跳数</th><th>方向</th><th>类型</th><th>金额 TAO</th><th>时间</th><th>区块</th></tr></thead><tbody>${body}</tbody></table></div></td></tr>`;
+}
+
+function togglePathDetail(address) {
+  const target = document.querySelector(`tr[data-related-address="${CSS.escape(address)}"]`);
+  if (!target) return;
+  const existing = target.nextElementSibling;
+  if (existing && existing.classList.contains("path-detail-row")) {
+    existing.remove();
+    const button = target.querySelector("[data-path-toggle]");
+    if (button) button.textContent = "路径明细";
+    return;
+  }
+  const row = (state.lastResult?.related || []).find((item) => item.address === address);
+  if (!row || !(row.path_transfers || []).length) return;
+  target.insertAdjacentHTML("afterend", pathDetailRowHtml(row));
+  const button = target.querySelector("[data-path-toggle]");
+  if (button) button.textContent = "收起明细";
 }
 
 function refreshRelatedTable() {
@@ -1516,6 +1548,8 @@ document.addEventListener("click", (event) => {
   if (exchangeButton) decideExchange(exchangeButton.dataset.address, exchangeButton.dataset.exchangeDecision, exchangeButton);
   const copyButton = event.target.closest("[data-copy-address]");
   if (copyButton) copyAddress(copyButton.dataset.copyAddress, copyButton);
+  const pathToggle = event.target.closest("[data-path-toggle]");
+  if (pathToggle) togglePathDetail(pathToggle.dataset.pathToggle);
   const historyView = event.target.closest("[data-history-view]");
   if (historyView) viewHistoryRecord(historyView.dataset.historyView);
   const historyExport = event.target.closest("[data-history-export]");
