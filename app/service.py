@@ -15,6 +15,7 @@ from .collector import RPCCollector, query_account_balances
 from .crawl import CrawlState, TaostatsCrawl
 from .crawl import stake_counterparty as _stake_counterparty
 from .db import (
+    AddressBook,
     AddressLibrary,
     ChainCursor,
     Database,
@@ -51,6 +52,11 @@ MAX_ARCHIVE_TOTAL_BYTES = 200 * 1024 * 1024
 MAX_ARCHIVE_PAYLOAD_BYTES = 8 * 1024 * 1024
 MAX_SYNC_ADDRESSES = 5000
 SYNC_CATEGORIES = {"SEED", "WATCH", "BLACKLIST", "EXCHANGE", "VALIDATOR"}
+# 新建地址库只允许“观察 / 黑名单 / 发起地址”三类，避免把关联地址误标成
+# 交易所或验证者，导致后续扫描把它们当作公共地址过滤掉。
+BOOK_CATEGORIES = {"WATCH", "BLACKLIST", "SEED"}
+BOOK_NAME_MAX_LENGTH = 60
+MAX_BOOK_ADDRESSES = 5000
 
 
 @dataclass
@@ -125,6 +131,7 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
         "category": row.category,
         "note": row.note,
         "source": row.source,
+        "book": getattr(row, "book", "") or "",
         "exchange_confirmed": bool(row.exchange_confirmed),
         "exchange_rejected": bool(row.exchange_rejected),
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -220,6 +227,7 @@ def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
                 "category": category,
                 "label": str(row.get("label") or "").strip(),
                 "note": str(row.get("note") or "").strip(),
+                "book": str(row.get("book") or "").strip()[:BOOK_NAME_MAX_LENGTH],
                 "exchange_confirmed": boolean(row, "exchange_confirmed"),
                 "exchange_rejected": boolean(row, "exchange_rejected"),
             }
@@ -260,6 +268,7 @@ class LinkService:
                             category=category,
                             note=row.get("note", ""),
                             source=source,
+                            book=str(row.get("book") or "")[:BOOK_NAME_MAX_LENGTH],
                             exchange_confirmed=(category == "EXCHANGE" and confirmed),
                             exchange_rejected=(category == "EXCHANGE" and rejected),
                         )
@@ -267,6 +276,10 @@ class LinkService:
                     inserted += 1
                     continue
                 changed = False
+                incoming_book = str(row.get("book") or "").strip()
+                if incoming_book and not current.book:
+                    current.book = incoming_book[:BOOK_NAME_MAX_LENGTH]
+                    changed = True
                 for field in ("label", "category", "note"):
                     incoming = row.get(field, "")
                     if incoming and getattr(current, field) != incoming:
@@ -483,6 +496,7 @@ class LinkService:
                 "label": item["label"],
                 "category": item["category"],
                 "note": item["note"],
+                "book": item["book"],
                 "exchange_confirmed": item["exchange_confirmed"],
                 "exchange_rejected": item["exchange_rejected"],
             }
@@ -510,6 +524,7 @@ class LinkService:
             "label",
             "category",
             "note",
+            "book",
             "exchange_confirmed",
             "exchange_rejected",
         ]
@@ -517,6 +532,258 @@ class LinkService:
         writer.writeheader()
         writer.writerows(portable)
         return output.getvalue(), "text/csv; charset=utf-8"
+
+    # -- 自建地址库：把一次查询结果导入成有名字的库 ----------------------
+    @staticmethod
+    def _clean_book_name(name: str) -> str:
+        value = " ".join(str(name or "").split())
+        if not value:
+            raise InputError("地址库名称不能为空")
+        if len(value) > BOOK_NAME_MAX_LENGTH:
+            raise InputError(f"地址库名称不能超过 {BOOK_NAME_MAX_LENGTH} 个字符")
+        return value
+
+    @staticmethod
+    def _book_dict(
+        row: AddressBook | None, name: str, count: int, categories: dict[str, int]
+    ) -> dict[str, Any]:
+        return {
+            "id": row.id if row is not None else None,
+            "name": name,
+            "note": row.note if row is not None else "",
+            "seed": row.seed if row is not None else "",
+            "count": count,
+            "categories": categories,
+            "created_at": (
+                row.created_at.isoformat() if row is not None and row.created_at else None
+            ),
+            "updated_at": (
+                row.updated_at.isoformat() if row is not None and row.updated_at else None
+            ),
+        }
+
+    def address_books(self) -> list[dict[str, Any]]:
+        """列出所有自建地址库，含按分类统计的地址数。"""
+
+        with self.database.session() as db:
+            rows = db.execute(
+                select(
+                    AddressLibrary.book,
+                    AddressLibrary.category,
+                    func.count(AddressLibrary.id),
+                )
+                .where(AddressLibrary.book != "")
+                .group_by(AddressLibrary.book, AddressLibrary.category)
+            ).all()
+            registry = {row.name: row for row in db.scalars(select(AddressBook)).all()}
+        counts: dict[str, int] = {}
+        categories: dict[str, dict[str, int]] = {}
+        for name, category, count in rows:
+            counts[name] = counts.get(name, 0) + int(count)
+            categories.setdefault(name, {})[category] = int(count)
+        names = list(dict.fromkeys([*counts.keys(), *registry.keys()]))
+        items = [
+            self._book_dict(registry.get(name), name, counts.get(name, 0), categories.get(name, {}))
+            for name in names
+        ]
+        items.sort(key=lambda item: (item["created_at"] or "", item["name"]), reverse=True)
+        return items
+
+    def create_address_book(
+        self,
+        *,
+        name: str,
+        seed: str = "",
+        addresses: list[str] | None = None,
+        include_seed: bool = True,
+        category: str = "WATCH",
+        note: str = "",
+    ) -> dict[str, Any]:
+        """新建（或追加到同名）地址库，把查询得到的关联地址导入进去。
+
+        与“同步到已知地址库”的区别：这里会给这批地址打上库名，地址库里能按库
+        查看和整库导出；已经存在的地址不会改分类、标签和备注，只补库名。
+        已人工确认的交易所地址和验证者地址一律不导入，和导出规则保持一致。
+        """
+
+        book_name = self._clean_book_name(name)
+        category = (category or "WATCH").upper()
+        if category not in BOOK_CATEGORIES:
+            raise InputError("新建地址库的分类只能是 WATCH、BLACKLIST 或 SEED")
+        seed = (seed or "").strip()
+        if seed and not is_valid_ss58(seed):
+            raise InputError("发起地址不是合法的 SS58 地址")
+        raw_addresses = list(addresses or [])
+        if len(raw_addresses) > MAX_BOOK_ADDRESSES:
+            raise InputError(f"单个地址库最多导入 {MAX_BOOK_ADDRESSES} 个地址")
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        invalid = 0
+        if include_seed and seed:
+            candidates.append(seed)
+            seen.add(seed)
+        for value in raw_addresses:
+            value = str(value or "").strip()
+            if not value or value in seen:
+                continue
+            if not is_valid_ss58(value):
+                invalid += 1
+                continue
+            seen.add(value)
+            candidates.append(value)
+        if len(candidates) > MAX_BOOK_ADDRESSES:
+            raise InputError(f"单个地址库最多导入 {MAX_BOOK_ADDRESSES} 个地址")
+
+        note_text = note.strip()[:2000]
+        default_note = (
+            f"由关联查询 {seed} 新建并导入" if seed else f"新建地址库「{book_name}」导入"
+        )
+        source = f"book:{book_name}"[:255]
+        with self.database.session() as db:
+            existing: dict[str, AddressLibrary] = {}
+            for index in range(0, len(candidates), 400):
+                chunk = candidates[index : index + 400]
+                for row in db.scalars(
+                    select(AddressLibrary).where(AddressLibrary.address.in_(chunk))
+                ).all():
+                    existing[row.address] = row
+
+            inserted = attached = already = other_book = 0
+            skipped_exchange = skipped_validator = 0
+            added: list[str] = []
+            for address in candidates:
+                row = existing.get(address)
+                if row is not None:
+                    if (
+                        row.category == "EXCHANGE"
+                        and row.exchange_confirmed
+                        and not row.exchange_rejected
+                    ):
+                        skipped_exchange += 1
+                        continue
+                    if row.category == "VALIDATOR":
+                        skipped_validator += 1
+                        continue
+                    if not row.book:
+                        row.book = book_name
+                        attached += 1
+                    elif row.book == book_name:
+                        already += 1
+                    else:
+                        # 地址已经属于别的库，不抢归属，避免把人工整理好的库拆散。
+                        other_book += 1
+                    continue
+                db.add(
+                    AddressLibrary(
+                        address=address,
+                        label=book_name,
+                        category=category,
+                        note=note_text or default_note,
+                        source=source,
+                        book=book_name,
+                        exchange_confirmed=False,
+                        exchange_rejected=False,
+                    )
+                )
+                inserted += 1
+                if len(added) < 200:
+                    added.append(address)
+
+            kept = inserted + attached + already + other_book
+            if kept == 0:
+                reasons = []
+                if skipped_exchange:
+                    reasons.append(f"已确认交易所 {skipped_exchange} 个")
+                if skipped_validator:
+                    reasons.append(f"验证者 {skipped_validator} 个")
+                detail = f"（{'、'.join(reasons)}已排除）" if reasons else ""
+                raise InputError(f"没有可导入的地址{detail}，地址库未创建")
+
+            registry = db.scalar(select(AddressBook).where(AddressBook.name == book_name))
+            if registry is None:
+                registry = AddressBook(name=book_name, note=note_text, seed=seed)
+                db.add(registry)
+            else:
+                if seed and not registry.seed:
+                    registry.seed = seed
+                if note_text:
+                    registry.note = note_text
+            db.flush()
+            result = {
+                "book": self._book_dict(
+                    registry,
+                    book_name,
+                    inserted + attached + already,
+                    {category: inserted + attached} if inserted + attached else {},
+                ),
+                "name": book_name,
+                "total": len(candidates),
+                "inserted": inserted,
+                "attached": attached,
+                "already_in_book": already,
+                "other_book": other_book,
+                "existing": attached + already + other_book,
+                "skipped_exchange": skipped_exchange,
+                "skipped_validator": skipped_validator,
+                "invalid": invalid,
+                "category": category,
+                "added": added,
+            }
+        return result
+
+    def _book_rows(self, db, name: str) -> list[AddressLibrary]:
+        return list(
+            db.scalars(
+                select(AddressLibrary)
+                .where(AddressLibrary.book == name)
+                .order_by(AddressLibrary.id)
+            ).all()
+        )
+
+    def export_address_book(self, name: str, file_format: str = "txt") -> tuple[str, str, str]:
+        """整库导出：TXT 每行一个地址，CSV 带标签与分类。"""
+
+        if file_format not in {"txt", "csv"}:
+            raise InputError("地址库导出格式只能是 txt 或 csv")
+        book_name = self._clean_book_name(name)
+        with self.database.session() as db:
+            rows = self._book_rows(db, book_name)
+        if not rows:
+            raise InputError("地址库不存在或还没有地址")
+        safe_name = "".join(
+            char for char in book_name if char not in '\\/:*?"<>|'
+        ).strip() or "address-book"
+        if file_format == "txt":
+            return (
+                "\n".join(row.address for row in rows) + "\n",
+                "text/plain; charset=utf-8",
+                f"{safe_name}.txt",
+            )
+        import csv
+        import io
+
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(["address", "label", "category", "note", "book"])
+        for row in rows:
+            writer.writerow([row.address, row.label, row.category, row.note, row.book])
+        return output.getvalue(), "text/csv; charset=utf-8", f"{safe_name}.csv"
+
+    def dissolve_address_book(self, name: str) -> dict[str, Any]:
+        """解散地址库：只去掉库名标记，地址仍保留在已知地址库中。"""
+
+        book_name = self._clean_book_name(name)
+        with self.database.session() as db:
+            rows = self._book_rows(db, book_name)
+            registry = db.scalar(select(AddressBook).where(AddressBook.name == book_name))
+            if not rows and registry is None:
+                raise InputError("地址库不存在")
+            for row in rows:
+                row.book = ""
+            if registry is not None:
+                db.delete(registry)
+        return {"dissolved": True, "name": book_name, "addresses_kept": len(rows)}
 
     # -- 关联查询历史 -----------------------------------------------------
     def archive_relation(

@@ -34,6 +34,24 @@ class Base(DeclarativeBase):
     pass
 
 
+class AddressBook(Base):
+    """地址库台账：一次「新建地址库并导入」登记的库名。
+
+    地址仍然统一存在 ``address_library`` 里，靠 ``book`` 字段归组；这张表只
+    存库名、备注和来源发起地址，便于列表、导出和“解散”时保留元信息。
+    """
+
+    __tablename__ = "address_books"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    seed: Mapped[str] = mapped_column(String(64), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class AddressLibrary(Base):
     __tablename__ = "address_library"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -42,6 +60,8 @@ class AddressLibrary(Base):
     category: Mapped[str] = mapped_column(String(16), default="WATCH", index=True)
     note: Mapped[str] = mapped_column(Text, default="")
     source: Mapped[str] = mapped_column(String(255), default="manual")
+    # 所属地址库名称；空字符串表示未归入任何自建地址库。
+    book: Mapped[str] = mapped_column(String(80), default="", index=True)
     exchange_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     exchange_rejected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -200,6 +220,19 @@ class Database:
                     text(
                         "UPDATE address_library SET exchange_confirmed = 1 "
                         "WHERE category = 'EXCHANGE'"
+                    )
+                )
+            if "book" not in columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE address_library "
+                        "ADD COLUMN book VARCHAR(80) NOT NULL DEFAULT ''"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_address_library_book "
+                        "ON address_library (book)"
                     )
                 )
             transfer_columns = {

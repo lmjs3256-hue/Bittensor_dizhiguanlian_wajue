@@ -6,7 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -157,6 +157,17 @@ class HistoryDeleteInput(BaseModel):
     ids: list[Annotated[int, Field(gt=0)]] = Field(min_length=1, max_length=5000)
 
 
+class AddressBookInput(BaseModel):
+    """新建地址库：给一次查询结果起个库名，把可导入地址批量入库。"""
+
+    name: str = Field(min_length=1, max_length=60)
+    seed: str = Field(default="", max_length=64)
+    addresses: list[str] = Field(default_factory=list, max_length=5000)
+    include_seed: bool = True
+    category: str = Field(default="WATCH", pattern="^(WATCH|BLACKLIST|SEED)$")
+    note: str = Field(default="", max_length=2000)
+
+
 @app.get("/", include_in_schema=False)
 def home():
     return FileResponse(ROOT / "templates" / "index.html")
@@ -244,6 +255,63 @@ def create_address(payload: AddressInput, svc: Annotated[LinkService, Depends(se
     if not payload.address.strip():
         raise HTTPException(422, "address must not be blank")
     return svc.import_rows([payload.model_dump()], "manual")
+
+
+@app.get("/api/library/books")
+def list_address_books(svc: Annotated[LinkService, Depends(service)]):
+    """自建地址库清单（按库名归组，含地址数与分类统计）。"""
+
+    return {"items": svc.address_books()}
+
+
+@app.post("/api/library/books")
+def create_address_book(
+    payload: AddressBookInput, svc: Annotated[LinkService, Depends(service)]
+):
+    """新建地址库并导入：关联地址 + 发起地址，排除交易所和验证者。"""
+
+    try:
+        return svc.create_address_book(
+            name=payload.name,
+            seed=payload.seed.strip(),
+            addresses=payload.addresses,
+            include_seed=payload.include_seed,
+            category=payload.category,
+            note=payload.note,
+        )
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/api/library/books/{name}/export")
+def export_address_book(
+    name: str,
+    svc: Annotated[LinkService, Depends(service)],
+    format: str = Query(default="txt", pattern="^(txt|csv)$"),
+):
+    try:
+        content, media_type, filename = svc.export_address_book(name, format)
+    except InputError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(filename)}"
+            )
+        },
+    )
+
+
+@app.delete("/api/library/books/{name}")
+def dissolve_address_book(name: str, svc: Annotated[LinkService, Depends(service)]):
+    """解散地址库：只清除库名标记，地址继续留在已知地址库中。"""
+
+    try:
+        return svc.dissolve_address_book(name)
+    except InputError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.delete("/api/library/{row_id}")

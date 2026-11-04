@@ -4,6 +4,8 @@ const $ = (selector) => document.querySelector(selector);
 const state = {
   lastResult: null,
   library: [],
+  books: [],
+  bookFilter: "",
   depthFilter: "all",
   history: { offset: 0, total: 0, items: [] },
 };
@@ -288,6 +290,7 @@ function renderResult(data) {
   const libraryHitCount = (data.library_matches || []).length;
   $("#sync-hint").textContent = `本次 ${(data.related || []).length} 个关联地址 + 发起地址；其中命中已知地址库 ${libraryHitCount} 个。`;
   $("#sync-matched").disabled = libraryHitCount === 0;
+  updateBookHint();
   $("#warnings").innerHTML = [...data.warnings, ...data.limitations].map((text) => `<li>${esc(text)}</li>`).join("");
   document.querySelectorAll("[data-use-address]").forEach((button) => button.addEventListener("click", () => {
     $("#seed").value = button.dataset.useAddress;
@@ -574,21 +577,36 @@ async function scanBlocks(advance) {
 }
 
 function libraryRowsTable(rows) {
-  return `<table><thead><tr><th class="selection-cell"></th><th>地址</th><th>名称</th><th>分类</th><th>备注</th><th>来源</th><th></th></tr></thead><tbody>${rows.map((row) => { const exchangeControl = row.category === "EXCHANGE" ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销确认</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">重新确认</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销否定</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>` : ""; return `<tr><td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td><td class="mono address">${esc(row.address)}</td><td>${esc(row.label || "-")}</td><td><span class="lib-category ${esc(row.category)}">${esc(row.category)}</span>${exchangeControl}</td><td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td><td>${esc(row.source || "-")}</td><td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td></tr>`; }).join("")}</tbody></table>`;
+  return `<table><thead><tr><th class="selection-cell"></th><th>地址</th><th>名称</th><th>分类</th><th>备注</th><th>地址库</th><th>来源</th><th></th></tr></thead><tbody>${rows.map((row) => { const exchangeControl = row.category === "EXCHANGE" ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销确认</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">重新确认</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销否定</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>` : ""; const bookCell = row.book ? `<span class="tag">${esc(row.book)}</span>` : "-"; return `<tr><td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td><td class="mono address">${esc(row.address)}</td><td>${esc(row.label || "-")}</td><td><span class="lib-category ${esc(row.category)}">${esc(row.category)}</span>${exchangeControl}</td><td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td><td>${bookCell}</td><td>${esc(row.source || "-")}</td><td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td></tr>`; }).join("")}</tbody></table>`;
 }
 
 function libraryTable(rows) {
-  if (!rows.length) return '<div class="placeholder">地址库为空。可通过上方单个添加或导入 TXT/CSV/JSON。</div>';
+  if (!rows.length) {
+    return state.bookFilter
+      ? `<div class="placeholder">地址库「${esc(state.bookFilter)}」里没有地址。</div>`
+      : '<div class="placeholder">地址库为空。可通过上方单个添加或导入 TXT/CSV/JSON。</div>';
+  }
   const groups = new Map();
   rows.forEach((row) => {
     const label = (row.label || `${row.category} · 未命名`).trim();
-    const key = `${row.category}\u0000${label}`;
-    if (!groups.has(key)) groups.set(key, { label, category: row.category, rows: [] });
+    // 自建地址库优先按库名归组，其余仍按「分类 + 名称」。
+    const key = row.book ? `book\u0000${row.book}` : `${row.category}\u0000${label}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        label: row.book || label,
+        category: row.book ? "" : row.category,
+        book: row.book || "",
+        rows: [],
+      });
+    }
     groups.get(key).rows.push(row);
   });
   return `<div class="library-groups">${[...groups.values()].map((group, index) => {
     const groupId = `library-group-${index}`;
-    return `<section class="library-group"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="false" type="button"><span><b>${esc(group.label)}</b><span class="lib-category ${esc(group.category)}">${esc(group.category)}</span></span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-details hidden" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
+    const categoryTag = group.category
+      ? `<span class="lib-category ${esc(group.category)}">${esc(group.category)}</span>`
+      : '<span class="lib-category book-tag">自建库</span>';
+    return `<section class="library-group"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="false" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-details hidden" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -606,12 +624,111 @@ function updateLibrarySelection() {
   }
 }
 
+function renderLibraryList() {
+  const rows = state.bookFilter
+    ? state.library.filter((row) => (row.book || "") === state.bookFilter)
+    : state.library;
+  const total = state.library.length;
+  $("#library-count").textContent = state.bookFilter
+    ? `${rows.length} / ${total} 条`
+    : `${total} 条`;
+  $("#library-table").innerHTML = libraryTable(rows);
+}
+
+function bookCard(book) {
+  const categories = Object.entries(book.categories || {})
+    .map(([key, count]) => `${key} ${count}`)
+    .join(" / ");
+  const meta = [
+    book.seed ? `来源查询 ${shortAddr(book.seed)}` : "手工创建",
+    categories,
+    book.created_at ? historyTime(book.created_at) : "",
+  ].filter(Boolean).join(" · ");
+  return `<article class="book-card">
+    <div class="book-card-head"><b title="${esc(book.name)}">${esc(book.name)}</b><span class="tag">${number(book.count)} 个地址</span></div>
+    <small>${esc(meta)}</small>
+    <div class="book-card-actions">
+      <button class="ghost note-save" data-book-view="${esc(book.name)}" type="button">只看此库</button>
+      <button class="ghost note-save" data-book-export="txt" data-book-name="${esc(book.name)}" type="button">导出 TXT</button>
+      <button class="ghost note-save" data-book-export="csv" data-book-name="${esc(book.name)}" type="button">导出 CSV</button>
+      <button class="danger note-save" data-book-dissolve="${esc(book.name)}" type="button">解散</button>
+    </div>
+  </article>`;
+}
+
+function renderBooks() {
+  const list = $("#book-list");
+  if (!list) return;
+  $("#book-count").textContent = `${state.books.length} 个`;
+  list.innerHTML = state.books.length
+    ? state.books.map(bookCard).join("")
+    : '<div class="placeholder">还没有自建地址库。完成一次关联查询后，在结果区填写库名即可创建。</div>';
+}
+
+function renderBookFilter() {
+  const select = $("#book-filter");
+  if (!select) return;
+  select.innerHTML = '<option value="">全部地址库</option>' + state.books
+    .map((book) => `<option value="${esc(book.name)}">${esc(book.name)}（${number(book.count)}）</option>`)
+    .join("");
+  if (state.books.some((book) => book.name === state.bookFilter)) select.value = state.bookFilter;
+  else {
+    state.bookFilter = "";
+    select.value = "";
+  }
+}
+
+function selectBook(name) {
+  state.bookFilter = name || "";
+  renderBookFilter();
+  renderLibraryList();
+  if (state.bookFilter) toast(`只看地址库「${state.bookFilter}」。`);
+}
+
+async function exportBook(name, format) {
+  try {
+    const response = await fetch(`/api/library/books/${encodeURIComponent(name)}/export?format=${encodeURIComponent(format)}`);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail || `导出失败 (${response.status})`);
+    }
+    const blob = await response.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${name}.${format}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+    toast(`地址库「${name}」已导出为 ${format.toUpperCase()}。`);
+  } catch (error) {
+    toast(`地址库导出失败：${error.message}`, true);
+  }
+}
+
+async function dissolveBook(name) {
+  if (!window.confirm(`确定解散地址库「${name}」？\n\n只会去掉库名标记，库里的地址仍然保留在已知地址库中，不会删除。`)) return;
+  try {
+    const result = await api(`/api/library/books/${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (state.bookFilter === name) state.bookFilter = "";
+    await loadLibrary();
+    toast(`已解散地址库「${name}」，${result.addresses_kept} 个地址仍保留在已知地址库。`);
+  } catch (error) {
+    toast(`解散失败：${error.message}`, true);
+  }
+}
+
 async function loadLibrary() {
   try {
-    const data = await api("/api/library");
+    const [data, bookData] = await Promise.all([
+      api("/api/library"),
+      api("/api/library/books").catch(() => ({ items: [] })),
+    ]);
     state.library = data.items;
-    $("#library-count").textContent = `${data.items.length} 条`;
-    $("#library-table").innerHTML = libraryTable(data.items);
+    state.books = bookData.items || [];
+    renderBooks();
+    renderBookFilter();
+    renderLibraryList();
     const selectAll = $("#select-all-addresses");
     if (selectAll) selectAll.addEventListener("change", () => {
       document.querySelectorAll("[data-library-select]").forEach((checkbox) => {
@@ -961,6 +1078,70 @@ function syncSummary(result) {
   return parts.join("，");
 }
 
+/* 新建地址库：把当前结果的可导入地址打上库名存进地址库，
+   规则与导出 TXT 一致——已确认交易所和验证者地址剔除。 */
+function seedIsPublicAddress(data) {
+  return (data.seed_library_matches || []).some((entry) => {
+    const category = String(entry.category || "").toUpperCase();
+    if (category === "VALIDATOR") return true;
+    return category === "EXCHANGE" && Boolean(entry.exchange_confirmed);
+  });
+}
+
+function updateBookHint() {
+  const hint = $("#book-hint");
+  if (!hint) return;
+  const data = state.lastResult;
+  if (!data) { hint.textContent = "先完成一次关联查询。"; return; }
+  const { addresses, skippedExchange, skippedValidator } = selectExportableAddresses(data.related);
+  const includeSeed = $("#book-include-seed").checked;
+  const seedSkipped = includeSeed && seedIsPublicAddress(data);
+  const count = addresses.length + (includeSeed && !seedSkipped ? 1 : 0);
+  const parts = [`本次可导入 ${count} 个地址`];
+  if (skippedExchange || skippedValidator) {
+    parts.push(`已排除交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个`);
+  }
+  parts.push(includeSeed ? "含发起地址" : "不含发起地址");
+  if (seedSkipped) parts.push("发起地址本身是交易所或验证者，会被跳过");
+  hint.textContent = `${parts.join("；")}。`;
+}
+
+async function createBookFromResult() {
+  if (!state.lastResult) { toast("先完成一次关联查询。", true); return; }
+  const name = $("#book-name").value.trim();
+  if (!name) { toast("请先填写地址库名称。", true); $("#book-name").focus(); return; }
+  const button = $("#create-book");
+  button.disabled = true;
+  button.textContent = "导入中…";
+  try {
+    const result = await api("/api/library/books", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        seed: state.lastResult.seed || "",
+        addresses: (state.lastResult.related || []).map((row) => row.address).filter(Boolean),
+        include_seed: $("#book-include-seed").checked,
+        category: $("#book-category").value,
+      }),
+    });
+    const parts = [`新增 ${result.inserted} 个`];
+    if (result.attached) parts.push(`补入已有记录 ${result.attached} 个`);
+    if (result.already_in_book) parts.push(`本库已有 ${result.already_in_book} 个`);
+    if (result.other_book) parts.push(`属于其他库 ${result.other_book} 个（保留原库）`);
+    if (result.skipped_exchange) parts.push(`排除交易所 ${result.skipped_exchange} 个`);
+    if (result.skipped_validator) parts.push(`排除验证者 ${result.skipped_validator} 个`);
+    toast(`地址库「${result.name}」已创建：${parts.join("，")}。可到“已知地址库”查看。`);
+    $("#book-name").value = "";
+    state.books = [];
+    await loadLibrary().catch(() => {});
+  } catch (error) {
+    toast(`新建地址库失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "新建地址库并导入";
+  }
+}
+
 async function syncCurrentResult(mode) {
   if (!state.lastResult) { toast("先完成一次关联查询。", true); return; }
   const button = mode === "matched" ? $("#sync-matched") : $("#sync-all");
@@ -1058,9 +1239,26 @@ document.addEventListener("click", (event) => {
   if (historySync) syncHistoryRecord(historySync.dataset.historySync);
   const historyDelete = event.target.closest("[data-history-delete]");
   if (historyDelete) deleteHistoryRecord(historyDelete.dataset.historyDelete);
+  const bookView = event.target.closest("[data-book-view]");
+  if (bookView) selectBook(bookView.dataset.bookView);
+  const bookExport = event.target.closest("[data-book-export]");
+  if (bookExport) exportBook(bookExport.dataset.bookName, bookExport.dataset.bookExport);
+  const bookDissolve = event.target.closest("[data-book-dissolve]");
+  if (bookDissolve) dissolveBook(bookDissolve.dataset.bookDissolve);
 });
 $("#sync-all").addEventListener("click", () => syncCurrentResult("all"));
 $("#sync-matched").addEventListener("click", () => syncCurrentResult("matched"));
+$("#create-book").addEventListener("click", createBookFromResult);
+$("#book-include-seed").addEventListener("change", updateBookHint);
+$("#book-category").addEventListener("change", () => {
+  if ($("#book-category").value === "BLACKLIST") {
+    toast("导入为 BLACKLIST 时，地址库里会显示为黑名单分类，仅作标记，不影响扫描过滤。");
+  }
+});
+$("#book-name").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") createBookFromResult();
+});
+$("#book-filter").addEventListener("change", (event) => selectBook(event.target.value));
 $("#refresh-history").addEventListener("click", () => loadHistory(state.history.offset));
 $("#clear-history").addEventListener("click", clearHistory);
 $("#history-prev").addEventListener("click", () => loadHistory(Math.max(0, state.history.offset - HISTORY_PAGE_SIZE)));
