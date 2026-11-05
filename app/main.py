@@ -186,8 +186,19 @@ class ExchangeConfirmationInput(BaseModel):
 
 class ExchangeAddressConfirmationInput(BaseModel):
     address: str = Field(min_length=1, max_length=64)
-    label: str = Field(default="人工确认交易所", max_length=160)
+    # 留空表示沿用地址原有的组名；只有空名或系统自动名才会被替换成默认名。
+    label: str = Field(default="", max_length=160)
     decision: str = Field(default="confirm", pattern="^(confirm|reject|reset)$")
+
+
+class GroupAddressInput(BaseModel):
+    """往某个标签组里手动加地址：支持多行 / 逗号 / 空格分隔。"""
+
+    addresses: str = Field(min_length=1, max_length=20000)
+    book: str = Field(default="", max_length=60)
+    label: str = Field(default="", max_length=160)
+    category: str = Field(default="", max_length=32)
+    note: str = Field(default="", max_length=2000)
 
 
 class AddressNoteInput(BaseModel):
@@ -604,6 +615,25 @@ def confirm_exchange_address(
 ):
     try:
         return svc.decide_exchange_address(payload.address, payload.decision, payload.label)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/library/group-addresses")
+def add_group_addresses(
+    payload: GroupAddressInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """地址库清单展开后「手动添加地址」用：把地址加进当前这一组。"""
+
+    try:
+        return svc.add_group_addresses(
+            payload.addresses,
+            book=payload.book,
+            label=payload.label,
+            category=payload.category,
+            note=payload.note,
+        )
     except InputError as exc:
         raise HTTPException(422, str(exc)) from exc
 

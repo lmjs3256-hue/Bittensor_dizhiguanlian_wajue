@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -530,6 +531,88 @@ class LinkService:
     def import_upload(self, filename: str, text: str) -> dict[str, int]:
         return self.import_rows(_parse_upload(filename, text), filename)
 
+    def add_group_addresses(
+        self,
+        addresses: str,
+        *,
+        book: str = "",
+        label: str = "",
+        category: str = "",
+        note: str = "",
+    ) -> dict[str, Any]:
+        """把手动输入的地址加进某个标签组（自建库 / 标签组 / 分类兜底组）。
+
+        只新增：已存在的地址一律跳过，不覆盖它原有的分类、组名和备注，
+        避免“往这组加一条”把别处维护好的记录改掉。新增写撤回快照。
+        """
+
+        tokens = [
+            token
+            for token in re.split(r"[\s,，;；、]+", str(addresses or "").strip())
+            if token
+        ]
+        if not tokens:
+            raise InputError("请先填写要添加的地址")
+        unique: list[str] = []
+        invalid: list[str] = []
+        seen: set[str] = set()
+        for address in tokens:
+            if address in seen:
+                continue
+            seen.add(address)
+            if is_valid_ss58(address):
+                unique.append(address)
+            else:
+                invalid.append(address)
+        if not unique:
+            raise InputError(f"没有有效的 SS58 地址（{len(invalid)} 个格式不对）")
+
+        book_name = (book or "").strip()[:BOOK_NAME_MAX_LENGTH]
+        group_label = (label or "").strip()[:160]
+        group_category = normalize_category(category) if (category or "").strip() else ""
+        group_note = (note or "").strip()[:2000]
+        inserted: list[str] = []
+        skipped = 0
+        with self.database.session() as db:
+            if group_category:
+                self._ensure_category(db, group_category)
+            for address in unique:
+                current = db.scalar(
+                    select(AddressLibrary).where(AddressLibrary.address == address)
+                )
+                if current is not None:
+                    skipped += 1
+                    continue
+                primary = group_category or "其他"
+                db.add(
+                    AddressLibrary(
+                        address=address,
+                        label=group_label,
+                        category=primary,
+                        categories=encode_categories([primary]),
+                        note=group_note,
+                        source="manual:group-add",
+                        book=book_name,
+                    )
+                )
+                inserted.append(address)
+            if inserted:
+                group_name = book_name or group_label or group_category or "未命名"
+                _record_import_batch(
+                    db,
+                    kind="import",
+                    summary=f"手动添加到「{group_name}」· 新增 {len(inserted)} 个",
+                    inserted=inserted,
+                    updated=[],
+                )
+        return {
+            "inserted": len(inserted),
+            "skipped": skipped,
+            "invalid": invalid[:20],
+            "invalid_count": len(invalid),
+            "group": book_name or group_label or group_category,
+        }
+
     def import_path(self, path: Path) -> dict[str, int]:
         parsed = read_addresses(path)
         rows = [
@@ -891,7 +974,7 @@ class LinkService:
         self,
         address: str,
         decision: str,
-        label: str = "人工确认交易所",
+        label: str = "",
     ) -> dict[str, Any]:
         address = address.strip()
         if not is_valid_ss58(address):
@@ -902,12 +985,17 @@ class LinkService:
                 raise InputError("交易所状态只能是 confirm、reject 或 reset")
             if current is None and decision == "reset":
                 return {"saved": True, "item": None}
+            # 人工改判（确认 ↔ 否定）时不要把人给这一组起的名字冲掉：
+            # 只有空名或系统自动写的“人工确认/否定交易所”才用默认名替换。
+            auto_labels = {"", "人工确认交易所", "人工否定交易所"}
+            default_label = {
+                "confirm": "人工确认交易所",
+                "reject": "人工否定交易所",
+            }.get(decision, "")
             if current is None:
                 current = AddressLibrary(
                     address=address,
-                    label=(label.strip() or (
-                        "人工确认交易所" if decision == "confirm" else "人工否定交易所"
-                    )),
+                    label=(label.strip() or default_label or "人工否定交易所"),
                     category="EXCHANGE",
                     note=(
                         "由关联扫描结果人工确认"
@@ -926,19 +1014,23 @@ class LinkService:
                 db.flush()
             else:
                 current.category = "EXCHANGE"
-                current.label = label.strip() or current.label or (
-                    "人工确认交易所" if decision == "confirm" else "人工否定交易所"
-                )
-                current.source = (
-                    "manual:exchange-confirmation"
-                    if decision == "confirm"
-                    else "manual:exchange-rejection"
-                )
+                if label.strip():
+                    current.label = label.strip()
+                elif current.label.strip() in auto_labels and default_label:
+                    current.label = default_label
+                if decision == "reset":
+                    current.source = "manual:exchange-reset"
+                else:
+                    current.source = (
+                        "manual:exchange-confirmation"
+                        if decision == "confirm"
+                        else "manual:exchange-rejection"
+                    )
                 current.exchange_confirmed = decision == "confirm"
                 current.exchange_rejected = decision == "reject"
             return {"saved": True, "item": address_dict(current)}
 
-    def confirm_exchange_address(self, address: str, label: str = "人工确认交易所") -> dict[str, Any]:
+    def confirm_exchange_address(self, address: str, label: str = "") -> dict[str, Any]:
         return self.decide_exchange_address(address, "confirm", label)
 
     def sync_exchange_addresses(self) -> dict[str, Any]:

@@ -334,3 +334,13 @@ Set-Location G:\bittensor-wallet-link-intel
 - 控件：`#related-amount-mode`（下拉）、`#related-amount-min`（数字，250ms 防抖）、`#related-amount-reset`；层级或金额变化都会把页码重置到第 1 页。
 - 导出：「导出地址 TXT」按当前金额筛选过滤并 toast 说明隐藏条数；「导出 JSON」保持全量快照（有意为之，便于回看被筛掉的地址）。
 - 界面探针 `.probe/ui_check_0620.py`：8 条构造数据下 either/incoming/outgoing/total/both 分别 4/4/1/5/1 条，层级叠加（2 级 + either≥10）= 1/3，重置回 8 条，localStorage 记忆正确；`.probe/layout_0620.py`：1422px 下四个控件同一行、ySpread=0、无重叠、右边界 1331 < 面板 1355。
+
+## 25. 2026-11-05 0.6.21 交接：交易所改判 + 组内手动加地址
+
+- **改判**：`LinkService.decide_exchange_address(address, decision, label="")` 的 `label` 默认值从「人工确认交易所」改为空串——前端不再强行传名字，人工起的组名不会被冲掉。仅当 `label` 有值，或现有 label ∈ {"", "人工确认交易所", "人工否定交易所"} 时才替换。
+- `reset` 现在会把 `source` 记为 `manual:exchange-reset`，前端把 `address_role` 复位成「疑似交易所（待确认）」并给出对应 toast。
+- 前端 `exchangeDecisionControl(row)` 统一渲染三态控制：已确认（改为否定/重置为待确认）、已否定（改为交易所/重置为待确认）、待确认（确认/否定）、未入库（标为交易所）；`relatedTable` 与地址库表格共用同一套说法。
+- **组内加地址**：`LinkService.add_group_addresses(addresses, book=, label=, category=, note=)`——按 `[\s,，;；、]+` 切分、去重、逐个 SS58 校验；**仅新增**，已存在的地址跳过且不覆盖分类/组名/备注；写 `kind="import"` 撤回快照。接口 `POST /api/library/group-addresses`（`GroupAddressInput`）。
+- 前端：`state.groupAdd` 打开输入框，按钮 `[data-group-add]` 渲染在 `.library-group-details` 顶部（未展开不可见）；`saveGroupAdd` 按组类型拼 payload——自建库带 `book`+`label=库名`，命名标签组带 `label`，未命名分类组只带 `category`。
+- 测试：`tests/test_group_add_and_exchange.py`（6 个）覆盖多分隔符/去重、跳过已存在不动原记录、无效地址报错、撤回、改判来回切换、保留人工组名、接口层。全量 `pytest -q` = **150 passed**。
+- 界面探针：`.probe/ui_check_0621.py` 建临时库 → 展开 → 添加（1 好 1 坏）→ toast「已加到「临时添加测试」1 个地址，1 个格式不对」→ 组内 1→2 条、备注写入 → 解散清理；`.probe/ui_check_0622.py` 结果表三态按钮 & 真实库中两条被否定的地址（5EiXej…、5DunDr…）在 rrik 组里均显示「改为交易所」「重置」。

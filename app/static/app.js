@@ -33,6 +33,8 @@ const state = {
   groupCategory: null,
   // 整组改名：{kind: "book"|"label", name: "组名"}，null 表示没有在改名。
   groupRename: null,
+  // 组内「手动添加地址」：{kind, name}，null 表示没有打开输入框。
+  groupAdd: null,
   libraryGroupsOpen: new Set(),
   history: { offset: 0, total: 0, items: [] },
 };
@@ -337,6 +339,27 @@ async function clearTaostatsKey() {
   }
 }
 
+// 交易所人工结论：确认 / 否定 / 重置三态都能改，判错了随时可以改回来。
+function exchangeDecisionControl(row) {
+  const tracked = String(row.library_category || "").toUpperCase() === "EXCHANGE";
+  const rejected = tracked && Boolean(row.exchange_rejected);
+  const confirmed = tracked && Boolean(row.exchange_confirmed) && !rejected;
+  const address = esc(row.address);
+  const btn = (decision, text, title, css = "ghost") =>
+    `<button class="${css} note-save" data-exchange-decision="${decision}" data-address="${address}" title="${esc(title)}" type="button">${text}</button>`;
+  const reset = btn("reset", "重置为待确认", "清除人工结论，回到“疑似交易所（待确认）”");
+  if (confirmed) {
+    return `<div class="exchange-decision"><span class="tag">已确认交易所</span>${btn("reject", "改为否定", "判错了？改成否定，该地址不再进入交易所过滤")}${reset}</div>`;
+  }
+  if (rejected) {
+    return `<div class="exchange-decision"><span class="tag warn">已否定交易所</span>${btn("confirm", "改为交易所", "判错了？改成确认：刷新后作为关联终点，不再向下扩展", "secondary")}${reset}</div>`;
+  }
+  if (tracked) {
+    return `<div class="exchange-decision"><span class="tag warn">待人工确认</span>${btn("confirm", "确认交易所", "确认后作为关联终点，刷新后不再向下扩展", "secondary")}${btn("reject", "否定交易所", "否定后不会再被列为交易所候选")}</div>`;
+  }
+  return `<div class="exchange-decision">${btn("confirm", "标为交易所", "公共地址或未录入的交易所？标记后刷新，其下游只经由它连通的地址会自动移除")}</div>`;
+}
+
 function relatedTable(rows) {
   if (!rows.length) return '<div class="placeholder">没有达到过滤条件的关联地址。</div>';
   return `<table><thead><tr><th>关联钱包地址</th><th>当前余额 TAO</th><th>层级</th><th>流入 TAO</th><th>流出 TAO</th><th>累计转账 TAO</th><th>地址库</th><th>备注</th></tr></thead><tbody>${rows.map((row) => {
@@ -346,12 +369,10 @@ function relatedTable(rows) {
     const library = row.match
       ? `<span class="tag warn">${esc(libraryName(row.library_label, row.library_category))}</span>`
       : "-";
-    const exchangeConfirmed = row.library_category === "EXCHANGE" && row.exchange_confirmed;
     // 「标为交易所」对所有关联地址开放：公共地址或未录入系统的交易所地址，
-    // 标记后其下游只经由它连通的地址会在刷新后自动消失。
-    const exchangeActions = row.address_role === "疑似交易所（待确认）"
-      ? `<div class="exchange-decision"><button class="secondary note-save" data-exchange-decision="confirm" data-address="${esc(row.address)}" type="button">确认交易所</button><button class="ghost note-save" data-exchange-decision="reject" data-address="${esc(row.address)}" type="button">否定</button></div>`
-      : (exchangeConfirmed ? "" : `<div class="exchange-decision"><button class="ghost note-save" data-exchange-decision="confirm" data-address="${esc(row.address)}" title="公共地址或未录入的交易所？标记后刷新，其下游只经由它连通的地址会自动移除" type="button">标为交易所</button></div>`);
+    // 标记后其下游只经由它连通的地址会在刷新后自动消失。已下结论的地址也保留
+    // 改判入口，避免一次误点后无法纠正。
+    const exchangeActions = exchangeDecisionControl(row);
     // 2/3 级关联：展示「路径明细」按钮，展开从起始地址到该地址的逐笔转账。
     const pathButton = (row.path_transfers || []).length > 1
       ? `<button class="ghost note-save" data-path-toggle="${esc(row.address)}" type="button" title="从起始地址到该地址的逐笔转账记录">路径明细</button>`
@@ -1071,7 +1092,7 @@ function addressLink(address, text) {
 function libraryRowsTable(rows) {
   const rowsHtml = rows.map((row) => {
     const exchangeControl = row.category === "EXCHANGE"
-      ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销确认</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">重新确认</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销否定</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>`
+      ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" title="判错了？改成否定，该地址不再进入交易所过滤" type="button">改为否定</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" title="清除人工结论，回到待确认" type="button">重置</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" title="判错了？改成确认为交易所" type="button">改为交易所</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" title="清除人工结论，回到待确认" type="button">重置</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>`
       : "";
     const bookCell = row.book ? `<span class="tag">${esc(row.book)}</span>` : "-";
     const categories = (row.categories && row.categories.length ? row.categories : [row.category]).filter(Boolean);
@@ -1169,7 +1190,16 @@ function libraryTable(rows) {
     } else {
       categoryControl = `<button class="ghost note-save group-category" data-edit-group-categories data-group-kind="${kind}" data-group-name="${esc(group.label)}" data-group-book="${esc(group.book)}" title="整组改分类：这一组的所有地址一起更新" type="button">改分类</button>`;
     }
-    return `<section class="library-group"><div class="library-group-head"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-actions"><label class="group-select" title="全选「${esc(group.label)}」这一组的 ${group.rows.length} 个地址"><input type="checkbox" data-group-select="${groupId}" aria-label="全选「${esc(group.label)}」组地址">全选本组</label><span class="group-selected" data-group-selected="${groupId}"></span>${categoryControl}${renameControl}</div></div>${categoryEditor}<div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
+    // 组内手动添加地址：展开明细后就能用，不用先导出再导入。
+    const addingHere = Boolean(state.groupAdd)
+      && state.groupAdd.kind === kind
+      && state.groupAdd.name === group.label;
+    const addAttrs = `data-group-kind="${kind}" data-group-name="${esc(group.label)}" data-group-book="${esc(group.book)}" data-group-category="${esc(group.primaryCategory || "")}" data-group-can-rename="${group.canRename ? "1" : "0"}"`;
+    const addBar = `<div class="group-add-bar"><button class="ghost" data-group-add ${addAttrs} type="button">＋ 手动添加地址</button><small>加到「${esc(group.label)}」；已存在的地址会跳过，不会改动原有分类和备注</small></div>`;
+    const addEditor = addingHere
+      ? `<div class="group-add-editor"><textarea data-group-add-input rows="3" placeholder="每行一个 SS58 地址，也支持逗号 / 空格分隔（一次最多 200 个）" aria-label="要添加的地址"></textarea><input data-group-add-note maxlength="2000" autocomplete="off" placeholder="备注（选填，只写给这次新加的地址）" aria-label="新地址的备注"><div class="group-add-actions"><button class="secondary note-save" data-save-group-add ${addAttrs} type="button">添加到本组</button><button class="ghost note-save" data-cancel-group-add type="button">取消</button></div><small>地址格式不对会逐个提示；加入后可点「撤回上次导入」一次性撤销这次添加。</small></div>`
+      : "";
+    return `<section class="library-group"><div class="library-group-head"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-actions"><label class="group-select" title="全选「${esc(group.label)}」这一组的 ${group.rows.length} 个地址"><input type="checkbox" data-group-select="${groupId}" aria-label="全选「${esc(group.label)}」组地址">全选本组</label><span class="group-selected" data-group-selected="${groupId}"></span>${categoryControl}${renameControl}</div></div>${categoryEditor}<div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${addBar}${addEditor}${libraryRowsTable(group.rows)}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -1636,6 +1666,54 @@ async function saveGroupCategories(button) {
   }
 }
 
+// -- 组内手动添加地址 ------------------------------------------------------
+async function saveGroupAdd(button) {
+  const editor = button.closest(".group-add-editor");
+  const textarea = editor?.querySelector("[data-group-add-input]");
+  const noteInput = editor?.querySelector("[data-group-add-note]");
+  const addresses = String(textarea?.value || "").trim();
+  if (!addresses) {
+    toast("先填入要添加的地址（每行一个）。", true);
+    textarea?.focus();
+    return;
+  }
+  const kind = button.dataset.groupKind;
+  const name = button.dataset.groupName;
+  const bookName = button.dataset.groupBook || "";
+  const category = button.dataset.groupCategory || "";
+  const isNamedGroup = button.dataset.groupCanRename === "1";
+  const payload = {
+    addresses,
+    note: String(noteInput?.value || "").trim(),
+    category,
+  };
+  if (bookName) {
+    payload.book = bookName;
+    payload.label = bookName;
+  } else if (kind === "label" && isNamedGroup) {
+    payload.label = name;
+  }
+  button.disabled = true;
+  try {
+    const result = await api("/api/library/group-addresses", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    state.groupAdd = null;
+    await loadLibrary();
+    const parts = [`已加到「${name}」${result.inserted} 个地址`];
+    if (result.skipped) parts.push(`跳过已存在 ${result.skipped} 个`);
+    if (result.invalid_count) {
+      const sample = result.invalid.slice(0, 3).join("、");
+      parts.push(`${result.invalid_count} 个格式不对（${sample}${result.invalid_count > 3 ? "…" : ""}）`);
+    }
+    toast(`${parts.join("，")}。`);
+  } catch (error) {
+    toast(`添加失败：${error.message}`, true);
+    button.disabled = false;
+  }
+}
+
 async function decideLibraryExchange(button) {
   button.disabled = true;
   try {
@@ -1645,7 +1723,14 @@ async function decideLibraryExchange(button) {
     });
     await loadLibrary();
     const decision = button.dataset.libraryExchangeDecision;
-    toast(decision === "confirm" ? "已确认，扫描时允许过滤该交易所地址。" : decision === "reject" ? "已否定，该地址不会被交易所过滤。" : "已重置交易所人工结论。", false);
+    toast(
+      decision === "confirm"
+        ? "已确认，扫描时允许过滤该交易所地址。"
+        : decision === "reject"
+          ? "已否定，该地址不会被交易所过滤；判错可点「改为交易所」。"
+          : "已重置为待确认，可重新判断。",
+      false
+    );
   } catch (error) {
     toast(`交易所人工结论更新失败：${error.message}`, true);
     button.disabled = false;
@@ -1754,11 +1839,7 @@ async function decideExchange(address, decision, button) {
   try {
     const result = await api("/api/library/confirm-exchange-address", {
       method: "POST",
-      body: JSON.stringify({
-        address,
-        label: decision === "confirm" ? "人工确认交易所" : "人工否定交易所",
-        decision,
-      }),
+      body: JSON.stringify({ address, label: "", decision }),
     });
     const item = result.item;
     const row = state.lastResult?.related?.find((entry) => entry.address === address);
@@ -1770,10 +1851,16 @@ async function decideExchange(address, decision, button) {
       row.library_source = item.source;
       row.exchange_confirmed = item.exchange_confirmed;
       row.exchange_rejected = item.exchange_rejected;
-      row.address_role = decision === "confirm" ? item.label : "已人工否定交易所";
-      row.role_reason = decision === "confirm"
-        ? "已由用户人工确认并加入交易所过滤库。"
-        : "已由用户人工否定，不会进入交易所过滤集合。";
+      if (decision === "confirm") {
+        row.address_role = item.label || "交易所地址";
+        row.role_reason = "已由用户人工确认并加入交易所过滤库。";
+      } else if (decision === "reject") {
+        row.address_role = "已人工否定交易所";
+        row.role_reason = "已由用户人工否定，不会进入交易所过滤集合。";
+      } else {
+        row.address_role = "疑似交易所（待确认）";
+        row.role_reason = "交易所候选尚未人工确认，交易所过滤不可用。";
+      }
     }
     const pruned = decision === "confirm" ? pruneDownstreamOf(address) : 0;
     renderResult(state.lastResult);
@@ -1781,8 +1868,10 @@ async function decideExchange(address, decision, button) {
       toast(pruned
         ? `已标为交易所：其下游 ${pruned} 个关联地址已从列表隐藏，点「刷新结果」重查后不会再出现。`
         : "已标为交易所：该地址作为关联终点，刷新后不再向下扩展。", false);
+    } else if (decision === "reject") {
+      toast("已人工否定该地址；后续扫描不会再将其列为交易所候选。判错可点「改为交易所」。", false);
     } else {
-      toast("已人工否定该地址；后续扫描不会再将其列为交易所候选。", false);
+      toast("已重置为待确认：该地址回到“疑似交易所（待确认）”，可重新判断。", false);
     }
   } catch (error) {
     toast(`确认失败：${error.message}`, true);
@@ -2377,6 +2466,23 @@ document.addEventListener("click", (event) => {
   }
   const saveGroupCategoriesButton = event.target.closest("[data-save-group-categories]");
   if (saveGroupCategoriesButton) saveGroupCategories(saveGroupCategoriesButton);
+  const groupAddButton = event.target.closest("[data-group-add]");
+  if (groupAddButton) {
+    state.groupAdd = {
+      kind: groupAddButton.dataset.groupKind,
+      name: groupAddButton.dataset.groupName,
+    };
+    renderLibraryList();
+    const input = document.querySelector("[data-group-add-input]");
+    if (input) input.focus();
+  }
+  const cancelGroupAddButton = event.target.closest("[data-cancel-group-add]");
+  if (cancelGroupAddButton) {
+    state.groupAdd = null;
+    renderLibraryList();
+  }
+  const saveGroupAddButton = event.target.closest("[data-save-group-add]");
+  if (saveGroupAddButton) saveGroupAdd(saveGroupAddButton);
   const deleteAddressButton = event.target.closest("[data-delete-address]");
   if (deleteAddressButton) deleteLibraryAddress(deleteAddressButton.dataset.deleteAddress);
   const libraryNoteButton = event.target.closest("[data-save-library-note]");
