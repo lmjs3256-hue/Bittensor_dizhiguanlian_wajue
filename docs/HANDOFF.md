@@ -344,3 +344,18 @@ Set-Location G:\bittensor-wallet-link-intel
 - 前端：`state.groupAdd` 打开输入框，按钮 `[data-group-add]` 渲染在 `.library-group-details` 顶部（未展开不可见）；`saveGroupAdd` 按组类型拼 payload——自建库带 `book`+`label=库名`，命名标签组带 `label`，未命名分类组只带 `category`。
 - 测试：`tests/test_group_add_and_exchange.py`（6 个）覆盖多分隔符/去重、跳过已存在不动原记录、无效地址报错、撤回、改判来回切换、保留人工组名、接口层。全量 `pytest -q` = **150 passed**。
 - 界面探针：`.probe/ui_check_0621.py` 建临时库 → 展开 → 添加（1 好 1 坏）→ toast「已加到「临时添加测试」1 个地址，1 个格式不对」→ 组内 1→2 条、备注写入 → 解散清理；`.probe/ui_check_0622.py` 结果表三态按钮 & 真实库中两条被否定的地址（5EiXej…、5DunDr…）在 rrik 组里均显示「改为交易所」「重置」。
+
+## 26. 2026-11-05 0.6.22 交接：组内添加支持「转入本组」+ 交易所结论组同步标志
+
+- 起因：用户把两个已被否定的地址（5EiXej…、5DunDr…，当时在 `rrik` 自建库）用「＋ 手动添加地址」加到「人工确认交易所」组，界面上看不到新增——`add_group_addresses` 原本「已存在一律跳过」，只在 toast 里报一句“跳过已存在 N 个”，既没说是哪个组，也没有转移手段。
+- 后端（`app/service.py`）：新增模块级 `library_group_key(row) -> (kind, name)`，与前端 `libraryTable` 归组口径一致（book → 人工命名 label → 分类兜底）。`add_group_addresses(..., move_existing=False)`：
+  - 已存在且**就在本组** → `skipped`（重复粘贴不算错）；
+  - 已存在但在别组且 `move_existing=False` → `skipped` + `conflicts[{address, group, kind}]`；
+  - `move_existing=True` → 改归属（book / label / category 三选一，前端会把组的主分类一起传上来，所以传了 `category` 就同步分类），**备注保留**，写 `updated` 快照，`moved` 计数；
+  - 目标组名是「人工确认交易所 / 人工否定交易所」时，新增和转入都会同步写 `exchange_confirmed / exchange_rejected` 与对应 `source`（结论组名就是结论，否则“加进去了但扫描不当交易所”）。
+  - 返回新增 `moved` / `conflicts` / `conflict_count`；`_record_import_batch` summary 形如「手动添加到「X」· 新增 N 个 / 转入 M 个」。
+- 接口：`GroupAddressInput.move_existing: bool = False`，透传给服务。
+- 前端（`app/static/app.js`）：编辑器加 `<label class="group-add-move"><input type=checkbox data-group-add-move> 已在别的组的地址也移到本组（改它的组名/分类，备注保留）</label>`；`saveGroupAdd` 读勾选、拼 `move_existing`，toast 分项报“已加入 N / 从别的组转入 M / K 个格式不对 / J 个已在「rrik」组，已跳过——勾选…再点一次”；`isExchangeGroupLabel()` 给结论组在编辑器下方加一行提示。注意「没有新增：本来就在本组」这句只在**没有 conflicts** 时才说（第一版写错了，探针抓出来后修掉）。样式 `.group-add-move`（14px 勾选框）。
+- 数据修复（已执行，非代码）：把 `5EiXej3AwjKqb9mjQAf29JG5HJf9Dwtt8CjvDqA8biprWTiN`、`5DunDrFV6BPbzsgLZUtMQtCq7w9fcUEbM59BUwx5E7N9Bn5E` 用 `move_existing=true` 从 `rrik` 转入「人工确认交易所」组，`book` 清空、`label=人工确认交易所`、`category=EXCHANGE`、`exchange_confirmed=1`。rrik 由 199 → 197，确认组 3 → 5。
+- 测试：`tests/test_group_add_and_exchange.py` 增 2 例（冲突→转入→撤回还原；结论组同步标志、普通组不写标志），全量 **152 passed**。
+- 探针：`.probe/ui_check_0623.py` 用 rrik 的一条普通地址走「不勾→提示在 rrik→勾选→转入 1 个→组内 6 条」，两次 undo 还原，实测 toast 文案两版对比（第一版含错误前提，已修）。截图 `.probe/69_group_move.png`。

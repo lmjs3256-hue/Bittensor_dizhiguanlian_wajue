@@ -1195,9 +1195,9 @@ function libraryTable(rows) {
       && state.groupAdd.kind === kind
       && state.groupAdd.name === group.label;
     const addAttrs = `data-group-kind="${kind}" data-group-name="${esc(group.label)}" data-group-book="${esc(group.book)}" data-group-category="${esc(group.primaryCategory || "")}" data-group-can-rename="${group.canRename ? "1" : "0"}"`;
-    const addBar = `<div class="group-add-bar"><button class="ghost" data-group-add ${addAttrs} type="button">＋ 手动添加地址</button><small>加到「${esc(group.label)}」；已存在的地址会跳过，不会改动原有分类和备注</small></div>`;
+    const addBar = `<div class="group-add-bar"><button class="ghost" data-group-add ${addAttrs} type="button">＋ 手动添加地址</button><small>加到「${esc(group.label)}」；重复地址会提示，可勾选“移过来”把它从别的组转到本组</small></div>`;
     const addEditor = addingHere
-      ? `<div class="group-add-editor"><textarea data-group-add-input rows="3" placeholder="每行一个 SS58 地址，也支持逗号 / 空格分隔（一次最多 200 个）" aria-label="要添加的地址"></textarea><input data-group-add-note maxlength="2000" autocomplete="off" placeholder="备注（选填，只写给这次新加的地址）" aria-label="新地址的备注"><div class="group-add-actions"><button class="secondary note-save" data-save-group-add ${addAttrs} type="button">添加到本组</button><button class="ghost note-save" data-cancel-group-add type="button">取消</button></div><small>地址格式不对会逐个提示；加入后可点「撤回上次导入」一次性撤销这次添加。</small></div>`
+      ? `<div class="group-add-editor"><textarea data-group-add-input rows="3" placeholder="每行一个 SS58 地址，也支持逗号 / 空格分隔（一次最多 200 个）" aria-label="要添加的地址"></textarea><input data-group-add-note maxlength="2000" autocomplete="off" placeholder="备注（选填，只写给这次新加的地址）" aria-label="新地址的备注"><label class="group-add-move"><input type="checkbox" data-group-add-move> 已在别的组的地址也移到本组（改它的组名/分类，备注保留）</label><div class="group-add-actions"><button class="secondary note-save" data-save-group-add ${addAttrs} type="button">添加到本组</button><button class="ghost note-save" data-cancel-group-add type="button">取消</button></div><small>地址格式不对会逐个提示；加入后可点「撤回上次导入」一次性撤销这次添加。${isExchangeGroupLabel(group.label) ? "本组是人工交易所结论组，加进来的地址会同步标为" + esc(group.label) + "。" : ""}</small></div>`
       : "";
     return `<section class="library-group"><div class="library-group-head"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-actions"><label class="group-select" title="全选「${esc(group.label)}」这一组的 ${group.rows.length} 个地址"><input type="checkbox" data-group-select="${groupId}" aria-label="全选「${esc(group.label)}」组地址">全选本组</label><span class="group-selected" data-group-selected="${groupId}"></span>${categoryControl}${renameControl}</div></div>${categoryEditor}<div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${addBar}${addEditor}${libraryRowsTable(group.rows)}</div></section>`;
   }).join("")}</div>`;
@@ -1667,10 +1667,15 @@ async function saveGroupCategories(button) {
 }
 
 // -- 组内手动添加地址 ------------------------------------------------------
+function isExchangeGroupLabel(name) {
+  return name === "人工确认交易所" || name === "人工否定交易所";
+}
+
 async function saveGroupAdd(button) {
   const editor = button.closest(".group-add-editor");
   const textarea = editor?.querySelector("[data-group-add-input]");
   const noteInput = editor?.querySelector("[data-group-add-note]");
+  const moveInput = editor?.querySelector("[data-group-add-move]");
   const addresses = String(textarea?.value || "").trim();
   if (!addresses) {
     toast("先填入要添加的地址（每行一个）。", true);
@@ -1682,10 +1687,12 @@ async function saveGroupAdd(button) {
   const bookName = button.dataset.groupBook || "";
   const category = button.dataset.groupCategory || "";
   const isNamedGroup = button.dataset.groupCanRename === "1";
+  const moveExisting = Boolean(moveInput?.checked);
   const payload = {
     addresses,
     note: String(noteInput?.value || "").trim(),
     category,
+    move_existing: moveExisting,
   };
   if (bookName) {
     payload.book = bookName;
@@ -1701,13 +1708,24 @@ async function saveGroupAdd(button) {
     });
     state.groupAdd = null;
     await loadLibrary();
-    const parts = [`已加到「${name}」${result.inserted} 个地址`];
-    if (result.skipped) parts.push(`跳过已存在 ${result.skipped} 个`);
+    const parts = [];
+    if (result.inserted) parts.push(`已加到「${name}」${result.inserted} 个地址`);
+    if (result.moved) parts.push(`从别的组转入 ${result.moved} 个`);
     if (result.invalid_count) {
       const sample = result.invalid.slice(0, 3).join("、");
       parts.push(`${result.invalid_count} 个格式不对（${sample}${result.invalid_count > 3 ? "…" : ""}）`);
     }
-    toast(`${parts.join("，")}。`);
+    const groups = [...new Set((result.conflicts || []).map((item) => item.group))];
+    if (!parts.length && !result.conflict_count) {
+      parts.push(`这些地址本来就在「${name}」`);
+    }
+    if (result.conflict_count) {
+      const where = groups.slice(0, 3).join("」「");
+      parts.push(
+        `${result.conflict_count} 个已在「${where}」组，已跳过——勾选“已在别的组的地址也移到本组”再点一次就能转过来`
+      );
+    }
+    toast(`${parts.join("；")}。`, Boolean(result.conflict_count && !result.inserted && !result.moved));
   } catch (error) {
     toast(`添加失败：${error.message}`, true);
     button.disabled = false;

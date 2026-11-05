@@ -199,6 +199,8 @@ class GroupAddressInput(BaseModel):
     label: str = Field(default="", max_length=160)
     category: str = Field(default="", max_length=32)
     note: str = Field(default="", max_length=2000)
+    # 已在别组的地址是否移到本组（默认只新增，已存在的跳过）。
+    move_existing: bool = False
 
 
 class AddressNoteInput(BaseModel):
@@ -633,6 +635,7 @@ def add_group_addresses(
             label=payload.label,
             category=payload.category,
             note=payload.note,
+            move_existing=payload.move_existing,
         )
     except InputError as exc:
         raise HTTPException(422, str(exc)) from exc

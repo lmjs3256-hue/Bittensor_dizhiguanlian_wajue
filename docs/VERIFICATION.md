@@ -1,5 +1,19 @@
 # 验证交付记录
 
+## 0.6.22 验证记录（2026-11-05）
+
+**问题复现**：`POST /api/library/group-addresses`（`label=人工确认交易所`，不带 `move_existing`）对两个已在 `rrik` 的地址返回 `inserted=0, skipped=2, conflicts=[{group:rrik}×2]`，与用户“看不到新增”的现象一致。
+
+**转入验证**：同请求加 `move_existing=true` → `moved=2`，库内两条变为 `label=人工确认交易所 / book='' / category=EXCHANGE / exchange_confirmed=1`，确认组 3→5 条、rrik 199→197 条。
+
+**界面全链路**（`.probe/ui_check_0623.py`，headless Chrome + CDP）：
+- 复选框存在、默认**不勾**；
+- 不勾直接保存 → toast：「1 个已在「rrik」组，已跳过——勾选“已在别的组的地址也移到本组”再点一次就能转过来。」
+- 勾上再保存 → toast：「从别的组转入 1 个。」组内 5→6 条，编辑器自动收起；
+- 两次「撤回上次导入」后，该测试地址回到 `rrik`、确认组回到 5 条（探针未污染用户数据）。
+
+**回归**：`pytest -q` = **152 passed**（新增 2 例）；`node --check app/static/app.js` 通过。
+
 ## 0.6.21 验证记录（2026-11-05）
 
 - `pytest -q`：**150 passed**（新增 `tests/test_group_add_and_exchange.py` 6 个用例：多分隔符/去重、跳过已存在且不改原记录、无有效地址报错、撤回快照、确认↔否定来回改判、保留人工组名、接口层 200/422）。

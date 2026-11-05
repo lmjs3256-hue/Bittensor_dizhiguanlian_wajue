@@ -288,3 +288,83 @@ def test_group_addresses_endpoint_and_exchange_endpoint(monkeypatch):
                 assert item["exchange_rejected"] is False
         finally:
             database.engine.dispose()
+
+
+def test_existing_address_reports_conflict_and_can_be_moved():
+    """已在别的组的地址：默认跳过并报冲突，勾选「移过来」才转组。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(
+                name="旧库", seed=SEED, addresses=[EXTRA[0]], category="群友", include_seed=True
+            )
+            # 默认只新增：跳过并告诉前端它在哪个组
+            first = service.add_group_addresses(
+                EXTRA[0], label="人工确认交易所", category="EXCHANGE"
+            )
+            assert first["inserted"] == 0
+            assert first["moved"] == 0
+            assert first["skipped"] == 1
+            assert first["conflict_count"] == 1
+            assert first["conflicts"][0]["group"] == "旧库"
+            with database.session() as db:
+                assert db.query(AddressLibrary).filter_by(address=EXTRA[0]).one().book == "旧库"
+
+            # 勾选移过来：改归属，备注保留
+            moved = service.add_group_addresses(
+                EXTRA[0],
+                label="人工确认交易所",
+                category="EXCHANGE",
+                move_existing=True,
+            )
+            assert moved["moved"] == 1
+            assert moved["inserted"] == 0
+            assert moved["conflict_count"] == 0
+            with database.session() as db:
+                row = db.query(AddressLibrary).filter_by(address=EXTRA[0]).one()
+                assert row.book == ""
+                assert row.label == "人工确认交易所"
+                assert row.category == "EXCHANGE"
+                assert row.source == "manual:exchange-confirmation"
+                assert row.exchange_confirmed is True
+
+            # 撤回能把它还原回旧库
+            service.undo_last_import()
+            with database.session() as db:
+                row = db.query(AddressLibrary).filter_by(address=EXTRA[0]).one()
+                assert row.book == "旧库"
+                assert row.label == "旧库"
+                assert row.exchange_confirmed is False
+        finally:
+            database.engine.dispose()
+
+
+def test_adding_into_exchange_group_sets_decision():
+    """往「人工确认交易所 / 人工否定交易所」组加新地址，同步写交易所结论。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            added = service.add_group_addresses(
+                EXTRA[0], label="人工确认交易所", category="EXCHANGE"
+            )
+            assert added["inserted"] == 1
+            rejected = service.add_group_addresses(
+                EXTRA[1], label="人工否定交易所", category="EXCHANGE"
+            )
+            assert rejected["inserted"] == 1
+            with database.session() as db:
+                ok = db.query(AddressLibrary).filter_by(address=EXTRA[0]).one()
+                no = db.query(AddressLibrary).filter_by(address=EXTRA[1]).one()
+                assert ok.exchange_confirmed is True and ok.exchange_rejected is False
+                assert no.exchange_rejected is True and no.exchange_confirmed is False
+                # 普通组不会乱写标志
+            plain = service.add_group_addresses(EXTRA[2], book="普通库", label="普通库")
+            assert plain["inserted"] == 1
+            with database.session() as db:
+                row = db.query(AddressLibrary).filter_by(address=EXTRA[2]).one()
+                assert row.exchange_confirmed is False
+                assert row.exchange_rejected is False
+        finally:
+            database.engine.dispose()

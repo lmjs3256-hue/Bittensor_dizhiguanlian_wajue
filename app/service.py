@@ -274,6 +274,22 @@ def _record_import_batch(
     db.add(ImportBatch(id=1, kind=kind, summary=summary[:255], payload=payload))
 
 
+def library_group_key(row: AddressLibrary) -> tuple[str, str]:
+    """一条地址在「地址库清单」里属于哪个组。
+
+    与前端 ``libraryTable`` 的归组口径保持一致：自建库（book）优先，
+    其次是人工命名的标签组（label），最后是按分类兜底的未命名组。
+    """
+
+    book = (getattr(row, "book", "") or "").strip()
+    if book:
+        return ("book", book)
+    label = (row.label or "").strip()
+    if label:
+        return ("label", label)
+    return ("category", row.category)
+
+
 def address_dict(row: AddressLibrary) -> dict[str, Any]:
     label = row.label.strip()
     return {
@@ -539,11 +555,20 @@ class LinkService:
         label: str = "",
         category: str = "",
         note: str = "",
+        move_existing: bool = False,
     ) -> dict[str, Any]:
         """把手动输入的地址加进某个标签组（自建库 / 标签组 / 分类兜底组）。
 
-        只新增：已存在的地址一律跳过，不覆盖它原有的分类、组名和备注，
-        避免“往这组加一条”把别处维护好的记录改掉。新增写撤回快照。
+        默认只新增：已存在的地址跳过，不覆盖它原有的分类、组名和备注，
+        避免“往这组加一条”把别处维护好的记录改掉；被跳过的地址若本来在
+        别的组，会出现在 ``conflicts`` 里，前端据此提示“要移过来吗”。
+
+        ``move_existing=True`` 时，已在别组的地址会移到本组（只改组名/归属，
+        备注保留，目标组是分类组时才改分类），可撤回。
+
+        往「人工确认交易所 / 人工否定交易所」这两个系统语义组里加地址，
+        会同步设置交易所人工结论——组名本身就代表这个结论，否则加进去后
+        扫描时并不会把它当交易所过滤。
         """
 
         tokens = [
@@ -571,7 +596,23 @@ class LinkService:
         group_label = (label or "").strip()[:160]
         group_category = normalize_category(category) if (category or "").strip() else ""
         group_note = (note or "").strip()[:2000]
+        # 目标组：与前端地址库清单的归组口径一致（自建库 → 人工命名标签 → 分类兜底）。
+        target = (
+            ("book", book_name)
+            if book_name
+            else ("label", group_label)
+            if group_label
+            else ("category", group_category)
+            if group_category
+            else ("", "")
+        )
+        # 「人工确认交易所」这类组名自带交易所结论，加进去就同步标志位。
+        semantic = book_name or group_label
+        force_confirmed = semantic == "人工确认交易所"
+        force_rejected = semantic == "人工否定交易所"
         inserted: list[str] = []
+        moved: list[dict[str, Any]] = []
+        conflicts: list[dict[str, Any]] = []
         skipped = 0
         with self.database.session() as db:
             if group_category:
@@ -580,34 +621,93 @@ class LinkService:
                 current = db.scalar(
                     select(AddressLibrary).where(AddressLibrary.address == address)
                 )
-                if current is not None:
+                if current is None:
+                    primary = group_category or "其他"
+                    db.add(
+                        AddressLibrary(
+                            address=address,
+                            label=group_label,
+                            category=primary,
+                            categories=encode_categories([primary]),
+                            note=group_note,
+                            source="manual:group-add",
+                            book=book_name,
+                            exchange_confirmed=force_confirmed,
+                            exchange_rejected=force_rejected,
+                        )
+                    )
+                    inserted.append(address)
+                    continue
+                current_group = library_group_key(current)
+                if current_group == target:
+                    # 本来就在这一组：重复贴进来不算错，静默算作跳过。
                     skipped += 1
                     continue
-                primary = group_category or "其他"
-                db.add(
-                    AddressLibrary(
-                        address=address,
-                        label=group_label,
-                        category=primary,
-                        categories=encode_categories([primary]),
-                        note=group_note,
-                        source="manual:group-add",
-                        book=book_name,
+                if not move_existing:
+                    skipped += 1
+                    conflicts.append(
+                        {
+                            "address": address,
+                            "group": current_group[1],
+                            "kind": current_group[0],
+                        }
                     )
+                    continue
+                snapshot = {
+                    "label": current.label or "",
+                    "category": current.category,
+                    "categories": getattr(current, "categories", "") or "",
+                    "note": current.note or "",
+                    "book": getattr(current, "book", "") or "",
+                    "source": current.source or "",
+                    "exchange_confirmed": bool(current.exchange_confirmed),
+                    "exchange_rejected": bool(current.exchange_rejected),
+                }
+                if target[0] == "book":
+                    current.book = book_name
+                    current.label = group_label or book_name
+                elif target[0] == "label":
+                    current.book = ""
+                    current.label = group_label
+                elif target[0] == "category":
+                    current.book = ""
+                    current.label = ""
+                # 目标组带分类时同步分类（前端会把组的主分类一起传上来）；
+                # 自建库/标签组的分类不动原记录的情况只在没传分类时发生。
+                if group_category:
+                    current.category = group_category
+                    current.categories = encode_categories([group_category])
+                if force_confirmed or force_rejected:
+                    current.exchange_confirmed = force_confirmed
+                    current.exchange_rejected = force_rejected
+                    current.source = (
+                        "manual:exchange-confirmation"
+                        if force_confirmed
+                        else "manual:exchange-rejection"
+                    )
+                moved.append(
+                    {"address": address, "snapshot": snapshot, "from": current_group[1]}
                 )
-                inserted.append(address)
-            if inserted:
+            if inserted or moved:
                 group_name = book_name or group_label or group_category or "未命名"
+                parts = []
+                if inserted:
+                    parts.append(f"新增 {len(inserted)} 个")
+                if moved:
+                    parts.append(f"转入 {len(moved)} 个")
                 _record_import_batch(
                     db,
                     kind="import",
-                    summary=f"手动添加到「{group_name}」· 新增 {len(inserted)} 个",
+                    summary=f"手动添加到「{group_name}」· " + " / ".join(parts),
                     inserted=inserted,
-                    updated=[],
+                    updated=[{"address": item["address"], "snapshot": item["snapshot"]} for item in moved],
                 )
         return {
             "inserted": len(inserted),
+            "moved": len(moved),
             "skipped": skipped,
+            "conflicts": conflicts[:20],
+            "conflict_count": len(conflicts),
             "invalid": invalid[:20],
             "invalid_count": len(invalid),
             "group": book_name or group_label or group_category,
