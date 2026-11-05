@@ -329,6 +329,29 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 - 分支走向（`cmd //c 启动.cmd`，临时目录内构造）：有冲突标记 → 打印「脚本里残留了 Git 冲突标记」并 `exit /b 1`；
   无标记 → 继续执行到 `.venv` 检查（「还没有安装运行环境」）。`安装.cmd` 同样在冲突时停下，不再调用 `setup.ps1`。
 - 换行校验：两个 `.cmd` 均为纯 CRLF（`启动.cmd` 41 行、`安装.cmd` 25 行，裸 LF 计数 0）。
-- 记录一个测试环境陷阱：从 Git Bash 用管道执行 `.cmd` 时，代码页差异会把中文行拆断并产生
-  `'xx' is not recognized` 的假错误；用 `git show HEAD:启动.cmd` 的原版对照同样复现，确认与本次改动无关。
+- 记录一个当时的误判：从 Git Bash 用管道执行 `.cmd` 时出现 `'xx' is not recognized`，当时对照 `git show HEAD:启动.cmd` 原版同样复现，
+  于是判为「测试环境假象」。**这个判断是错的**——0.6.27 确认它是真 bug（UTF-8 批处理 + `chcp 65001` 的字节偏移错位），只是原版恰好没跨过读取边界。
 - 回归：全量 pytest 通过；`git diff --check` 通过；服务启动后 `/api/version` 返回 `0.6.26`。
+
+## 2026-11-05 0.6.27 批处理改 GBK 验收
+
+- 现象复核：`@echo on` 追踪（`.probe/trace_cmd.py`）显示第 9 行 `rem PowerShell 会把它当成保留运算符，…` 被切成
+  `>不懂的语法错误，这里先拦下来。`，`rem` 前缀丢失后作为命令执行，触发 `not recognized`。
+- 编码对照（`.probe/enc_test.py`）：
+
+  | 方案 | 是否错位 |
+  | --- | --- |
+  | UTF-8 + `chcp 65001` | 错位 |
+  | UTF-8 无 `chcp` | 不错位（但 936 控制台下中文乱码） |
+  | GBK 无 `chcp` | 不错位，中文正常 |
+
+- 定界实验：`.probe/bisect_cmd.py` 用不同数量的 ASCII 填充行调整注释起始偏移（28–252 字节），全部正常 →
+  排除「偏移本身」是唯一因素；`.probe/bisect_cmd2.py` 对真实脚本做前缀截断，确认问题与 0.6.26 新增注释行的字节长度相关。
+- 改后验证（临时目录，`cmd //c` 实跑）：
+  - `启动.cmd` 正常启动：无任何报错输出。
+  - `启动.cmd` 遇 `<<<<<<< HEAD`：输出「脚本里残留了 Git 冲突标记（<<<<<<< HEAD），无法启动。」+ 修复命令，`not recognized` 计数 0。
+  - `启动.cmd` 缺 `.venv`：正确输出「还没有安装运行环境 / 请先双击本文件夹里的 安装.cmd」，中文按 GBK 解码完全正确。
+  - `安装.cmd` 遇冲突标记：正确拦截，未调用 `setup.ps1`。
+  - `停止.cmd`：解析无误。
+- 编码与换行：三个 `.cmd` 均为 GBK、无 `chcp`、纯 CRLF（启动 40 / 安装 24 / 停止 6 行）。
+- 回归：全量 pytest 通过；`git diff --check` 通过。

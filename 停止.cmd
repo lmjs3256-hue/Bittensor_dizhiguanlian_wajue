@@ -1,6 +1,5 @@
 @echo off
-chcp 65001 >nul
-title Bittensor åœ°å€å…³è”æŒ–æ˜ - åœæ­¢
+title Bittensor µØÖ·¹ØÁªÍÚ¾ò - Í£Ö¹
 cd /d "%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop.ps1"
 echo.

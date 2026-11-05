@@ -1,18 +1,17 @@
 @echo off
-chcp 65001 >nul
-title Bittensor åœ°å€å…³è”æŒ–æ˜ - å®‰è£…
+title Bittensor µØÖ·¹ØÁªÍÚ¾ò - °²×°
 cd /d "%~dp0"
 echo.
 echo ==========================================
-echo   Bittensor åœ°å€å…³è”æŒ–æ˜ å®‰è£…å‘å¯¼
+echo   Bittensor µØÖ·¹ØÁªÍÚ¾ò °²×°Ïòµ¼
 echo ==========================================
-rem git åˆå¹¶å†²çªæ²¡è§£å†³æ—¶ï¼Œè„šæœ¬é‡Œä¼šæ®‹ç•™å†²çªæ ‡è®°ï¼ˆä¸€æ’å°äºå·åŠ  HEADï¼‰ã€‚
-rem PowerShell åªä¼šæŠ¥ã€Œå°äºå·æ˜¯ä¿ç•™è¿ç®—ç¬¦ã€è¿™ç§çœ‹ä¸æ‡‚çš„é”™è¯¯ï¼Œè¿™é‡Œå…ˆæ‹¦ä¸‹æ¥ã€‚
+rem Unresolved git merge leaves conflict markers (a run of '<' plus HEAD)
+rem in .ps1, which breaks parsing. Catch it here first.
 findstr /m /c:"<<<<" "%~dp0*.ps1" >nul 2>&1
 if errorlevel 1 goto scripts_ok
 echo.
-echo [!] è„šæœ¬é‡Œæ®‹ç•™äº† Git å†²çªæ ‡è®°ï¼ˆ^<^<^<^<^<^<^< HEADï¼‰ï¼Œå®‰è£…æ— æ³•ç»§ç»­ã€‚
-echo     åœ¨æœ¬æ–‡ä»¶å¤¹æ‰“å¼€å‘½ä»¤è¡Œï¼Œæ‰§è¡Œï¼š
+echo [!] ½Å±¾Àï²ĞÁôÁË Git ³åÍ»±ê¼Ç£¨^<^<^<^<^<^<^< HEAD£©£¬°²×°ÎŞ·¨¼ÌĞø¡£
+echo     ÔÚ±¾ÎÄ¼ş¼Ğ´ò¿ªÃüÁîĞĞ£¬Ö´ĞĞ£º
 echo         git status
 echo         git checkout origin/main -- *.ps1
 echo.

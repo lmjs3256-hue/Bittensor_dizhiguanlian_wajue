@@ -1,23 +1,22 @@
 @echo off
-chcp 65001 >nul
-title Bittensor åœ°å€å…³è”æŒ–æ˜
+title Bittensor µØÖ·¹ØÁªÍÚ¾ò
 cd /d "%~dp0"
-rem å¯é€‰å‚æ•°ï¼šç¬¬ä¸€ä¸ªå‚æ•°æ˜¯ç«¯å£ï¼Œä¾‹å¦‚ï¼šå¯åŠ¨.cmd 8767ï¼›ä¸å¡«é»˜è®¤ 8766ã€‚
+rem Optional: first argument is the port, e.g. 8767. Default 8766.
 set "WL_PORT=%~1"
 if "%WL_PORT%"=="" set "WL_PORT=8766"
-rem git åˆå¹¶å¦‚æœæ²¡è§£å†³å†²çªï¼Œè„šæœ¬é‡Œä¼šæ®‹ç•™å†²çªæ ‡è®°ï¼ˆä¸€æ’å°äºå·åŠ  HEADï¼‰ã€‚
-rem PowerShell ä¼šæŠŠå®ƒå½“æˆä¿ç•™è¿ç®—ç¬¦ï¼ŒæŠ¥ä¸€å †çœ‹ä¸æ‡‚çš„è¯­æ³•é”™è¯¯ï¼Œè¿™é‡Œå…ˆæ‹¦ä¸‹æ¥ã€‚
+rem If a git merge left conflict markers (a run of '<' plus HEAD) in a .ps1,
+rem cmd would fail with a confusing syntax error. Catch it here first.
 findstr /m /c:"<<<<" "%~dp0*.ps1" >nul 2>&1
 if errorlevel 1 goto scripts_ok
 echo.
-echo [!] è„šæœ¬é‡Œæ®‹ç•™äº† Git å†²çªæ ‡è®°ï¼ˆ^<^<^<^<^<^<^< HEADï¼‰ï¼Œæ— æ³•å¯åŠ¨ã€‚
-echo     é€šå¸¸æ˜¯åœ¨è¿™å°ç”µè„‘ä¸Š git pull æ—¶ start.ps1 æœ‰æœ¬åœ°æ”¹åŠ¨ã€å†²çªæ²¡è§£å†³ã€‚
+echo [!] ½Å±¾Àï²ĞÁôÁË Git ³åÍ»±ê¼Ç£¨^<^<^<^<^<^<^< HEAD£©£¬ÎŞ·¨Æô¶¯¡£
+echo     Í¨³£ÊÇÔÚÕâÌ¨µçÄÔÉÏ git pull Ê± start.ps1 ÓĞ±¾µØ¸Ä¶¯¡¢³åÍ»Ã»½â¾ö¡£
 echo.
-echo     åœ¨æœ¬æ–‡ä»¶å¤¹æ‰“å¼€å‘½ä»¤è¡Œï¼Œæ‰§è¡Œä¸‹é¢ä¸¤æ¡å°±èƒ½ä¿®å¥½ï¼š
+echo     ÔÚ±¾ÎÄ¼ş¼Ğ´ò¿ªÃüÁîĞĞ£¬Ö´ĞĞÏÂÃæÁ½Ìõ¾ÍÄÜĞŞºÃ£º
 echo         git status
 echo         git checkout origin/main -- start.ps1 launch_desktop.ps1
 echo.
-echo     å¦‚æœ git status æ˜¾ç¤ºè¿˜æœ‰åˆ«çš„å†²çªæ–‡ä»¶ï¼ŒæŠŠå®ƒä»¬ä¸€èµ·åŠ è¿›ä¸Šé¢ç¬¬äºŒæ¡å‘½ä»¤ã€‚
+echo     Èç¹û git status ÏÔÊ¾»¹ÓĞ±ğµÄ³åÍ»ÎÄ¼ş£¬°ÑËüÃÇÒ»Æğ¼Ó½øÉÏÃæµÚ¶şÌõÃüÁî¡£
 echo.
 pause
 exit /b 1
@@ -25,8 +24,8 @@ exit /b 1
 
 if not exist "%~dp0.venv\Scripts\python.exe" (
   echo.
-  echo [!] è¿˜æ²¡æœ‰å®‰è£…è¿è¡Œç¯å¢ƒã€‚
-  echo     è¯·å…ˆåŒå‡»æœ¬æ–‡ä»¶å¤¹é‡Œçš„ å®‰è£….cmd ï¼Œè£…å®Œå†å¯åŠ¨ã€‚
+  echo [!] »¹Ã»ÓĞ°²×°ÔËĞĞ»·¾³¡£
+  echo     ÇëÏÈË«»÷±¾ÎÄ¼ş¼ĞÀïµÄ °²×°.cmd £¬×°ÍêÔÙÆô¶¯¡£
   echo.
   pause
   exit /b 1
@@ -34,8 +33,8 @@ if not exist "%~dp0.venv\Scripts\python.exe" (
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch_desktop.ps1" -Port %WL_PORT%
 if errorlevel 1 (
   echo.
-  echo [!] å¯åŠ¨å¤±è´¥ã€‚å¯ä»¥åŒå‡» åœæ­¢.cmd æ¸…ç†åé‡è¯•ï¼Œ
-  echo     æˆ–æŸ¥çœ‹ logs\wallet-link.stderr.log é‡Œçš„é”™è¯¯ä¿¡æ¯ã€‚
+  echo [!] Æô¶¯Ê§°Ü¡£¿ÉÒÔË«»÷ Í£Ö¹.cmd ÇåÀíºóÖØÊÔ£¬
+  echo     »ò²é¿´ logs\wallet-link.stderr.log ÀïµÄ´íÎóĞÅÏ¢¡£
   echo.
   pause
 )
