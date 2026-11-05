@@ -61,7 +61,40 @@ button.refresh-result-btn.is-armed:not(:disabled)::after { content:""; position:
 @keyframes refreshPulse { 0%,100% { opacity:.9; transform:scale(1); } 50% { opacity:0; transform:scale(1.07); } }
 @media (prefers-reduced-motion: reduce) { button.refresh-result-btn { transition:none; } button.refresh-result-btn.is-armed:not(:disabled)::after { animation:none; opacity:.9; } }
 @media (max-width:560px) { .related-toolbar { justify-content:flex-start; } button.refresh-result-btn { width:100%; justify-content:center; } }
- /* 结果区筛选组：层级 + 金额，横向排得下时不换行，窄屏自动折行。 */
+
+/* ---- 地址关联明细检索（0.6.25） ------------------------------------------ */
+.interlink-panel .section-title small { color:var(--muted); font-size:12px; line-height:1.6; max-width:640px; text-align:right; }
+.interlink-form { display:grid; grid-template-columns:minmax(240px,2.2fr) minmax(120px,1fr) minmax(170px,1.4fr) minmax(100px,1fr) minmax(90px,.9fr) minmax(80px,.8fr) auto; gap:12px; align-items:end; }
+.interlink-form label { min-width:0; }
+.interlink-run { min-width:118px; }
+.interlink-hint { display:block; color:var(--muted); font-size:12px; line-height:1.6; margin-top:10px; }
+.interlink-result { margin-top:16px; display:grid; gap:16px; }
+.interlink-result.hidden { display:none; }
+.interlink-stats { display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; padding:11px 14px; border:1px solid var(--line); border-radius:11px; background:var(--bg); font-size:12px; color:var(--muted); }
+.interlink-stats b { color:var(--ink); font-family:var(--mono); font-size:14px; }
+.interlink-notes { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
+.interlink-notes li { font-size:12px; color:var(--muted); line-height:1.6; padding-left:14px; position:relative; }
+.interlink-notes li::before { content:"·"; position:absolute; left:4px; color:var(--accent); font-weight:700; }
+.interlink-block { display:grid; gap:9px; }
+.interlink-block h4 { margin:0; font-size:13px; letter-spacing:.3px; color:var(--ink); }
+.interlink-block h4 span { color:var(--muted); font-weight:400; font-size:12px; margin-left:6px; }
+.interlink-empty { font-size:13px; color:var(--muted); line-height:1.7; padding:13px 15px; border:1px dashed var(--line); border-radius:11px; }
+.interlink-path { border:1px solid var(--line); border-radius:12px; padding:13px 15px; background:var(--bg); }
+.interlink-path + .interlink-path { margin-top:10px; }
+.interlink-path-chain { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:12px; }
+.interlink-node { display:inline-flex; flex-direction:column; gap:2px; border:1px solid var(--line); border-radius:9px; background:var(--panel); padding:6px 9px; }
+.interlink-node code { font-family:var(--mono); font-size:12px; color:var(--ink); }
+.interlink-node small { color:var(--muted); font-size:10.5px; }
+.interlink-step { display:flex; flex-direction:column; align-items:center; gap:1px; color:var(--muted); font-size:11px; }
+.interlink-step b { color:var(--ink); font-family:var(--mono); font-size:12px; }
+.interlink-table { width:100%; }
+.interlink-table td.mono { font-family:var(--mono); font-size:11.5px; }
+.interlink-table .copy-address { margin-left:8px; }
+.interlink-dir-out { color:var(--danger); font-weight:700; }
+.interlink-dir-in { color:var(--accent); font-weight:700; }
+@media (max-width:1100px) { .interlink-form { grid-template-columns:1fr 1fr; } .interlink-run { grid-column:span 2; } .interlink-panel .section-title small { text-align:left; } }
+@media (max-width:560px) { .interlink-form { grid-template-columns:1fr; } .interlink-run { grid-column:span 1; } }
+/* 结果区筛选组：层级 + 金额，横向排得下时不换行，窄屏自动折行。 */
  .result-filters { display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
  .result-filter.amount-filter { gap:6px; }
  .result-filter.amount-filter input { width:92px; padding:7px 9px; }

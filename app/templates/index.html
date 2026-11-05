@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.6.29">
+  <link rel="stylesheet" href="/static/styles.css?v=0.6.30">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -119,6 +119,21 @@
           <div><span class="label">KNOWN ADDRESS LIBRARY</span><h2>地址库</h2><p>分类记录这个地址“是谁”：预置「大V / 群友 / 其他 / 系统」，可自行新增（例如项目方、做市商）。同一个地址可以同时属于多个分类，明细里点「改分类」随时调整；「系统」分类和交易所一样可以过滤，查到即作为关联终点不再向下扩展。EXCHANGE（交易所）和 VALIDATOR（验证者）是系统专用分类，只由“确认交易所”操作或官方名单产生，不参与人工选分类。</p></div>
           <div class="inline-form"><label>名称<input id="lib-label" placeholder="留空用地址后四位"></label><label>分类<select id="lib-category" data-category-select aria-label="地址分类"></select></label><label>地址<input id="lib-address" placeholder="SS58 地址" spellcheck="false"></label><label>备注<input id="lib-note" placeholder="可选备注"></label><button class="secondary" id="add-address">添加地址</button><button class="primary" id="choose-file">导入文件</button><button class="secondary" id="sync-exchanges">同步官方交易所地址</button><input type="file" id="library-file" accept=".txt,.csv,.json" hidden></div>
         </section>
+        <section class="panel interlink-panel">
+          <div class="section-title"><div><h3>地址关联明细检索</h3><span class="tag">地址 × 地址库 / 地址 × 地址</span></div><small>查两个地址之间到底有没有发生过转账：选一个地址库，就找出地址 A 和库里哪些地址有往来；填第二个地址，就直接查 A 与 B 之间的转账，没有直连时继续顺着双方的流水找中间地址，拼出关联链路。</small></div>
+          <div class="interlink-form">
+            <label class="interlink-source-field">地址 A<input id="interlink-source" placeholder="SS58 地址" autocomplete="off" spellcheck="false" aria-label="起始地址"></label>
+            <label>比什么<select id="interlink-mode" aria-label="检索方式"><option value="group" selected>和地址库比</option><option value="address">和另一个地址比</option></select></label>
+            <label id="interlink-group-field">地址库 / 标签组<select id="interlink-group" aria-label="选择要对比的地址库"></select></label>
+            <label id="interlink-target-field" class="hidden">地址 B<input id="interlink-target" placeholder="SS58 地址" autocomplete="off" spellcheck="false" aria-label="第二个地址"></label>
+            <label>最多跳数<select id="interlink-hops" aria-label="最多经过几个中间地址"><option value="2">中间 1 个地址</option><option value="3" selected>中间最多 2 个地址</option></select></label>
+            <label>最低 TAO<input id="interlink-min-tao" value="0" inputmode="decimal" aria-label="最低转账金额"></label>
+            <label>翻页上限<input id="interlink-max-pages" type="number" min="1" max="20" value="3" inputmode="numeric" aria-label="Taostats 最多翻几页"></label>
+            <button class="primary interlink-run" id="run-interlink" type="button">开始检索</button>
+          </div>
+          <small class="interlink-hint" id="interlink-hint">数据来源：本地索引 + Taostats（from / to 精确匹配）。Taostats 有本机限速（5 次请求 / 分钟），预算用完会先返回已查到的部分，等一分钟再点一次可以接着查。</small>
+          <div id="interlink-result" class="interlink-result hidden"></div>
+        </section>
         <section class="panel category-panel"><div class="section-title"><div><h3>分类</h3><span class="tag" id="category-count">-</span></div><small>下拉里选「＋ 新建分类…」即可就地新增；删除自建分类时，该分类下的地址会自动回到“其他”，地址本身不会删除。</small></div><div id="category-list" class="category-list"></div><div class="category-add"><label>新增分类<input id="new-category-name" maxlength="12" placeholder="例如：项目方、做市商" autocomplete="off"></label><button class="secondary" id="add-category" type="button">添加分类</button></div></section>
         <section class="panel book-panel"><div class="section-title"><div><h3>自建地址库</h3><span class="tag" id="book-count">0 个</span></div><small>由查询结果“新建地址库并导入”生成，外发包自带的预置地址库（app/seed_books 里的文件名即组名）也会出现在这里；解散会连同库里的地址一起删除，误删可点「撤回上次导入」连库带地址恢复。</small></div><div id="book-list" class="book-list"><div class="placeholder">还没有自建地址库。完成一次关联查询后，在结果区填写库名即可创建。</div></div></section>
         <section class="panel"><div class="section-title"><div><h3>地址库清单</h3><span class="tag" id="library-count">0 条</span></div><div class="library-actions"><label class="book-filter-control">地址库<select id="book-filter" aria-label="按地址库筛选"><option value="">全部地址库</option></select></label><button class="secondary" id="undo-last-import" type="button" title="撤回上一次批量导入：删除新导入的地址，并还原被改写的记录">撤回上次导入</button><button class="secondary" id="reinstall-seed-books" type="button" title="重新导入外发包预置地址库：把预置组里地址库中缺失的地址补回来（已存在的跳过，不覆盖人工改动）">重新导入预置库</button><button class="secondary" id="merge-groups" type="button" title="把几个交叉命中的地址库/标签组合并成一个库，可起新名字或沿用其中一个组名">合并群组</button><button class="secondary" id="export-library-csv" type="button">导出 CSV</button><button class="secondary" id="export-library-json" type="button">导出 JSON</button><label class="select-all-control"><input type="checkbox" id="select-all-addresses" aria-label="全选地址">全选</label><button class="danger" id="delete-selected" disabled>删除所选 (0)</button></div></div><div id="merge-panel" class="merge-panel hidden"></div>
@@ -160,6 +175,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.6.29"></script>
+  <script src="/static/app.js?v=0.6.30"></script>
 </body>
 </html>

@@ -388,3 +388,22 @@ Set-Location G:\bittensor-wallet-link-intel
   - `@media (prefers-reduced-motion: reduce)` 关动画保留静态外圈；`@media (max-width:560px)` 按钮 `width:100%`、与筛选组换行。
 - 测试：`tests/test_version.py` 改为从 `VERSION` 文件读当前版本（原来硬编码 "0.6.23"，每次升版都要改）；全量 **158 passed**。
 - 探针 `.probe/ui_check_0625.py`：1422px 下 `#refresh-result` 在 `.related-panel` 内、不在 `.actions`、15px/46px 高、与筛选项同排、面板内无溢出；移除一条后文案「刷新结果（已移除 1）」、`is-armed` 为真；`Input.dispatchMouseEvent` 按住时 `transform: translateY(4px)`、`boxShadow` 为 `inset 0 3px 9px rgba(0,0,0,.42)`；420px 下按钮 337px 宽独占一行（`setDeviceMetricsOverride` 需要 `mobile=True` 才会生效，否则 `innerWidth` 不变）。截图 `.probe/71_refresh_button.png`、`72_refresh_pressed.png`、`73_refresh_narrow.png`。
+
+## 29. 2026-11-05 0.6.25 交接：地址关联明细检索
+
+- 需求：在已知地址库里查「地址 A 与 6NCK 组里哪个地址发生过交易」并看明细；也支持输入两个地址，查它们之间的关联链条。
+- 数据现实：本地 `transfers` 只有 34 条（覆盖 9430401–9433299，约几小时），历史明细必须走 Taostats。官方文档确认 `/v1/transfers` 支持 `from` / `to` 精确匹配（还有 `address` 双向匹配、`amount_min`、`timestamp_start` 等），因此「双地址直连」只要 2 次请求就能拿全。
+- `app/taostats.py`：`get_transfer_page(address, page)` 改为薄封装，新增 `get_transfer_page_query(address=…, from_address=…, to_address=…, page, limit)`；`TransferPage` 增补 `total_items` / `total_pages` / `per_page`（都有默认值，旧调用不受影响）；缓存 key 改为 `(address, from, to, page, limit)`。
+- 新模块 `app/interlink.py`：
+  - `InterlinkQuery{source, members, mode, max_hops, max_pages, min_tao, use_local, use_taostats, group_name, group_kind}`。
+  - `search()` 流程：① 本地索引查 `source` 与目标的转账（免费）；② Taostats：组模式翻 `source` 的流水按成员交集匹配，地址模式 `from/to` 精确查两个方向；③ 地址模式无直连时 `_search_paths()` 找链路。
+  - `_Fetcher` 管预算：`DEFAULT_REQUEST_BUDGET = taostats.LOCAL_REQUESTS_PER_MINUTE`（5），超出或撞限速就停，返回已查到部分并把原因写进 `stats.stop_reason` / `notes`，**不整体报错**。
+  - 链路：1 跳用双方各自一页流水的邻居交集；2 跳从 A 的邻居按金额取 `MAX_INTERMEDIATES=3` 个继续展开，与 B 的邻居求交。每跳取金额最大的一笔作为代表，并给 `evidence`（支撑笔数）。
+  - 明细统一结构：`{from,to,direction,counterparty,amount_tao,timestamp,block_number,tx_hash,extrinsic_id,edge_type,source}`；`_dedupe_key` 用 `tx_hash + block + amount + from + to` 去重，本地与 Taostats 不重复计。
+- `app/service.py`：`LinkService.interlink_search(...)`，校验 SS58、组为空 / 两地址相同 / 都没给都抛 `InputError`；结果附 `source_member`（A 自己在库里的标签）。
+- `app/main.py`：`InterlinkInput` + `POST /api/interlink`（422 走 `HTTPException`）。
+- 前端（`app/static/app.js`）：`renderInterlinkGroups()`（用 `mergeableGroups()` 口径，签名比对避免重建下拉丢焦点）、`syncInterlinkMode()`、`runInterlink()`、`renderInterlink()`（统计条 / notes / 汇总表 / 明细表 / 链路卡片 / 空态说明）、`interlinkPathCard()`。
+  - 坑：复制按钮的属性是 `data-copy-address`（不是 `data-copy`），写错点了没反应。
+- 测试：`tests/test_interlink.py` 9 例（组模式 Taostats 交集、本地索引兜底、双向直连、1 跳桥、2 跳链、min_tao 过滤、非法输入、限速优雅降级、接口层）。全量 **167 passed**。
+- 实测（真实 Taostats，1 页）：A `5HTL…RTif7` 与「6NCK」标签组（103 条，排除 A 后 102 个对比地址）命中 1 个地址 `5CPF…L5ex`，1 笔流入 5 TAO，2026-04-10 00:06:12，区块 7934019，tx `0x988f9abb14…`；地址模式查同一对，双向各 1 次请求也命中同一笔。
+- 探针 `.probe/ui_check_0626.py`：面板存在、组下拉 `6NCK（103 条）`、模式切换字段互换、检索后两张表（6 列 / 7 列）各 1 行、无横向溢出。截图 `.probe/74_interlink_panel.png`、`75_interlink_page.png`。

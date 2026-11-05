@@ -55,6 +55,9 @@ class TransferPage:
     next_page: int | None
     truncated_by_window: bool = False
     from_cache: bool = False
+    total_items: int = 0
+    total_pages: int = 0
+    per_page: int = 200
 
     @property
     def has_next(self) -> bool:
@@ -270,7 +273,25 @@ def _reserve_request() -> None:
 
 
 def get_transfer_page(address: str, page: int = 1) -> TransferPage:
-    key = (address, page)
+    return get_transfer_page_query(address=address, page=page)
+
+
+def get_transfer_page_query(
+    *,
+    address: str | None = None,
+    from_address: str | None = None,
+    to_address: str | None = None,
+    page: int = 1,
+    limit: int = 200,
+) -> TransferPage:
+    """按地址 / 精确发送方 / 精确接收方取一页转账。
+
+    `from_address` + `to_address` 同时给，就是"这两个地址之间的直接转账"，
+    服务端精确匹配，不受分页窗口的干扰——两地址关联检索靠它拿明细。
+    """
+    if not (address or from_address or to_address):
+        raise ValueError("address、from_address、to_address 至少要给一个")
+    key = (address or "", from_address or "", to_address or "", page, limit)
     now = time.monotonic()
     with _lock:
         cached = _cache.get(key)
@@ -281,6 +302,9 @@ def get_transfer_page(address: str, page: int = 1) -> TransferPage:
                 value.next_page,
                 truncated_by_window=value.truncated_by_window,
                 from_cache=True,
+                total_items=value.total_items,
+                total_pages=value.total_pages,
+                per_page=value.per_page,
             )
         if cached:
             _cache.pop(key, None)
@@ -291,11 +315,19 @@ def get_transfer_page(address: str, page: int = 1) -> TransferPage:
             "未配置 Taostats API key。请在页面中的 Taostats 设置里填写并保存。"
         )
 
+    params: dict[str, Any] = {"network": "finney", "page": page, "limit": limit}
+    if address:
+        params["address"] = address
+    if from_address:
+        params["from"] = from_address
+    if to_address:
+        params["to"] = to_address
+
     _reserve_request()
     try:
         response = httpx.get(
             API_URL,
-            params={"network": "finney", "address": address, "page": page, "limit": 200},
+            params=params,
             headers={"Authorization": api_key},
             timeout=20,
         )
@@ -345,6 +377,9 @@ def get_transfer_page(address: str, page: int = 1) -> TransferPage:
             rows=rows,
             next_page=next_page,
             truncated_by_window=truncated_by_window,
+            total_items=total_items,
+            total_pages=total_pages,
+            per_page=per_page,
         )
     except (ValueError, KeyError, TypeError) as exc:
         raise TaostatsUnavailableError("Taostats 返回了无法识别的响应格式。") from exc

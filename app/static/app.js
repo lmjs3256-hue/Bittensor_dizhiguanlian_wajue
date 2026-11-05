@@ -1250,7 +1250,224 @@ function renderLibraryList() {
     : `${total} 条`;
   $("#library-table").innerHTML = libraryTable(rows);
   renderMergePanel();
+  renderInterlinkGroups();
   updateLibrarySelection();
+}
+
+
+// -- 地址关联明细检索（0.6.25） -------------------------------------------
+// 两种用法共用一套表单：选地址库 = 找 A 和库里哪些地址有往来；
+// 填第二个地址 = 查 A、B 之间的直接转账，没有直连就顺着流水找中间地址。
+function interlinkSignature() {
+  return mergeableGroups()
+    .map((group) => `${group.kind}:${group.name}:${group.count}`)
+    .join("|");
+}
+
+function renderInterlinkGroups() {
+  const select = $("#interlink-group");
+  if (!select) return;
+  const signature = interlinkSignature();
+  if (select.dataset.signature === signature) return;
+  const groups = mergeableGroups();
+  const previous = select.value;
+  select.dataset.signature = signature;
+  if (!groups.length) {
+    select.innerHTML = `<option value="">地址库里还没有分组</option>`;
+    return;
+  }
+  select.innerHTML = groups
+    .map((group) => `<option value="${esc(mergeKey(group.kind, group.name))}">${esc(group.name)}（${group.count} 条）</option>`)
+    .join("");
+  if (groups.some((group) => mergeKey(group.kind, group.name) === previous)) {
+    select.value = previous;
+  }
+}
+
+function syncInterlinkMode() {
+  const mode = $("#interlink-mode")?.value || "group";
+  $("#interlink-group-field")?.classList.toggle("hidden", mode !== "group");
+  $("#interlink-target-field")?.classList.toggle("hidden", mode !== "address");
+}
+
+function interlinkTime(value) {
+  const text = String(value || "");
+  if (!text) return "-";
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text;
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function interlinkAmount(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "0";
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 4 }).format(parsed);
+}
+
+function interlinkMemberLabel(address) {
+  const row = state.library.find((item) => item.address === address);
+  if (!row) return "";
+  const group = row.book || (row.label_custom ? row.label : "") || categoryLabel(row.category);
+  return group ? `${group}` : "";
+}
+
+function interlinkSummaryTable(rows) {
+  const body = rows
+    .map(
+      (row) => `<tr>
+        <td><code>${esc(shortAddr(row.address))}</code><button class="ghost copy-address" type="button" data-copy-address="${esc(row.address)}" title="复制完整地址">复制</button></td>
+        <td>${esc(row.label || "—")}${row.group && row.group !== row.label ? ` <small>${esc(row.group)}</small>` : ""}</td>
+        <td class="interlink-dir-in">${interlinkAmount(row.in_tao)}</td>
+        <td class="interlink-dir-out">${interlinkAmount(row.out_tao)}</td>
+        <td>${number(row.tx_count)}</td>
+        <td class="mono">${esc(interlinkTime(row.last_seen))}</td>
+      </tr>`
+    )
+    .join("");
+  return `<table class="interlink-table"><thead><tr><th>地址</th><th>标签</th><th>流入 TAO</th><th>流出 TAO</th><th>笔数</th><th>最近一次</th></tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function interlinkTxTable(rows) {
+  const body = rows
+    .map((tx) => {
+      const out = tx.direction === "out";
+      const arrow = out ? "流出 →" : "← 流入";
+      return `<tr>
+        <td class="mono">${esc(interlinkTime(tx.timestamp))}</td>
+        <td class="${out ? "interlink-dir-out" : "interlink-dir-in"}">${arrow}</td>
+        <td><code>${esc(shortAddr(tx.counterparty))}</code>${interlinkMemberLabel(tx.counterparty) ? ` <small>${esc(interlinkMemberLabel(tx.counterparty))}</small>` : ""}</td>
+        <td class="mono">${interlinkAmount(tx.amount_tao)}</td>
+        <td class="mono">${number(tx.block_number || 0)}</td>
+        <td class="mono">${tx.tx_hash ? esc(`${String(tx.tx_hash).slice(0, 12)}…`) : "—"}</td>
+        <td>${tx.source === "local" ? "本地" : "Taostats"}</td>
+      </tr>`;
+    })
+    .join("");
+  return `<table class="interlink-table"><thead><tr><th>时间</th><th>方向</th><th>对手地址</th><th>金额 TAO</th><th>区块</th><th>交易哈希</th><th>来源</th></tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function interlinkPathCard(path) {
+  const nodes = path.nodes || [];
+  const steps = path.steps || [];
+  const chain = [];
+  nodes.forEach((node, index) => {
+    const group = interlinkMemberLabel(node);
+    chain.push(
+      `<span class="interlink-node"><code>${esc(shortAddr(node))}</code>${group ? `<small>${esc(group)}</small>` : ""}</span>`
+    );
+    const step = steps[index];
+    if (!step) return;
+    const forward = step.from === node;
+    chain.push(
+      `<span class="interlink-step"><span>${forward ? "→" : "←"}</span><b>${interlinkAmount(step.amount_tao)}</b><span>${esc(interlinkTime(step.timestamp))}</span></span>`
+    );
+  });
+  return `<div class="interlink-path"><div class="interlink-path-chain">${chain.join("")}</div></div>`;
+}
+
+function renderInterlink(data) {
+  const box = $("#interlink-result");
+  if (!box) return;
+  const stats = data.stats || {};
+  const transactions = data.transactions || [];
+  const summary = data.summary || [];
+  const paths = data.paths || [];
+  const notes = data.notes || [];
+  const parts = [];
+
+  const cacheNote = stats.cached ? `，缓存命中 ${stats.cached} 次` : "";
+  parts.push(`<div class="interlink-stats">
+      <span>命中地址 <b>${number(data.matched_addresses || 0)}</b></span>
+      <span>转账明细 <b>${number(transactions.length)}</b></span>
+      ${paths.length ? `<span>关联链路 <b>${number(paths.length)}</b></span>` : ""}
+      <span>请求 <b>${number(stats.requests || 0)}</b>${cacheNote}</span>
+      <span>${stats.truncated ? "结果可能不完整（预算 / 限速）" : "已查完当前范围"}</span>
+      <span>对比地址 <b>${number(stats.target_count || 0)}</b></span>
+    </div>`);
+
+  if (notes.length) {
+    parts.push(`<ul class="interlink-notes">${notes.map((note) => `<li>${esc(note)}</li>`).join("")}</ul>`);
+  }
+
+  if (summary.length) {
+    parts.push(`<div class="interlink-block"><h4>有往来的地址<span>按往来金额排序</span></h4>${interlinkSummaryTable(summary)}</div>`);
+  }
+  if (transactions.length) {
+    parts.push(`<div class="interlink-block"><h4>转账明细<span>共 ${number(transactions.length)} 笔，按时间倒序</span></h4>${interlinkTxTable(transactions)}</div>`);
+  }
+  if (paths.length) {
+    parts.push(
+      `<div class="interlink-block"><h4>关联链路<span>没有直接转账，以下是经过中间地址的路径</span></h4>${paths.map(interlinkPathCard).join("")}</div>`
+    );
+  }
+  if (!summary.length && !paths.length) {
+    const mode = data.mode === "group" ? "这个地址和该地址库" : "这两个地址";
+    parts.push(
+      `<div class="interlink-empty">在已查到的范围内，${mode}之间没有发现转账。<br>可以调高「翻页上限」再查一次（会多消耗几次 Taostats 请求），或确认两个地址是否真的有过直接往来。</div>`
+    );
+  }
+  box.innerHTML = parts.join("");
+  box.classList.remove("hidden");
+}
+
+async function runInterlink() {
+  const button = $("#run-interlink");
+  if (!button || button.disabled) return;
+  const mode = $("#interlink-mode").value;
+  const source = $("#interlink-source").value.trim();
+  if (!source) {
+    toast("先填写地址 A。", true);
+    $("#interlink-source").focus();
+    return;
+  }
+  const payload = {
+    source,
+    max_hops: Number($("#interlink-hops").value) || 3,
+    max_pages: Math.min(20, Math.max(1, Number($("#interlink-max-pages").value) || 3)),
+    min_tao: Math.max(0, Number($("#interlink-min-tao").value) || 0),
+    use_local: true,
+    use_taostats: true,
+  };
+  if (mode === "group") {
+    const value = $("#interlink-group").value;
+    if (!value) {
+      toast("地址库里还没有可选的分组。", true);
+      return;
+    }
+    const index = value.indexOf(":");
+    payload.group_kind = value.slice(0, index);
+    payload.group_name = value.slice(index + 1);
+  } else {
+    const target = $("#interlink-target").value.trim();
+    if (!target) {
+      toast("填写地址 B，或者把「比什么」切回地址库。", true);
+      $("#interlink-target").focus();
+      return;
+    }
+    payload.target = target;
+  }
+
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "检索中…";
+  try {
+    const response = await fetch("/api/interlink", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "检索失败");
+    renderInterlink(data);
+    if (!(data.transactions || []).length && !(data.paths || []).length) {
+      toast("没有查到转账；看结果区的说明调整设置。", false);
+    }
+  } catch (error) {
+    toast(String(error.message || error), true);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
 }
 
 // -- 合并群组 --------------------------------------------------------------
@@ -2755,6 +2972,9 @@ $("#book-name").addEventListener("keydown", (event) => {
   if (event.key === "Enter") createBookFromResult();
 });
 $("#book-filter").addEventListener("change", (event) => selectBook(event.target.value));
+$("#run-interlink").addEventListener("click", runInterlink);
+$("#interlink-mode").addEventListener("change", syncInterlinkMode);
+syncInterlinkMode();
 $("#refresh-history").addEventListener("click", () => loadHistory(state.history.offset));
 $("#clear-history").addEventListener("click", clearHistory);
 $("#history-prev").addEventListener("click", () => loadHistory(Math.max(0, state.history.offset - HISTORY_PAGE_SIZE)));

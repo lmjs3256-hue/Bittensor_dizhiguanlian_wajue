@@ -34,6 +34,7 @@ from .db import (
     utcnow,
 )
 from . import license as license_mod
+from . import interlink
 from .inputs import InputError, parse_plain_addresses, read_addresses
 from .relation import discover, exchange_balance_candidates
 from .relation_config import LibraryEntry, LinkPolicy
@@ -1401,6 +1402,75 @@ class LinkService:
             return
         top = db.scalar(select(func.max(AddressCategory.sort_order))) or 0
         db.add(AddressCategory(name=name[:CATEGORY_NAME_MAX_LENGTH], sort_order=int(top) + 1))
+
+    def interlink_search(
+        self,
+        *,
+        source: str,
+        target: str = "",
+        group_kind: str = "",
+        group_name: str = "",
+        max_hops: int = 3,
+        max_pages: int = 3,
+        min_tao: float = 0.0,
+        use_local: bool = True,
+        use_taostats: bool = True,
+    ) -> dict[str, Any]:
+        """两个地址之间（或地址与整个地址库之间）的转账明细检索。
+
+        ``group_name`` 优先：给了它就走「地址 × 地址库」，否则用 ``target``
+        走「地址 × 地址」，后者在没有直连时会尝试拼中间链路。
+        """
+        source = (source or "").strip()
+        if not is_valid_ss58(source):
+            raise InputError("起始地址不是合法的 SS58 地址")
+        target = (target or "").strip()
+        group_name = (group_name or "").strip()
+
+        mode = "address"
+        if group_name:
+            mode = "group"
+            kind = "book" if group_kind == "book" else "label"
+            members = interlink.group_members(
+                self.database, kind=kind, name=group_name, exclude=source
+            )
+            if not members:
+                raise InputError(f"「{group_name}」里没有可检索的其他地址")
+        elif target:
+            if not is_valid_ss58(target):
+                raise InputError("第二个地址不是合法的 SS58 地址")
+            if target == source:
+                raise InputError("两个地址相同，无法检索")
+            members = [interlink.Member(address=target)]
+        else:
+            raise InputError("请选择一个地址库，或填写第二个地址")
+
+        query = interlink.InterlinkQuery(
+            source=source,
+            members=members,
+            mode=mode,
+            max_hops=max(1, min(3, int(max_hops or 3))),
+            max_pages=max(1, min(20, int(max_pages or 3))),
+            min_tao=max(0.0, float(min_tao or 0.0)),
+            use_local=bool(use_local),
+            use_taostats=bool(use_taostats),
+            group_name=group_name,
+            group_kind="book" if group_kind == "book" else ("label" if group_name else ""),
+        )
+        result = interlink.search(self.database, query)
+        # 把起始地址自己在地址库里的标签带上，方便界面上认人。
+        with self.database.session() as db:
+            row = db.scalar(
+                select(AddressLibrary).where(AddressLibrary.address == source)
+            )
+            if row is not None:
+                result["source_member"] = {
+                    "address": row.address,
+                    "label": row.label or "",
+                    "group": row.book or row.label or "",
+                    "category": row.category or "",
+                }
+        return result
 
     def library(self) -> list[dict[str, Any]]:
         order = {item["name"]: item["sort_order"] for item in self.categories()}

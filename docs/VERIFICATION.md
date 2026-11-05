@@ -301,3 +301,14 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
   - 纠正记录：`Emulation.setDeviceMetricsOverride` 必须带 `mobile=True` 才会改变 `innerWidth`，否则仍是 1422px，窄屏断言会假通过。
 - 截图：`.probe/71_refresh_button.png`（默认态）、`72_refresh_pressed.png`（按住态）、`73_refresh_narrow.png`（420px）。
 - 回归：`node --check app/static/app.js`、`git diff --check` 通过。
+
+## 2026-11-05 0.6.25 地址关联明细检索验收
+
+- 全量 pytest：`167 passed, 1 warning`（新增 `tests/test_interlink.py` 9 例，Taostats 全程 mock）。
+- 真实接口（本机 key，1 页 = 1 次请求）：
+  - 组模式 `source=5HTL…RTif7`、`group_kind=label`、`group_name=6NCK`：`target_count=102`（组内 103 条排除 A 自身），命中 1 个地址 `5CPF…L5ex`，`in_tao=5.0`、`tx_count=1`、`last_seen=2026-04-10T00:06:12Z`，明细区块 7934019、tx `0x988f9abb14…`。
+  - 地址模式同一对：`requests=2`（双向 from/to 精确查），同样命中 1 笔流入 5 TAO，说明两种口径一致。
+  - 首轮曾出现一次 `SSL: UNEXPECTED_EOF_WHILE_READING`（本机代理抖动），重试即成功；该情况已按「优雅降级」处理：`stats.stop_reason=error:…`，不抛 500。
+- 探针 `.probe/ui_check_0626.py`（1440×1200）：面板在地址库页顶部；组下拉首项 `6NCK（103 条）`；切到「和另一个地址比」时组字段隐藏、地址 B 字段显示；检索后统计条「命中地址 1 / 转账明细 1 / 请求 0，缓存命中 1 次 / 已查完当前范围 / 对比地址 102」，汇总表 6 列 1 行、明细表 7 列 1 行，面板内右侧余量 -24px（无横向溢出）。
+- 截图：`.probe/74_interlink_panel.png`（面板）、`75_interlink_page.png`（整页位置）。
+- 回归：`node --check app/static/app.js`、`git diff --check` 通过。

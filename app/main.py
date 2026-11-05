@@ -210,6 +210,20 @@ class MergeGroupsInput(BaseModel):
     target: str = Field(min_length=1, max_length=60)
 
 
+class InterlinkInput(BaseModel):
+    """地址 × 地址库 / 地址 × 地址 的转账明细检索。"""
+
+    source: str = Field(min_length=1, max_length=64)
+    target: str = Field(default="", max_length=64)
+    group_kind: str = Field(default="", max_length=8)
+    group_name: str = Field(default="", max_length=160)
+    max_hops: int = Field(default=3, ge=1, le=3)
+    max_pages: int = Field(default=3, ge=1, le=20)
+    min_tao: float = Field(default=0.0, ge=0)
+    use_local: bool = True
+    use_taostats: bool = True
+
+
 class AddressNoteInput(BaseModel):
     address: str = Field(min_length=1, max_length=64)
     note: str = Field(default="", max_length=2000)
@@ -395,6 +409,28 @@ def create_address(payload: AddressInput, svc: Annotated[LinkService, Depends(se
     if not payload.address.strip():
         raise HTTPException(422, "address must not be blank")
     return svc.import_rows([payload.model_dump()], "manual")
+
+
+@app.post("/api/interlink")
+def interlink_search(
+    payload: InterlinkInput, svc: Annotated[LinkService, Depends(service)]
+):
+    """查两个地址（或一个地址和整个地址库）之间的转账明细与中间链路。"""
+
+    try:
+        return svc.interlink_search(
+            source=payload.source,
+            target=payload.target,
+            group_kind=payload.group_kind,
+            group_name=payload.group_name,
+            max_hops=payload.max_hops,
+            max_pages=payload.max_pages,
+            min_tao=payload.min_tao,
+            use_local=payload.use_local,
+            use_taostats=payload.use_taostats,
+        )
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/api/library/books")
