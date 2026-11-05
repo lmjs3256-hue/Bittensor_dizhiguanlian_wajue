@@ -1,15 +1,21 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.version_info import read_version_info
 
+ROOT = Path(__file__).resolve().parents[1]
+CURRENT = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+
 
 def test_version_info_reads_current_version_and_release_notes():
     info = read_version_info()
 
-    assert info["version"] == "0.6.23"
-    assert info["entries"][0]["version"] == "0.6.23"
-    assert any("合并" in change for change in info["entries"][0]["changes"])
+    assert info["version"] == CURRENT
+    assert info["entries"][0]["version"] == CURRENT
+    assert info["entries"][0]["title"]
+    assert info["entries"][0]["changes"]
 
 
 def test_version_endpoint_exposes_current_version_and_release_notes():
@@ -18,8 +24,8 @@ def test_version_endpoint_exposes_current_version_and_release_notes():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "0.6.23"
-    assert payload["entries"][0]["title"] == "合并群组"
+    assert payload["version"] == CURRENT
+    assert payload["entries"][0]["title"] == read_version_info()["entries"][0]["title"]
 
 
 def test_health_reports_service_root_and_pid():

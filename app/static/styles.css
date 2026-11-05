@@ -36,6 +36,31 @@ button.primary,button.secondary,button.ghost { border-radius:9px; border:1px sol
 table input[type="checkbox"] { width:16px; height:16px; padding:0; accent-color:var(--accent); cursor:pointer; }
  .result-filter { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:12px; white-space:nowrap; }
  .result-filter select { width:auto; min-width:126px; padding:7px 9px; }
+
+/* ---- 关联地址板块：刷新按钮 -------------------------------------------------
+   0.6.24：从顶部导出按钮行挪到「关联地址」标题右侧，字号加大、配色加重，
+   并用 3px 实心下沿做出凸起按键的立体感；按下时整体下沉、下沿压平，
+   配合内阴影，形成明确的"按下去"手感。 */
+:root { --refresh-top:#10988a; --refresh-bottom:#0a6e62; --refresh-edge:#064a42; --refresh-ink:#ffffff; --refresh-glow:rgba(16,152,138,.42); }
+@media (prefers-color-scheme: dark) { :root { --refresh-top:#5fd7c3; --refresh-bottom:#39ab99; --refresh-edge:#1d6a60; --refresh-ink:#06231f; --refresh-glow:rgba(99,213,194,.38); } }
+:root[data-theme="eye"] { --refresh-top:#6b7d63; --refresh-bottom:#4c5c45; --refresh-edge:#36422f; --refresh-ink:#fbfaf3; --refresh-glow:rgba(107,125,99,.4); }
+:root[data-theme="darkgray"] { --refresh-top:#b8c3b4; --refresh-bottom:#95a291; --refresh-edge:#5d685a; --refresh-ink:#1f241e; --refresh-glow:rgba(169,181,166,.35); }
+.related-panel .section-title { flex-wrap:wrap; row-gap:10px; }
+.related-toolbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:flex-end; }
+button.refresh-result-btn { display:inline-flex; align-items:center; gap:9px; padding:12px 21px; border-radius:12px; border:1px solid var(--refresh-edge); color:var(--refresh-ink); background:linear-gradient(180deg,var(--refresh-top),var(--refresh-bottom)); font-size:15px; font-weight:800; letter-spacing:.2px; white-space:nowrap; box-shadow:0 4px 0 var(--refresh-edge), 0 10px 20px rgba(0,0,0,.15); transition:transform .08s ease, box-shadow .08s ease, filter .15s ease, opacity .15s ease; touch-action:manipulation; }
+button.refresh-result-btn .refresh-glyph { width:19px; height:19px; flex:0 0 auto; transition:transform .25s ease; }
+button.refresh-result-btn:not(:disabled):hover { filter:brightness(1.07); box-shadow:0 5px 0 var(--refresh-edge), 0 13px 24px rgba(0,0,0,.2); }
+button.refresh-result-btn:not(:disabled):active { transform:translateY(4px); box-shadow:0 0 0 var(--refresh-edge), inset 0 3px 9px rgba(0,0,0,.42); filter:brightness(.95); }
+button.refresh-result-btn:not(:disabled):active .refresh-glyph { transform:rotate(-80deg); }
+button.refresh-result-btn:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+button.refresh-result-btn:disabled { opacity:.5; cursor:not-allowed; box-shadow:0 2px 0 var(--refresh-edge); }
+/* 有手动移除时用外圈涟漪提示"这次移除要点这里才会真正重查"；
+   涟漪放在伪元素上，不用 box-shadow，避免盖掉按下时的内阴影。 */
+button.refresh-result-btn { position:relative; }
+button.refresh-result-btn.is-armed:not(:disabled)::after { content:""; position:absolute; inset:-4px; border-radius:16px; border:2px solid var(--refresh-glow); pointer-events:none; animation:refreshPulse 1.7s ease-in-out infinite; }
+@keyframes refreshPulse { 0%,100% { opacity:.9; transform:scale(1); } 50% { opacity:0; transform:scale(1.07); } }
+@media (prefers-reduced-motion: reduce) { button.refresh-result-btn { transition:none; } button.refresh-result-btn.is-armed:not(:disabled)::after { animation:none; opacity:.9; } }
+@media (max-width:560px) { .related-toolbar { justify-content:flex-start; } button.refresh-result-btn { width:100%; justify-content:center; } }
  /* 结果区筛选组：层级 + 金额，横向排得下时不换行，窄屏自动折行。 */
  .result-filters { display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
  .result-filter.amount-filter { gap:6px; }

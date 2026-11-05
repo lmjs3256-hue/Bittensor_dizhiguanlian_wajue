@@ -376,3 +376,15 @@ Set-Location G:\bittensor-wallet-link-intel
   - 模板：工具栏 `#merge-groups` 按钮 + `<div id="merge-panel" class="merge-panel hidden">`；样式 `.merge-panel` 系列（组列表 `auto-fill minmax(230px,1fr)`，最高 230px 可滚动）。
 - 测试：`tests/test_merge_groups.py` 6 例（新名字合并保留分类/备注/交易所结论并删旧库、继承组名、自建库+标签组混合、撤回还原库名、四类拒绝、接口层）。全量 **158 passed**。
 - 探针：`.probe/ui_check_0624.py`（新名字合并 3 个地址 → 新组出现/旧组消失/面板收起 → 撤回 → 沿用组名合并到「合并测乙」）；`.probe/layout_0624.py`（1422px：工具栏 8 个控件仍单行、面板宽 1025 无右溢出、组列表首行同排、命名行单行）。截图 `.probe/70_merge_panel.png`。探针数据已清理（总地址 672、库表 7 个不变）。
+
+## 28. 2026-11-05 0.6.24 交接：刷新按钮挪到关联地址面板
+
+- 需求：手动移除关联地址后要「刷新结果」，但按钮原来在顶部 `.actions`（导出 JSON / TXT 那一行），离结果表远，找不到；同时希望字号更大、颜色更突出、按下有手感。
+- 模板 `app/templates/index.html`：`#refresh-result` 从 `.actions` 移到 `.related-panel > .section-title > .related-toolbar`，排在 `.result-filters` 之前；按钮内容为 SVG 图标 + `<span id="refresh-result-label">刷新结果</span>`。
+- 不能再直接写 `button.textContent`（会抹掉图标和 span）：`updateRefreshButton()` 改成写 `#refresh-result-label` 的文本，并 toggle `is-armed` 类、改写 `title`。
+- 样式 `app/static/styles.css`：新增 `--refresh-top/bottom/edge/ink/glow` 五组变量，分别给默认亮色、`prefers-color-scheme: dark`、`[data-theme="eye"]`、`[data-theme="darkgray"]` 覆盖；按钮 15px / 700+ 字重 / 12px 圆角 / `linear-gradient(180deg, top, bottom)`，`box-shadow: 0 4px 0 edge, 0 10px 20px rgba(0,0,0,.15)` 做出凸起下沿。
+  - 按下：`:active` → `translateY(4px)` + 下沿阴影压平 + `inset 0 3px 9px rgba(0,0,0,.42)`，图标同步 `rotate(-80deg)`；`:not(:disabled):active` 才生效，禁用态只有 `0 2px 0` 浅下沿。
+  - 坑：`is-armed` 最初用 `animation` 改 `box-shadow` 做呼吸，**动画优先级高于普通声明**，把 `:active` 的 inset 阴影整个盖掉，实测按下只有位移没有内阴影。改为伪元素 `::after` 画外圈涟漪（`inset:-4px`、`border:2px solid --refresh-glow`、`refreshPulse`），与 `box-shadow` 解耦。
+  - `@media (prefers-reduced-motion: reduce)` 关动画保留静态外圈；`@media (max-width:560px)` 按钮 `width:100%`、与筛选组换行。
+- 测试：`tests/test_version.py` 改为从 `VERSION` 文件读当前版本（原来硬编码 "0.6.23"，每次升版都要改）；全量 **158 passed**。
+- 探针 `.probe/ui_check_0625.py`：1422px 下 `#refresh-result` 在 `.related-panel` 内、不在 `.actions`、15px/46px 高、与筛选项同排、面板内无溢出；移除一条后文案「刷新结果（已移除 1）」、`is-armed` 为真；`Input.dispatchMouseEvent` 按住时 `transform: translateY(4px)`、`boxShadow` 为 `inset 0 3px 9px rgba(0,0,0,.42)`；420px 下按钮 337px 宽独占一行（`setDeviceMetricsOverride` 需要 `mobile=True` 才会生效，否则 `innerWidth` 不变）。截图 `.probe/71_refresh_button.png`、`72_refresh_pressed.png`、`73_refresh_narrow.png`。

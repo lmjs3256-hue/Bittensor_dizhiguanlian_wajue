@@ -640,8 +640,16 @@ function updateRefreshButton() {
   const button = $("#refresh-result");
   if (!button) return;
   const count = state.removedAddresses.size;
-  button.textContent = count ? `刷新结果（已移除 ${count}）` : "刷新结果";
+  const label = $("#refresh-result-label");
+  const text = count ? `刷新结果（已移除 ${count}）` : "刷新结果";
+  if (label) label.textContent = text;
+  else button.textContent = text;
   button.disabled = !state.lastResult;
+  /* 有手动移除时按钮保持高亮呼吸，提示"这里点了才会真的重查"。 */
+  button.classList.toggle("is-armed", count > 0);
+  button.title = count
+    ? `已手动移除 ${count} 个关联地址，点这里按当前设置重新查询`
+    : "按当前设置重新查询：已手动移除的地址及其线索下游不会再出现";
 }
 
 function removeRelation(address) {

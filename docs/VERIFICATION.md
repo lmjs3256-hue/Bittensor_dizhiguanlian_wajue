@@ -287,3 +287,17 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 - 授权口径核对：解码本机 `license.key`（`base64` 解 payload）得到 `machines: ["KNT5YFERN3PA5W7Z"]`、`team: 内部团队`、无到期日，与“一机一码”一致；`tools/issue_license.py` 对超过 50 个机器码直接报错，`--machine "*"` 生成不绑机的码。
 - 文档同步：`授权管理.md`（三种签法对照 + 机器码何时变）、`使用说明.md`／`使用说明.html`（同一台电脑复制一份做测试）、`README.md`、`CHANGELOG.md`、`VERSION` 全部更新到 `0.6.2`；静态资源缓存戳 `?v=0.6.7`。
 
+
+## 2026-11-05 0.6.24 刷新按钮位置与按压手感验收
+
+- 全量 pytest：`158 passed, 1 warning`；`tests/test_version.py` 改为从 `VERSION` 读取当前版本，不再硬编码。
+- CDP 探针 `.probe/ui_check_0625.py`（1422×1100，从「查询记录」第一条恢复真实结果）：
+  - `#refresh-result` 位于 `.related-panel` 内（`inRelatedPanel=true`），不再出现在顶部 `.actions`（`inActionsRow=false`）。
+  - 计算样式：`font-size 15px`、`font-weight 800`、高 46px、白字、`linear-gradient(rgb(16,152,138), rgb(10,110,98))`、`box-shadow rgb(6,74,66) 0 4px 0, rgba(0,0,0,.15) 0 10px 20px`。
+  - 与 `.result-filters` 同排（`sameRowWithFilters=true`），排在筛选组左侧，面板内右侧余量 -594px（无溢出）。
+  - 手动移除一条关联后：文案「刷新结果（已移除 1）」，`is-armed=true`，伪元素涟漪 `refreshPulse` 生效。
+  - `Input.dispatchMouseEvent` 按住不放：`transform: matrix(1,0,0,1,0,4)`（下沉 4px）、`box-shadow: rgb(6,74,66) 0 0 0 0, rgba(0,0,0,.42) 0 3px 9px inset`（下沿压平 + 内阴影），松开回弹。
+  - 420px 窄屏：按钮宽 337px 占满一行、位于筛选组上方（`stackedAboveFilters=true`）、面板内无溢出。
+  - 纠正记录：`Emulation.setDeviceMetricsOverride` 必须带 `mobile=True` 才会改变 `innerWidth`，否则仍是 1422px，窄屏断言会假通过。
+- 截图：`.probe/71_refresh_button.png`（默认态）、`72_refresh_pressed.png`（按住态）、`73_refresh_narrow.png`（420px）。
+- 回归：`node --check app/static/app.js`、`git diff --check` 通过。
