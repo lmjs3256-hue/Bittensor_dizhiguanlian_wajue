@@ -19,18 +19,33 @@ async def _query_account_balances(
     addresses: list[str],
     *,
     timeout_seconds: float = 12.0,
+    total_timeout_seconds: float = 20.0,
 ) -> dict[str, Decimal | None]:
-    """Read current System.Account balances without indexing extra history."""
+    """Read current System.Account balances without indexing extra history.
 
+    ``total_timeout_seconds`` bounds the *whole* batch (initialize + all
+    addresses). A slow/unreachable node must never hold the result hostage
+    after a long multi-round crawl has finished.
+    """
+
+    import time
+
+    deadline = time.monotonic() + max(0.5, total_timeout_seconds)
     substrate = AsyncSubstrateInterface(url)
     result: dict[str, Decimal | None] = {}
     try:
-        await asyncio.wait_for(substrate.initialize(), timeout_seconds)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return result
+        await asyncio.wait_for(substrate.initialize(), min(timeout_seconds, remaining))
         for address in addresses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
                 value = await asyncio.wait_for(
                     substrate.query("System", "Account", params=[address]),
-                    timeout_seconds,
+                    min(timeout_seconds, remaining),
                 )
                 payload = getattr(value, "value", value)
                 data = payload.get("data", {}) if isinstance(payload, dict) else {}
@@ -48,6 +63,7 @@ def query_account_balances(
     addresses: list[str],
     *,
     timeout_seconds: float = 12.0,
+    total_timeout_seconds: float = 20.0,
 ) -> dict[str, Decimal | None]:
     """Synchronous wrapper used by the synchronous relation API."""
 
@@ -61,6 +77,7 @@ def query_account_balances(
                 url,
                 addresses,
                 timeout_seconds=timeout_seconds,
+                total_timeout_seconds=total_timeout_seconds,
             )
         )
     # FastAPI's synchronous route is normally executed in a worker thread.

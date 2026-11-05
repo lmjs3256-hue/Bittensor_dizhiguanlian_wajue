@@ -141,6 +141,12 @@ class NoteInput(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
+class CategoriesInput(BaseModel):
+    categories: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(
+        default_factory=list, max_length=10
+    )
+
+
 class ExchangeConfirmationInput(BaseModel):
     confirmed: bool = True
     rejected: bool = False
@@ -168,6 +174,7 @@ class RelationInput(BaseModel):
     data_source: str = Field(default="local", pattern="^(local|taostats)$")
     filter_exchanges: bool = False
     filter_validators: bool = False
+    filter_systems: bool = False
     # 手动「移除关联」的地址：不进结果，也不再作为中转跳点（其线索整体剪除）。
     removed_addresses: list[str] = Field(default_factory=list, max_length=100)
 
@@ -181,6 +188,7 @@ class RelationJobInput(BaseModel):
     include_outgoing: bool = True
     filter_exchanges: bool = False
     filter_validators: bool = False
+    filter_systems: bool = False
     removed_addresses: list[str] = Field(default_factory=list, max_length=100)
     round_interval_seconds: int | None = Field(default=None, ge=10, le=600)
     max_rounds: int | None = Field(default=None, ge=1, le=100)
@@ -435,6 +443,20 @@ def update_address_note(
         raise HTTPException(404, str(exc)) from exc
 
 
+@app.patch("/api/library/{row_id}/categories")
+def update_address_categories(
+    row_id: int,
+    payload: CategoriesInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """人工修改地址分类，一个地址可同时属于多个分类。"""
+
+    try:
+        return svc.update_library_categories(row_id, payload.categories)
+    except InputError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @app.post("/api/library/{row_id}/confirm-exchange")
 def confirm_exchange(
     row_id: int,
@@ -567,6 +589,7 @@ def relations(payload: RelationInput, svc: Annotated[LinkService, Depends(servic
             data_source=payload.data_source,
             filter_exchanges=payload.filter_exchanges,
             filter_validators=payload.filter_validators,
+            filter_systems=payload.filter_systems,
             removed_addresses=[value.strip() for value in payload.removed_addresses if value.strip()],
         )
     except ValueError as exc:
@@ -594,6 +617,7 @@ def start_relation_job(
             include_outgoing=payload.include_outgoing,
             filter_exchanges=payload.filter_exchanges,
             filter_validators=payload.filter_validators,
+            filter_systems=payload.filter_systems,
             removed_addresses=[value.strip() for value in payload.removed_addresses if value.strip()],
             round_interval=payload.round_interval_seconds,
             max_rounds=payload.max_rounds,

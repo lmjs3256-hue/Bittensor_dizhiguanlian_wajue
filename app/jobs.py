@@ -104,6 +104,7 @@ class RelationJobManager:
         include_outgoing: bool = True,
         filter_exchanges: bool = False,
         filter_validators: bool = False,
+        filter_systems: bool = False,
         removed_addresses: list[str] | None = None,
         round_interval: int | None = None,
         max_rounds: int | None = None,
@@ -118,6 +119,7 @@ class RelationJobManager:
             data_source="taostats",
             filter_exchanges=filter_exchanges,
             filter_validators=filter_validators,
+            filter_systems=filter_systems,
             removed_addresses=removed_addresses or (),
         )
         job = RelationJob(
@@ -289,6 +291,9 @@ class RelationJobManager:
         if job.finalized:
             return
         job.finalized = True
+        # 合成结果（含余额 RPC、结果归档）期间明确标记状态，前端显示“正在合成结果”，
+        # 避免跑满轮数后仍显示“正在查询”让人以为卡死。
+        job.status = "finalizing"
         state = job.state
         if cap_note:
             state.warnings.append(cap_note)
@@ -301,6 +306,8 @@ class RelationJobManager:
                 balance_budget_left=MAX_TAOSTATS_REQUESTS_PER_QUERY,
                 # 停止续查时跳过余额 RPC：用户要的是马上看到已有结果。
                 include_balances=status != "cancelled",
+                # 两批余额 RPC 合计最多 12 秒：地址再多、节点再慢也要立刻出结果。
+                balance_deadline=time.monotonic() + 12.0,
             )
         except Exception as exc:  # pragma: no cover - 兜底，避免作业卡在 running
             job.status = "failed"

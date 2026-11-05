@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ from .db import (
     RelationArchive,
     ScanJob,
     ScanLock,
+    SYSTEM_CLASSIFICATION,
     Transfer,
     to_relation_records,
     utcnow,
@@ -47,6 +49,9 @@ from .validation import is_valid_ss58
 MAX_MANUAL_SCAN_BLOCKS = 16
 MAX_TAOSTATS_REQUESTS_PER_QUERY = 5
 MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY = 5
+# 结果合成阶段最多查这么多个地址的当前余额（起始地址优先，再按层级/金额）。
+# 分轮续查跑十几轮后关联地址可能上百个，逐个走 RPC 会让结果迟迟出不来。
+MAX_BALANCE_ADDRESSES_PER_RESULT = 40
 PUBLIC_MONTHLY_CREDIT_REFERENCE = 10_000
 # 历史记录只保留最近的若干条 / 总体积上限，避免一次重扫就把 SQLite 撑大。
 MAX_ARCHIVE_ROWS = 500
@@ -57,6 +62,8 @@ MAX_SYNC_ADDRESSES = 5000
 # 验证者”，不提供在分类下拉里给用户挑，避免关联地址被误标成公共地址。
 SYSTEM_CATEGORIES = {"EXCHANGE", "VALIDATOR"}
 SYSTEM_CATEGORY_LABELS = {"EXCHANGE": "交易所（系统）", "VALIDATOR": "验证者（系统）"}
+# 「系统」是用户可选、可改的预置分类：与交易所一样能过滤，并且始终是关联终点。
+SYSTEM_CLASSIFICATION_KEYS = {SYSTEM_CLASSIFICATION, "SYSTEM"}
 # 0.4.x 及以前的英文分类，导入旧备份或旧 CSV 时自动折算到“其他”。
 LEGACY_CATEGORY_MAP = {"WATCH": "其他", "SEED": "其他", "BLACKLIST": "其他"}
 # 自建分类不能占用这些名字，否则迁移和系统判断会混乱。
@@ -66,6 +73,7 @@ RESERVED_CATEGORY_NAMES = {
     "BLACKLIST",
     "EXCHANGE",
     "VALIDATOR",
+    "SYSTEM",
     "ALL",
 }
 DEFAULT_CATEGORY = "其他"
@@ -86,6 +94,9 @@ def normalize_category(value: str | None, *, allow_system: bool = True) -> str:
     if not raw:
         return DEFAULT_CATEGORY
     upper = raw.upper()
+    # 「系统」是用户可选择的预置分类，任何导入/同步路径都允许。
+    if upper in SYSTEM_CLASSIFICATION_KEYS:
+        return SYSTEM_CLASSIFICATION
     if upper in LEGACY_CATEGORY_MAP:
         return LEGACY_CATEGORY_MAP[upper]
     if upper in SYSTEM_CATEGORIES:
@@ -95,6 +106,51 @@ def normalize_category(value: str | None, *, allow_system: bool = True) -> str:
 
 def category_label(category: str) -> str:
     return SYSTEM_CATEGORY_LABELS.get(category, category)
+
+
+def canonical_category(value: str | None) -> str:
+    """多分类字段里的分类名归一（SYSTEM 与「系统」视为同一个）。"""
+
+    name = " ".join(str(value or "").split())
+    return SYSTEM_CLASSIFICATION if name.upper() in SYSTEM_CLASSIFICATION_KEYS else name
+
+
+def row_categories(row: AddressLibrary) -> list[str]:
+    """读取一条地址记录的全部分类，主分类永远排第一。"""
+
+    raw = getattr(row, "categories", "") or ""
+    parsed: list[Any] = []
+    if raw:
+        try:
+            values = json.loads(raw)
+            if isinstance(values, list):
+                parsed = values
+        except (TypeError, ValueError):
+            parsed = []
+    result: list[str] = []
+    for value in [row.category, *parsed]:
+        name = canonical_category(value)
+        if name and name not in result:
+            result.append(name)
+    return result or [DEFAULT_CATEGORY]
+
+
+def normalize_category_list(values: Iterable[Any]) -> list[str]:
+    """人工编辑多分类：去重、限制数量，并拒绝 EXCHANGE/VALIDATOR 专用分类。"""
+
+    result: list[str] = []
+    for value in values or []:
+        name = canonical_category(value)
+        if not name or name.upper() in SYSTEM_CATEGORIES:
+            continue
+        name = normalize_category(name, allow_system=False)[:CATEGORY_NAME_MAX_LENGTH]
+        if name not in result:
+            result.append(name)
+    return result[:10] or [DEFAULT_CATEGORY]
+
+
+def encode_categories(categories: list[str]) -> str:
+    return json.dumps(categories, ensure_ascii=False)
 
 
 
@@ -123,6 +179,7 @@ class RelationContext:
     auto_validator_addresses: set[str] = field(default_factory=set)
     excluded_addresses: set[str] = field(default_factory=set)
     removed_addresses: set[str] = field(default_factory=set)
+    system_addresses: set[str] = field(default_factory=set)
     validator_api_requests: int = 0
     validator_cache_hits: int = 0
 
@@ -170,6 +227,7 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
         "label": label,
         "category": row.category,
         "category_label": category_label(row.category),
+        "categories": row_categories(row),
         "note": row.note,
         "source": row.source,
         "book": getattr(row, "book", "") or "",
@@ -195,6 +253,7 @@ def select_exportable_addresses(
     seen: set[str] = set()
     skipped_exchange = 0
     skipped_validator = 0
+    skipped_system = 0
     skipped_other_depth = 0
     for row in rows or []:
         if depth is not None:
@@ -216,6 +275,13 @@ def select_exportable_addresses(
         if category == "VALIDATOR":
             skipped_validator += 1
             continue
+        categories = [str(value) for value in (row.get("library_categories") or [])]
+        if any(
+            canonical_category(value) == SYSTEM_CLASSIFICATION
+            for value in [row.get("library_category") or "", *categories]
+        ):
+            skipped_system += 1
+            continue
         address = str(row.get("address") or "")
         if not address or address in seen:
             continue
@@ -225,6 +291,7 @@ def select_exportable_addresses(
         "addresses": keep,
         "skipped_exchange": skipped_exchange,
         "skipped_validator": skipped_validator,
+        "skipped_system": skipped_system,
         "skipped_other_depth": skipped_other_depth,
     }
 
@@ -272,10 +339,18 @@ def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
         if not address:
             raise InputError(f"row {position} has no address")
         category = str(row.get("category") or "").strip()
+        raw_categories = row.get("categories")
+        if isinstance(raw_categories, list):
+            categories = [str(value).strip() for value in raw_categories if str(value).strip()]
+        elif isinstance(raw_categories, str):
+            categories = [value.strip() for value in raw_categories.split("|") if value.strip()]
+        else:
+            categories = []
         result.append(
             {
                 "address": address,
                 "category": category,
+                "categories": categories,
                 "label": str(row.get("label") or "").strip(),
                 "note": str(row.get("note") or "").strip(),
                 "book": str(row.get("book") or "").strip()[:BOOK_NAME_MAX_LENGTH],
@@ -305,6 +380,13 @@ class LinkService:
                 category = normalize_category(raw_category)
                 if raw_category:
                     self._ensure_category(db, category)
+                # 备份文件里的多分类（JSON 数组 / CSV 用 | 分隔）。
+                incoming_categories = normalize_category_list(row.get("categories") or [])
+                categories = (
+                    incoming_categories if row.get("categories") else [category]
+                )
+                if categories[0] != category:
+                    categories = [category, *[name for name in categories if name != category]]
                 current = db.scalar(
                     select(AddressLibrary).where(AddressLibrary.address == address)
                 )
@@ -320,6 +402,7 @@ class LinkService:
                             address=address,
                             label=row.get("label", ""),
                             category=category,
+                            categories=encode_categories(categories),
                             note=row.get("note", ""),
                             source=source,
                             book=str(row.get("book") or "")[:BOOK_NAME_MAX_LENGTH],
@@ -341,7 +424,12 @@ class LinkService:
                         changed = True
                 # 分类只在文件里明确写了才改，避免用纯地址 TXT 覆盖人工分类。
                 if raw_category and current.category != category:
+                    merged = [category, *[name for name in row_categories(current) if name != category]]
                     current.category = category
+                    current.categories = encode_categories(merged)
+                    changed = True
+                elif row.get("categories"):
+                    current.categories = encode_categories(categories)
                     changed = True
                 if current.category == "EXCHANGE":
                     rejected = bool(row.get("exchange_rejected", current.exchange_rejected))
@@ -416,6 +504,22 @@ class LinkService:
             if current is None:
                 raise InputError("address not found")
             current.note = note.strip()
+            return {"saved": True, "item": address_dict(current)}
+
+    def update_library_categories(
+        self, row_id: int, categories: Iterable[str]
+    ) -> dict[str, Any]:
+        """人工修改一条地址的分类；支持一个地址同时属于多个分类。"""
+
+        values = normalize_category_list(categories)
+        with self.database.session() as db:
+            current = db.get(AddressLibrary, row_id)
+            if current is None:
+                raise InputError("address not found")
+            for name in values:
+                self._ensure_category(db, name)
+            current.category = values[0]
+            current.categories = encode_categories(values)
             return {"saved": True, "item": address_dict(current)}
 
     def decide_exchange(self, row_id: int, decision: str) -> dict[str, Any]:
@@ -658,6 +762,7 @@ class LinkService:
                 "address": item["address"],
                 "label": item["label"],
                 "category": item["category"],
+                "categories": item.get("categories") or [item["category"]],
                 "note": item["note"],
                 "book": item["book"],
                 "exchange_confirmed": item["exchange_confirmed"],
@@ -690,6 +795,7 @@ class LinkService:
             "address",
             "label",
             "category",
+            "categories",
             "note",
             "book",
             "exchange_confirmed",
@@ -697,7 +803,13 @@ class LinkService:
         ]
         writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
-        writer.writerows(portable)
+        writer.writerows(
+            {
+                **item,
+                "categories": "|".join(item.get("categories") or [item["category"]]),
+            }
+            for item in portable
+        )
         return output.getvalue(), "text/csv; charset=utf-8"
 
     # -- 自建地址库：把一次查询结果导入成有名字的库 ----------------------
@@ -820,7 +932,7 @@ class LinkService:
                     existing[row.address] = row
 
             inserted = attached = already = other_book = 0
-            skipped_exchange = skipped_validator = 0
+            skipped_exchange = skipped_validator = skipped_system = 0
             added: list[str] = []
             for address in candidates:
                 row = existing.get(address)
@@ -834,6 +946,9 @@ class LinkService:
                         continue
                     if row.category == "VALIDATOR":
                         skipped_validator += 1
+                        continue
+                    if SYSTEM_CLASSIFICATION in row_categories(row):
+                        skipped_system += 1
                         continue
                     if not row.book:
                         row.book = book_name
@@ -853,6 +968,7 @@ class LinkService:
                         address=address,
                         label=book_name,
                         category=category,
+                        categories=encode_categories([category]),
                         note=note_text or default_note,
                         source=source,
                         book=book_name,
@@ -871,6 +987,8 @@ class LinkService:
                     reasons.append(f"已确认交易所 {skipped_exchange} 个")
                 if skipped_validator:
                     reasons.append(f"验证者 {skipped_validator} 个")
+                if skipped_system:
+                    reasons.append(f"系统分类 {skipped_system} 个")
                 detail = f"（{'、'.join(reasons)}已排除）" if reasons else ""
                 raise InputError(f"没有可导入的地址{detail}，地址库未创建")
 
@@ -900,6 +1018,7 @@ class LinkService:
                 "existing": attached + already + other_book,
                 "skipped_exchange": skipped_exchange,
                 "skipped_validator": skipped_validator,
+                "skipped_system": skipped_system,
                 "invalid": invalid,
                 "category": category,
                 "added": added,
@@ -1463,6 +1582,7 @@ class LinkService:
         data_source: str = "local",
         filter_exchanges: bool = False,
         filter_validators: bool = False,
+        filter_systems: bool = False,
         removed_addresses: Iterable[str] = (),
     ) -> RelationContext:
         """收集一次查询中不随轮次变化的部分：地址库、本地索引、过滤名单。"""
@@ -1488,6 +1608,7 @@ class LinkService:
                     source=row.source,
                     exchange_confirmed=bool(row.exchange_confirmed),
                     exchange_rejected=bool(row.exchange_rejected),
+                    categories=tuple(row_categories(row)),
                 )
                 for row in db.scalars(select(AddressLibrary)).all()
             ]
@@ -1516,6 +1637,13 @@ class LinkService:
             if entry.category == "EXCHANGE" and entry.exchange_confirmed
         }
         noted_exchange_addresses = exchange_addresses - confirmed_exchange_addresses
+        # 「系统」分类：无论是否勾选过滤，查到即作为关联终点（不再向下扩展）；
+        # 勾选过滤时连它本身也从结果里排除。
+        system_addresses = {
+            entry.address
+            for entry in library
+            if SYSTEM_CLASSIFICATION in entry.categories
+        }
         unconfirmed_exchange_addresses = {
             entry.address
             for entry in library
@@ -1573,6 +1701,18 @@ class LinkService:
                 f"{len(manual_validator_addresses | auto_validator_addresses)} 个已识别地址"
                 f"（手工 {len(manual_validator_addresses)}，自动 {len(auto_validator_addresses)}）。"
             )
+        if system_addresses:
+            if filter_systems:
+                excluded_addresses.update(system_addresses)
+                warnings.append(
+                    f"已启用系统地址过滤，跳过 {len(system_addresses)} 个「系统」分类地址；"
+                    "其余地址查到系统地址即截止，不再向下扩展。"
+                )
+            else:
+                warnings.append(
+                    f"有 {len(system_addresses)} 个「系统」分类地址作为关联终点；"
+                    "查到这些地址即截止，不再向下扩展其转账（如需连同它们一起排除，请勾选「过滤系统地址」）。"
+                )
         if removed_addresses:
             excluded_addresses.update(removed_addresses)
             warnings.append(
@@ -1597,6 +1737,7 @@ class LinkService:
             auto_validator_addresses=auto_validator_addresses,
             excluded_addresses=excluded_addresses,
             removed_addresses=set(removed_addresses),
+            system_addresses=set(system_addresses),
             validator_api_requests=validator_api_requests,
             validator_cache_hits=validator_cache_hits,
         )
@@ -1608,7 +1749,9 @@ class LinkService:
             seed=context.seed,
             depth=context.depth,
             policy=context.policy,
-            terminal_exchange_addresses=set(context.exchange_addresses),
+            terminal_exchange_addresses=(
+                set(context.exchange_addresses) | set(context.system_addresses)
+            ),
             excluded_addresses=set(context.excluded_addresses),
         )
         return TaostatsCrawl(
@@ -1652,6 +1795,7 @@ class LinkService:
         data_source: str = "local",
         filter_exchanges: bool = False,
         filter_validators: bool = False,
+        filter_systems: bool = False,
         removed_addresses: Iterable[str] = (),
     ) -> dict[str, Any]:
         """单轮查询：只花掉一次请求预算，返回当前已取得的结果。"""
@@ -1666,6 +1810,7 @@ class LinkService:
             data_source=data_source,
             filter_exchanges=filter_exchanges,
             filter_validators=filter_validators,
+            filter_systems=filter_systems,
             removed_addresses=removed_addresses,
         )
         crawl = None
@@ -1703,12 +1848,20 @@ class LinkService:
         pending_note: str = "",
         balance_budget_left: int | None = None,
         include_balances: bool = True,
+        balance_deadline: float | None = None,
     ) -> dict[str, Any]:
         """把上下文与已爬到的记录合成最终结果。
 
         ``include_balances=False`` 用于停止续查：不再花时间做余额 RPC，
         让部分结果立刻返回（余额栏显示“未获取”）。
+        ``balance_deadline`` 是 ``time.monotonic()`` 表示的绝对截止时刻，
+        所有余额 RPC（含交易所候选和关联地址两批）共享这一个总预算。
         """
+
+        def balance_ttl() -> float | None:
+            if balance_deadline is None:
+                return None
+            return balance_deadline - time.monotonic()
 
         seed = context.seed
         depth = context.depth
@@ -1804,11 +1957,17 @@ class LinkService:
             )
         balances: dict[str, Any] = {}
         if balance_candidates and include_balances:
-            try:
-                balances = query_account_balances(self.rpc_url, balance_candidates)
-            except Exception as exc:
-                warnings.append(f"交易所候选余额查询未完成：{exc}")
-                balances = {}
+            ttl = balance_ttl()
+            if ttl is None or ttl > 0:
+                try:
+                    balances = query_account_balances(
+                        self.rpc_url,
+                        balance_candidates,
+                        **({"total_timeout_seconds": ttl} if ttl is not None else {}),
+                    )
+                except Exception as exc:
+                    warnings.append(f"交易所候选余额查询未完成：{exc}")
+                    balances = {}
         if balance_candidates and not balances:
             warnings.append(
                 "检测到高频交易所候选，但未取得当前余额；系统不会据此自动标记疑似交易所。"
@@ -1840,16 +1999,28 @@ class LinkService:
                     "这些地址的余额栏会显示“未获取”。"
                 )
         else:
-            balance_addresses = list(dict.fromkeys(
+            all_balance_addresses = list(dict.fromkeys(
                 address
                 for address in [seed, *(row.address for row in report.related)]
                 if is_valid_ss58(address) and address not in balances
             ))
+            balance_addresses = all_balance_addresses[:MAX_BALANCE_ADDRESSES_PER_RESULT]
+            if len(all_balance_addresses) > len(balance_addresses):
+                warnings.append(
+                    f"为尽快返回结果，本次只读取前 {len(balance_addresses)} 个地址的当前余额"
+                    f"（共 {len(all_balance_addresses)} 个）；其余地址余额栏显示“未获取”。"
+                )
         if balance_addresses and include_balances:
-            try:
-                balances.update(query_account_balances(self.rpc_url, balance_addresses))
-            except Exception as exc:
-                warnings.append(f"起始地址或关联地址的当前余额查询未完成：{exc}")
+            ttl = balance_ttl()
+            if ttl is None or ttl > 0:
+                try:
+                    balances.update(query_account_balances(
+                        self.rpc_url,
+                        balance_addresses,
+                        **({"total_timeout_seconds": ttl} if ttl is not None else {}),
+                    ))
+                except Exception as exc:
+                    warnings.append(f"起始地址或关联地址的当前余额查询未完成：{exc}")
             if any(
                 address not in balances or balances[address] is None
                 for address in balance_addresses

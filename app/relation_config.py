@@ -110,6 +110,8 @@ class LibraryEntry:
     # Database-backed entries pass the persisted confirmation flag explicitly.
     exchange_confirmed: bool = True
     exchange_rejected: bool = False
+    # 同一个地址可以属于多个分类；系统分类（含「系统」）据此判断关联终点。
+    categories: tuple[str, ...] = ()
 
 
 @dataclass
@@ -130,6 +132,7 @@ class RelationResult:
     library_category: str = ""
     library_note: str = ""
     library_source: str = ""
+    library_categories: tuple[str, ...] = ()
     address_role: str = ""
     role_reason: str = ""
     exchange_confirmed: bool = False

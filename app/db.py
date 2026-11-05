@@ -32,6 +32,8 @@ def utcnow() -> datetime:
 
 # 新建库时预置的分类；用户可以再加自己的。
 DEFAULT_CATEGORY_NAMES = ("大V", "群友", "其他")
+# 「系统」是预置分类：和交易所一样可作为过滤项和关联终点，但允许人工选择/修改。
+SYSTEM_CLASSIFICATION = "系统"
 
 
 class Base(DeclarativeBase):
@@ -81,6 +83,8 @@ class AddressLibrary(Base):
     source: Mapped[str] = mapped_column(String(255), default="manual")
     # 所属地址库名称；空字符串表示未归入任何自建地址库。
     book: Mapped[str] = mapped_column(String(80), default="", index=True)
+    # 同一个地址可以属于多个分类；这里存 JSON 数组，category 是主分类。
+    categories: Mapped[str] = mapped_column(Text, default="", server_default=text("''"))
     exchange_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     exchange_rejected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -254,6 +258,13 @@ class Database:
                         "ON address_library (book)"
                     )
                 )
+            if "categories" not in columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE address_library "
+                        "ADD COLUMN categories TEXT NOT NULL DEFAULT ''"
+                    )
+                )
             transfer_columns = {
                 row[1] for row in connection.execute(text("PRAGMA table_info(transfers)"))
             }
@@ -293,6 +304,19 @@ class Database:
                     "UPDATE address_library SET category = '其他' "
                     "WHERE category IN ('WATCH', 'SEED', 'BLACKLIST')"
                 )
+            )
+            # 0.6.12：预置「系统」分类（builtin，用户可选但不可删）。
+            connection.execute(
+                text(
+                    "INSERT INTO address_categories (name, sort_order, builtin, created_at) "
+                    "SELECT :name, :order, 1, :created "
+                    "WHERE NOT EXISTS (SELECT 1 FROM address_categories WHERE name = :name)"
+                ),
+                {
+                    "name": SYSTEM_CLASSIFICATION,
+                    "order": len(DEFAULT_CATEGORY_NAMES),
+                    "created": utcnow().isoformat(),
+                },
             )
 
     @contextmanager

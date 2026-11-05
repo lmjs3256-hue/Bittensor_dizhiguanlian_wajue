@@ -36,11 +36,11 @@ def test_default_categories_are_seeded_once():
     with TemporaryDirectory() as directory:
         database, service = build_service(directory)
         try:
-            assert names(service) == ["大V", "群友", "其他"]
+            assert names(service) == ["大V", "群友", "其他", "系统"]
             assert all(item["builtin"] for item in service.categories())
             # 再次 initialize 不应重复插入
             database.initialize()
-            assert names(service) == ["大V", "群友", "其他"]
+            assert names(service) == ["大V", "群友", "其他", "系统"]
         finally:
             database.engine.dispose()
 
@@ -207,6 +207,7 @@ def test_api_categories_endpoints():
                 "大V",
                 "群友",
                 "其他",
+                "系统",
             ]
             created = client.post("/api/library/categories", json={"name": "基金"})
             assert created.status_code == 200

@@ -14,6 +14,8 @@ const state = {
   // 手动「移除关联」的地址：本次会话内刷新重查时作为 removed_addresses 传给后端，
   // 这些地址及其线索的下游都不会再出现。新查询（非刷新）会清空。
   removedAddresses: new Set(),
+  categoryEditorId: null,
+  libraryGroupsOpen: new Set(),
   history: { offset: 0, total: 0, items: [] },
 };
 
@@ -333,7 +335,7 @@ function relatedTable(rows) {
       ? `<button class="ghost note-save" data-path-toggle="${esc(row.address)}" type="button" title="从起始地址到该地址的逐笔转账记录">路径明细</button>`
       : "";
     const removeButton = `<button class="ghost copy-address remove-relation" data-remove-relation="${esc(row.address)}" title="确认非同一人？移除后点「刷新结果」，这条线索的下游地址也会一并消失" type="button">移除关联</button>`;
-    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main"><code title="${esc(row.address)}">${esc(shortAddr(row.address))}</code><button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${removeButton}${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
+    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main">${addressLink(row.address, shortAddr(row.address))}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${removeButton}${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 
@@ -343,7 +345,7 @@ function pathDetailRowHtml(row) {
     const kind = hop.edge_type === "stake_transfer"
       ? `子网 stake 转移${hop.netuid != null ? ` · 子网 ${hop.netuid}` : ""}`
       : "普通转账";
-    return `<tr><td>第 ${index + 1} 跳</td><td class="address"><div class="address-main"><code title="${esc(hop.from_address)}">${esc(shortAddr(hop.from_address))}</code><span class="path-arrow">→</span><code title="${esc(hop.to_address)}">${esc(shortAddr(hop.to_address))}</code></div></td><td>${esc(kind)}</td><td class="amount">${esc(formatTao(hop.amount_tao))}</td><td class="mono history-time">${esc(historyTime(hop.timestamp))}</td><td class="mono">${esc(hop.block_number)}</td></tr>`;
+    return `<tr><td>第 ${index + 1} 跳</td><td class="address"><div class="address-main">${addressLink(hop.from_address, shortAddr(hop.from_address))}<span class="path-arrow">→</span>${addressLink(hop.to_address, shortAddr(hop.to_address))}</div></td><td>${esc(kind)}</td><td class="amount">${esc(formatTao(hop.amount_tao))}</td><td class="mono history-time">${esc(historyTime(hop.timestamp))}</td><td class="mono">${esc(hop.block_number)}</td></tr>`;
   }).join("");
   return `<tr class="path-detail-row" data-path-detail="${esc(row.address)}"><td colspan="8"><div class="path-detail"><div class="path-detail-title">从起始地址到 <code>${esc(shortAddr(row.address))}</code> 的关联路径（共 ${hops.length} 笔转账，按时间先后即路径顺序）</div><table><thead><tr><th>跳数</th><th>方向</th><th>类型</th><th>金额 TAO</th><th>时间</th><th>区块</th></tr></thead><tbody>${body}</tbody></table></div></td></tr>`;
 }
@@ -553,6 +555,8 @@ function showJobProgress(state) {
     parts.push(`正在执行第 ${state.rounds_done + 1}/${state.max_rounds} 轮`);
   } else if (state.status === "waiting") {
     parts.push(`已完成第 ${state.rounds_done}/${state.max_rounds} 轮`);
+  } else if (state.status === "finalizing") {
+    parts.push("查询已结束，正在合成结果（最多约 12 秒）");
   }
   parts.push(`累计请求 ${state.requests_total} 次`);
   if (state.remaining_requests > 0) {
@@ -645,8 +649,8 @@ async function runRelationJob(payload) {
       toast(last.error || "分轮查询失败。", true);
       return;
     }
-    // 停止期间加快轮询，让"正在停止"尽快切换成结果。
-    await sleep(jobStopping ? 800 : 3000);
+    // 停止或合成结果期间加快轮询，让状态尽快切换成结果。
+    await sleep(jobStopping || last.status === "finalizing" ? 800 : 3000);
     if (activeJob !== jobId) return;
     try {
       last = await api(`/api/relations/jobs/${jobId}`);
@@ -671,6 +675,7 @@ function scanPayload(seed) {
     data_source: $("#taostats-source").checked ? "taostats" : "local",
     filter_exchanges: $("#filter-exchanges").checked,
     filter_validators: $("#filter-validators").checked,
+    filter_systems: $("#filter-systems").checked,
   };
 }
 
@@ -817,8 +822,47 @@ async function scanBlocks(advance) {
   }
 }
 
+function taostatsAccountUrl(address) {
+  return `https://taostats.io/account/${encodeURIComponent(address)}`;
+}
+
+function addressLink(address, text) {
+  return `<a class="addr-link" href="${esc(taostatsAccountUrl(address))}" target="_blank" rel="noopener" title="在 Taostats 查看该地址详情（余额、质押、交易）">${esc(text || address)}</a>`;
+}
+
 function libraryRowsTable(rows) {
-  return `<table><thead><tr><th class="selection-cell"></th><th>地址</th><th>名称</th><th>分类</th><th>备注</th><th>地址库</th><th>来源</th><th></th></tr></thead><tbody>${rows.map((row) => { const exchangeControl = row.category === "EXCHANGE" ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销确认</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">重新确认</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销否定</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>` : ""; const bookCell = row.book ? `<span class="tag">${esc(row.book)}</span>` : "-"; return `<tr><td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td><td class="mono address">${esc(row.address)}</td><td>${esc(row.label || "-")}</td><td><span class="lib-category" data-category="${esc(row.category)}">${esc(row.category_label || categoryLabel(row.category))}</span>${exchangeControl}</td><td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td><td>${bookCell}</td><td>${esc(row.source || "-")}</td><td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td></tr>`; }).join("")}</tbody></table>`;
+  const categoryNames = state.categories.map((item) => item.name);
+  const rowsHtml = rows.map((row) => {
+    const exchangeControl = row.category === "EXCHANGE"
+      ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销确认</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">重新确认</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销否定</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>`
+      : "";
+    const bookCell = row.book ? `<span class="tag">${esc(row.book)}</span>` : "-";
+    const categories = (row.categories && row.categories.length ? row.categories : [row.category]).filter(Boolean);
+    // 「交易所（系统）/验证者（系统）」标签本身已写明系统分类，避免再并列一个「系统」标签。
+    const hasSystemRole = categories.includes("EXCHANGE") || categories.includes("VALIDATOR");
+    const displayCategories = categories.filter((name) => !(hasSystemRole && (name === "系统" || name === "SYSTEM")));
+    const chips = displayCategories.map((name) =>
+      `<span class="lib-category" data-category="${esc(name)}">${esc(categoryLabel(name))}</span>`
+    ).join("");
+    const editing = state.categoryEditorId === row.id;
+    // 分类编辑器单独占一行（colspan），避免把「分类」列撑宽导致其他列被挤出表格。
+    const editorRow = editing
+      ? `<tr class="category-editor-row" data-editor-for="${row.id}"><td colspan="8"><div class="category-editor"><div class="category-editor-title">选择分类（可多选，第一个为主分类）</div><div class="category-editor-choices">${categoryNames.map((name) =>
+          `<label><input type="checkbox" data-category-choice value="${esc(name)}"${categories.includes(name) ? " checked" : ""}>${esc(categoryLabel(name))}</label>`
+        ).join("")}</div><div class="category-editor-actions"><button class="secondary note-save" data-save-categories="${row.id}" type="button">保存分类</button><button class="ghost note-save" data-cancel-categories type="button">取消</button></div></div></td></tr>`
+      : "";
+    return `<tr>
+      <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td>
+      <td class="mono address library-address-cell"><div class="address-main">${addressLink(row.address, row.address)}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button></div></td>
+      <td>${esc(row.label || "-")}</td>
+      <td><div class="category-chips">${chips}</div><button class="ghost note-save" data-edit-categories="${row.id}" type="button">改分类</button>${exchangeControl}</td>
+      <td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td>
+      <td>${bookCell}</td><td>${esc(row.source || "-")}</td>
+      <td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td>
+    </tr>${editorRow}`;
+  }).join("");
+  // 包一层 .table-wrap：列多时（地址 + 复制按钮）可横向滚动，避免名称/来源被挤成竖排。
+  return `<div class="table-wrap"><table><thead><tr><th class="selection-cell"></th><th>地址</th><th>名称</th><th>分类</th><th>备注</th><th>地址库</th><th>来源</th><th></th></tr></thead><tbody>${rowsHtml}</tbody></table></div>`;
 }
 
 function libraryTable(rows) {
@@ -844,10 +888,11 @@ function libraryTable(rows) {
   });
   return `<div class="library-groups">${[...groups.values()].map((group, index) => {
     const groupId = `library-group-${index}`;
+    const expanded = state.libraryGroupsOpen.has(groupId);
     const categoryTag = group.category
       ? `<span class="lib-category" data-category="${esc(group.category)}">${esc(categoryLabel(group.category))}</span>`
       : '<span class="lib-category book-tag">自建库</span>';
-    return `<section class="library-group"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="false" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-details hidden" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
+    return `<section class="library-group"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -963,7 +1008,7 @@ async function dissolveBook(name) {
 const NEW_CATEGORY = "__new__";
 
 function categoryLabel(value) {
-  return ({ EXCHANGE: "交易所（系统）", VALIDATOR: "验证者（系统）" })[value] || value || "未分类";
+  return ({ EXCHANGE: "交易所（系统）", VALIDATOR: "验证者（系统）", SYSTEM: "系统" })[value] || value || "未分类";
 }
 
 function categoryOptionsMarkup(selected) {
@@ -1100,6 +1145,26 @@ async function saveLibraryNote(rowId, button) {
     window.setTimeout(() => { button.textContent = "保存"; }, 1400);
   } catch (error) { toast(`备注保存失败：${error.message}`, true); }
   finally { button.disabled = false; }
+}
+
+async function saveLibraryCategories(rowId, button) {
+  const row = button.closest("tr");
+  const selected = [...(row?.querySelectorAll("[data-category-choice]:checked") || [])]
+    .map((checkbox) => checkbox.value);
+  if (!selected.length) { toast("请至少勾选一个分类。", true); return; }
+  button.disabled = true;
+  try {
+    await api(`/api/library/${rowId}/categories`, {
+      method: "PATCH",
+      body: JSON.stringify({ categories: selected }),
+    });
+    state.categoryEditorId = null;
+    await loadLibrary();
+    toast(`分类已更新：${selected.join("、")}。`);
+  } catch (error) {
+    toast(`分类保存失败：${error.message}`, true);
+    button.disabled = false;
+  }
 }
 
 async function decideLibraryExchange(button) {
@@ -1466,6 +1531,7 @@ async function createBookFromResult() {
     if (result.other_book) parts.push(`属于其他库 ${result.other_book} 个（保留原库）`);
     if (result.skipped_exchange) parts.push(`排除交易所 ${result.skipped_exchange} 个`);
     if (result.skipped_validator) parts.push(`排除验证者 ${result.skipped_validator} 个`);
+    if (result.skipped_system) parts.push(`排除系统地址 ${result.skipped_system} 个`);
     toast(`地址库「${result.name}」已创建：${parts.join("，")}。可到“已知地址库”查看。`);
     $("#book-name").value = "";
     state.books = [];
@@ -1599,11 +1665,26 @@ document.addEventListener("click", (event) => {
   if (bookDissolve) dissolveBook(bookDissolve.dataset.bookDissolve);
   const libraryToggle = event.target.closest("[data-library-toggle]");
   if (libraryToggle) {
+    const groupId = libraryToggle.dataset.libraryToggle;
     const expanded = libraryToggle.getAttribute("aria-expanded") === "true";
     libraryToggle.setAttribute("aria-expanded", String(!expanded));
-    const details = document.querySelector(`[data-library-details="${libraryToggle.dataset.libraryToggle}"]`);
+    if (expanded) state.libraryGroupsOpen.delete(groupId);
+    else state.libraryGroupsOpen.add(groupId);
+    const details = document.querySelector(`[data-library-details="${groupId}"]`);
     if (details) details.classList.toggle("hidden", expanded);
   }
+  const editCategoriesButton = event.target.closest("[data-edit-categories]");
+  if (editCategoriesButton) {
+    state.categoryEditorId = Number(editCategoriesButton.dataset.editCategories);
+    renderLibraryList();
+  }
+  const cancelCategoriesButton = event.target.closest("[data-cancel-categories]");
+  if (cancelCategoriesButton) {
+    state.categoryEditorId = null;
+    renderLibraryList();
+  }
+  const saveCategoriesButton = event.target.closest("[data-save-categories]");
+  if (saveCategoriesButton) saveLibraryCategories(saveCategoriesButton.dataset.saveCategories, saveCategoriesButton);
   const deleteAddressButton = event.target.closest("[data-delete-address]");
   if (deleteAddressButton) deleteLibraryAddress(deleteAddressButton.dataset.deleteAddress);
   const libraryNoteButton = event.target.closest("[data-save-library-note]");

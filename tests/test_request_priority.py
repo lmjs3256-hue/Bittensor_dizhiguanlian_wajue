@@ -192,3 +192,43 @@ def test_balance_lookup_covers_related_addresses_when_budget_remains(monkeypatch
             assert not any("已跳过关联地址余额查询" in warning for warning in result["warnings"])
         finally:
             database.engine.dispose()
+
+
+def test_finalize_caps_balance_addresses_when_many_related(monkeypatch):
+    """跑完多轮后关联地址很多时，余额 RPC 只查前 N 个，避免结果迟迟不返回。"""
+    neighbors = [f"neighbor-{index}" for index in range(60)]
+    balance_calls: list[list[str]] = []
+
+    def fake_transfer(address, page):
+        if address == SEED:
+            return TransferPage(
+                [transfer_row(index, SEED, neighbor) for index, neighbor in enumerate(neighbors)],
+                None,
+            )
+        return TransferPage([], None)
+
+    def fake_balance(_url, addresses, **_kwargs):
+        balance_calls.append(list(addresses))
+        return {}
+
+    monkeypatch.setattr(service_module, "get_transfer_page", fake_transfer)
+    monkeypatch.setattr(service_module, "get_stake_transfer_page", lambda *_a: TransferPage([], None))
+    monkeypatch.setattr(service_module, "query_account_balances", fake_balance)
+    monkeypatch.setattr(service_module, "is_valid_ss58", lambda _address: True)
+
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "balance-cap.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            result = run_relations(monkeypatch, depth=1, service=service)
+
+            assert len(result["related"]) == 60
+            assert balance_calls
+            assert all(
+                len(calls) <= service_module.MAX_BALANCE_ADDRESSES_PER_RESULT
+                for calls in balance_calls
+            )
+            assert any("只读取前" in warning for warning in result["warnings"])
+        finally:
+            database.engine.dispose()

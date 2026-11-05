@@ -274,10 +274,12 @@ def discover(
                 source=entry.source,
                 exchange_confirmed=entry.exchange_confirmed,
                 exchange_rejected=entry.exchange_rejected,
+                categories=entry.categories,
             )
 
-    # 关联终点：已人工确认的交易所地址，以及人工在标签/备注里写明「交易所」
-    # 的地址。它们仍会作为关联地址出现在结果里，但不再向下扩展其转账。
+    # 关联终点：已人工确认的交易所地址、人工在标签/备注里写明「交易所」的
+    # 地址，以及被分到「系统」分类的地址。它们仍会作为关联地址出现在结果里，
+    # 但不再向下扩展其转账。
     terminal_exchange_addresses = {
         address
         for address, entry in library_map.items()
@@ -287,6 +289,9 @@ def discover(
             entry.category not in {"EXCHANGE", "VALIDATOR"}
             and not entry.exchange_rejected
             and ("交易所" in entry.note or "交易所" in entry.label)
+        ) or (
+            "系统" in entry.categories or "SYSTEM" in entry.categories
+            or entry.category in {"系统", "SYSTEM"}
         )
     }
 
@@ -483,6 +488,7 @@ def discover(
                 library_category=entry.category if entry else "",
                 library_note=entry.note if entry else "",
                 library_source=entry.source if entry else "",
+                library_categories=entry.categories if entry else (),
                 address_role=address_role,
                 role_reason=role_reason,
                 exchange_confirmed=entry.exchange_confirmed if entry else False,
