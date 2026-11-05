@@ -36,6 +36,8 @@ EXCLUDE_DIRS = {
     "__pycache__",
     "授权码",
     ".release",
+    ".probe",
+    ".workbuddy",
 }
 EXCLUDE_FILES = {"license.key"}
 
@@ -78,6 +80,8 @@ def build(with_admin: bool, out: Path | None = None) -> Path:
         for item in sorted(ROOT.iterdir()):
             name = item.name
             if name in EXCLUDE_DIRS or name in EXCLUDE_FILES or name.endswith(".zip"):
+                continue
+            if name.startswith(".pytest_tmp") or name.startswith(".probe"):
                 continue
             if not with_admin and name in ADMIN_ITEMS:
                 continue

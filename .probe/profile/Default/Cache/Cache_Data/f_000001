@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Bittensor 地址关联挖掘</title>
+  <link rel="icon" href="data:,">
+  <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
+  <link rel="stylesheet" href="/static/styles.css?v=0.6.16">
+</head>
+<body>
+  <div class="license-gate hidden" id="license-gate">
+    <div class="license-card">
+      <span class="license-badge">UNLICENSED</span>
+      <h2>这台电脑还没有激活</h2>
+      <p id="license-reason">工具需要授权码才能使用。</p>
+      <div class="license-machine">
+        <span>本机机器码</span>
+        <code id="license-machine">读取中…</code>
+        <button class="ghost" id="copy-machine" type="button">复制</button>
+      </div>
+      <label class="license-input">粘贴授权码
+        <textarea id="license-token" rows="4" spellcheck="false" placeholder="WL1.xxxxxxxx.xxxxxxxx（整行粘贴，管理员提供）"></textarea>
+      </label>
+      <button class="primary" id="license-activate" type="button">激活</button>
+      <small>把上面的机器码发给管理员换取授权码；授权与这台电脑绑定，换电脑需要重新申请。授权码只会写在本目录的 <code>license.key</code> 里，不联网上传。</small>
+    </div>
+  </div>
+  <div class="license-watermark" id="license-watermark" hidden></div>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="mark">WL</div><div><b>Wallet Link</b><span>Bittensor Intelligence</span></div></div>
+      <nav>
+        <button class="nav active" data-nav="scan">地址扫描</button>
+        <button class="nav" data-nav="history">查询记录</button>
+        <button class="nav" data-nav="library">已知地址库</button>
+        <button class="nav" data-nav="method">方法说明</button>
+        <button class="nav" data-nav="release">更新日志</button>
+      </nav>
+      <div class="aside-status">
+        <span class="dot" id="health-dot"></span>
+        <span id="health-text">扫描服务连接中</span>
+      </div>
+    </aside>
+    <main>
+      <header>
+        <div><div class="eyebrow">EVIDENCE-BASED ADDRESS GRAPH</div><h1>Bittensor 地址关联挖掘</h1></div>
+        <div class="header-actions">
+          <label class="theme-select"><span>主题</span><select id="theme-select" aria-label="界面主题"><option value="system">跟随系统</option><option value="warm">护眼 · 暖色</option><option value="darkgray">护眼 · 深灰</option></select></label>
+          <div class="live-pill"><span class="dot" id="index-dot"></span><span id="index-status">本地索引加载中</span></div>
+        </div>
+      </header>
+
+      <section class="panel hero">
+          <div><span class="label">数据口径</span><h2 id="hero-title">本地索引或 Taostats 历史转账</h2><p>只把 <code>Balances.Transfer</code> 的 from → to 当作资金边。结果只显示关联钱包、层级、金额和地址库标签。</p></div>
+        <div class="metrics">
+          <div><span>本地索引转账</span><b id="metric-transfers">-</b></div>
+          <div><span>区块范围</span><b id="metric-range">-</b></div>
+          <div><span>索引水位</span><b id="metric-cursor">-</b></div>
+        </div>
+      </section>
+
+      <div id="view-scan">
+        <section class="panel controls">
+          <div class="control-grid">
+            <div class="wide seed-field"><label for="seed">起始地址</label><div class="seed-row"><input id="seed" placeholder="输入 Bittensor SS58 地址" autocomplete="off" spellcheck="false"><button class="primary" id="run-scan" type="button">扫描关联</button></div><div id="job-progress" class="job-progress hidden" aria-live="polite"><span class="job-dot"></span><div class="job-body"><span id="job-text">分轮查询准备中…</span><small id="job-plan"></small></div><button class="ghost" id="cancel-job" type="button">停止续查</button></div></div>
+            <label>最大层级<select id="depth"><option value="1">1 级</option><option value="2">2 级</option><option value="3" selected>3 级</option></select></label>
+            <label>单边最低 TAO<input id="min-edge" value="1" inputmode="decimal"></label>
+            <label>累计最低 TAO<input id="min-total" value="1" inputmode="decimal"></label>
+            <label>方向<select id="direction"><option value="both" selected>流入 + 流出</option><option value="outgoing">仅流出</option><option value="incoming">仅流入</option></select></label>
+          </div>
+          <div class="source-choice"><label><input id="taostats-source" type="checkbox" checked> 使用 Taostats 历史索引</label><div class="round-options"><label class="multi-round-choice" title="每分钟自动再查一轮，从上次没查完的地址继续，直到全部查完或达到轮数上限"><input id="multi-round" type="checkbox" checked> 自动分轮续查</label><label class="round-limit-choice" for="max-rounds" title="每轮最多 5 次 API 请求；轮数用完会停止并返回已查到的关联，可调高后继续">最多查询轮数<input id="max-rounds" type="number" min="1" max="100" value="5" inputmode="numeric"><small id="round-hint">≈ 25 次请求</small></label></div><span id="taostats-status">密钥状态读取中</span><div class="filter-choice"><label><input id="filter-exchanges" type="checkbox"> 过滤交易所地址</label><label><input id="filter-validators" type="checkbox"> 过滤验证者地址</label><small>只有地址库中“已人工确认”的 EXCHANGE 地址才允许过滤；“疑似交易所（待确认）”会保留在结果中。验证者优先使用地址库中的 VALIDATOR 分类，并在有 Taostats key 时尝试读取当前验证者名单。</small></div><div class="api-key-settings" id="api-key-settings"><div class="api-key-head"><b>Taostats API key</b><span id="taostats-key-status" aria-live="polite"></span><button class="ghost api-key-toggle" id="toggle-api-key" type="button">填写 / 修改</button></div><div class="api-key-body hidden" id="api-key-body"><input id="taostats-api-key" type="password" autocomplete="new-password" placeholder="粘贴 API key" aria-label="Taostats API key"><div class="api-key-actions"><button class="secondary" id="save-taostats-key" type="button">保存 API key</button><button class="ghost" id="clear-taostats-key" type="button">清除</button></div><small class="api-key-hint">还没有 key？<a href="https://taostats.io/zh/pro/api-keys" target="_blank" rel="noopener">登录后打开「API 密钥」页创建</a>（免费档即可，注册入口 <a href="https://taostats.io/zh/pro" target="_blank" rel="noopener">Taostats Pro</a>）；不确定怎么点，看<a href="https://taostats.io/zh/docs/start-here/getting-started-with-taostats-api" target="_blank" rel="noopener">官方图文步骤</a>。</small></div></div><div class="usage-card"><div class="section-title"><b>Taostats 查询次数</b><span class="tag">本机持久统计</span></div><div class="usage-grid"><div><span>今日查询</span><b id="usage-today">-</b></div><div><span>本月查询</span><b id="usage-month">-</b></div><div><span>累计查询</span><b id="usage-total">-</b></div><div><span>本月参考上限</span><b id="usage-limit">-</b></div><div><span>本月剩余参考</span><b id="usage-remaining">-</b></div></div><small id="usage-note">统计本机实际发起的 Taostats 网络请求；缓存命中不计数。公开免费档按 credits 计费，参考上限不等同账号精确剩余次数。</small></div><small>密码框内容只在保存请求时发送到本机服务；key 会加密保存在本机 data\settings.json（Windows DPAPI，绑定当前用户），重启服务后自动恢复，不会回显。用「清除」可以删掉本机保存的 key。免费档额度以<a href="https://taostats.io/zh/pro" target="_blank" rel="noopener">官方套餐说明</a>为准；接口字段见<a href="https://taostats.io/zh/docs/new/transfers/get-transfers" target="_blank" rel="noopener">转账 API 文档</a>。单次关联最多发起 5 个 API 请求；部分结果会显示提示。</small></div>
+          <div class="actions"><label class="result-filter export-depth-control">导出层级<select id="export-depth" aria-label="导出层级"><option value="all">全部层级</option><option value="1">仅 1 级关联</option><option value="2">仅 2 级关联</option><option value="3">仅 3 级关联</option></select></label><button class="secondary" id="export-json">导出 JSON</button><button class="secondary" id="export-addresses" title="每行一个地址，已排除地址库中已确认的交易所地址和验证者地址；按左侧选择的层级导出">导出地址 TXT</button><button class="secondary" id="refresh-result" type="button" title="按当前设置重新查询：已手动移除的地址及其线索下游不会再出现" disabled>刷新结果</button></div>
+        </section>
+
+        <section class="panel scan-ops">
+          <div><span class="label">INDEX CONTROL</span><h3>更新链上索引</h3><p>扫描只取最新已最终确定区块附近的范围，写入本地 SQLite。公开入口节点的历史状态会被裁剪；全链历史需要归档节点或外部可靠数据源。</p></div>
+          <div class="inline-form"><label>区块数<input id="scan-blocks" type="number" min="1" max="16" value="2"></label><button class="secondary" id="scan-latest">扫描最新</button><button class="ghost" id="scan-advance">继续水位</button></div>
+        </section>
+
+        <section id="result" class="hidden">
+          <div id="result-alert" class="result-alert hidden"></div>
+          <div class="result-heading"><div><span class="label">ASSOCIATION RESULT</span><h2>扫描结果</h2><p id="result-subtitle"></p></div><div class="badges" id="result-badges"></div></div>
+          <section class="seed-balance-card"><div><span>起始地址</span><code id="seed-result-address">-</code></div><div><span>当前钱包余额</span><b id="seed-result-balance">未获取</b></div></section>
+          <div class="stats stats-three">
+            <div><span>关联地址</span><b id="count-related">0</b></div>
+            <div><span>截止区块</span><b id="cutoff">-</b></div>
+          </div>
+          <section id="seed-library-hit" class="panel library-hit hidden"><h3>起始地址已命中地址库</h3><div id="seed-library-hit-content"></div></section>
+          <section id="library-sync" class="panel sync-panel">
+            <div class="section-title"><div><h3>同步到已知地址库</h3><span class="tag">去重写入</span></div><small id="sync-hint"></small></div>
+            <div class="sync-row">
+              <label>分类<select id="sync-category" data-category-select aria-label="同步到地址库时使用的分类"></select></label>
+              <label>标签<input id="sync-label" maxlength="160" placeholder="留空则用“关联同步 · 地址前缀”"></label>
+              <button class="secondary" id="sync-matched" type="button">同步命中地址 + 发起地址</button>
+              <button class="primary" id="sync-all" type="button">同步全部关联地址 + 发起地址</button>
+            </div>
+            <small>只新增地址库中不存在的地址，已存在的记录不会被覆盖或改分类；同步后可在“已知地址库”里查看。</small>
+            <div class="book-create">
+              <div class="book-create-head"><b>或：新建地址库并导入</b><small id="book-hint">本次可导入地址统计中…</small></div>
+              <div class="book-create-row">
+                <label>地址库名称<input id="book-name" maxlength="60" placeholder="例如：2026-11 疑似同一实体" autocomplete="off"></label>
+                <label>分类<select id="book-category" data-category-select aria-label="新建地址库的分类"></select></label>
+                <label class="inline-check"><input id="book-include-seed" type="checkbox" checked> 包含发起地址</label>
+                <button class="primary" id="create-book" type="button">新建地址库并导入</button>
+              </div>
+              <small>给这次查询起一个库名，把可导入的关联地址和发起地址一起写进去；已人工确认的交易所和验证者地址会自动剔除，规则与“导出地址 TXT”一致。同名库重复导入只补新地址，不改已有记录。</small>
+            </div>
+          </section>
+          <section class="panel"><div class="section-title"><div><h3>关联地址</h3><span class="tag">金额过滤后</span></div><label class="result-filter">层级筛选<select id="related-depth-filter" aria-label="关联地址层级筛选"><option value="all">全部层级</option><option value="1">只看 1 级</option><option value="2">只看 2 级</option><option value="3">只看 3 级</option></select></label></div><small id="removed-note" class="removed-note hidden"></small><div id="related" class="table-wrap"></div></section>
+          <section class="panel notes"><h3>数据范围与限制</h3><ul id="warnings"></ul></section>
+        </section>
+        <div id="empty" class="empty"><div class="empty-icon">3D</div><h2>输入地址，开始三跳关联</h2><p>默认使用 Taostats 历史索引；也可以关闭上方选项，只查本地采集区间。</p></div>
+      </div>
+
+      <div id="view-library" class="hidden">
+        <section class="panel library-top">
+          <div><span class="label">KNOWN ADDRESS LIBRARY</span><h2>地址库</h2><p>分类记录这个地址“是谁”：预置「大V / 群友 / 其他」，可自行新增（例如项目方、做市商）。EXCHANGE（交易所）和 VALIDATOR（验证者）是系统分类，只由“确认交易所”操作或官方名单产生，查询时用来过滤公共地址，不参与人工选分类。</p></div>
+          <div class="inline-form"><label>名称<input id="lib-label" placeholder="标签名称"></label><label>分类<select id="lib-category" data-category-select aria-label="地址分类"></select></label><label>地址<input id="lib-address" placeholder="SS58 地址" spellcheck="false"></label><label>备注<input id="lib-note" placeholder="可选备注"></label><button class="secondary" id="add-address">添加地址</button><button class="primary" id="choose-file">导入文件</button><button class="secondary" id="sync-exchanges">同步官方交易所地址</button><input type="file" id="library-file" accept=".txt,.csv,.json" hidden></div>
+        </section>
+        <section class="panel category-panel"><div class="section-title"><div><h3>分类</h3><span class="tag" id="category-count">-</span></div><small>下拉里选「＋ 新建分类…」即可就地新增；删除自建分类时，该分类下的地址会自动回到“其他”，地址本身不会删除。</small></div><div id="category-list" class="category-list"></div><div class="category-add"><label>新增分类<input id="new-category-name" maxlength="12" placeholder="例如：项目方、做市商" autocomplete="off"></label><button class="secondary" id="add-category" type="button">添加分类</button></div></section>
+        <section class="panel book-panel"><div class="section-title"><div><h3>自建地址库</h3><span class="tag" id="book-count">0 个</span></div><small>由查询结果“新建地址库并导入”生成；解散只去掉库名标记，地址仍保留在已知地址库中。</small></div><div id="book-list" class="book-list"><div class="placeholder">还没有自建地址库。完成一次关联查询后，在结果区填写库名即可创建。</div></div></section>
+        <section class="panel"><div class="section-title"><div><h3>地址库清单</h3><span class="tag" id="library-count">0 条</span></div><div class="library-actions"><label class="book-filter-control">地址库<select id="book-filter" aria-label="按地址库筛选"><option value="">全部地址库</option></select></label><button class="secondary" id="export-library-csv" type="button">导出 CSV</button><button class="secondary" id="export-library-json" type="button">导出 JSON</button><label class="select-all-control"><input type="checkbox" id="select-all-addresses" aria-label="全选地址">全选</label><button class="danger" id="delete-selected" disabled>删除所选 (0)</button></div></div><div id="library-table" class="table-wrap"></div></section>
+      </div>
+
+      <div id="view-history" class="hidden">
+        <section class="panel history-top">
+          <div><span class="label">SCAN HISTORY</span><h2>查询记录</h2><p>每次关联查询结束都会自动保存一份完整结果，中途停止的也保存当前已查到的部分。忘记导出时在这里回看结果、重新导出地址，或把关联地址和发起地址去重补进地址库。最多保留最近 500 条。</p></div>
+          <div class="inline-form"><button class="secondary" id="refresh-history" type="button">刷新</button><button class="danger" id="clear-history" type="button">清空记录</button></div>
+        </section>
+        <section class="panel backfill-panel">
+          <div class="section-title"><div><h3>批量补录</h3><span class="tag" id="backfill-tag">找回旧记录</span></div><small>0.3.0 之前的查询结果没有落库，无法直接恢复。把当时查过的起始地址粘进来重跑一遍，结果会自动写入查询记录，随后可正常查看和导出。</small></div>
+          <textarea id="backfill-seeds" rows="4" spellcheck="false" placeholder="每行一个起始地址，例如：&#10;5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt&#10;5DceuTr7XPqw67PNHW9ewzzo2cZ7Cm8HgfjwUqEpd8Mh8QNg"></textarea>
+          <div class="backfill-actions">
+            <small>沿用扫描页当前的深度、金额阈值、方向、数据源和过滤设置；每个地址跑一轮单次查询并自动归档。批量内相同地址只跑一次，重复补录会新增记录，可在下方清单删除多余的。</small>
+            <div class="backfill-buttons">
+              <button class="secondary" id="start-backfill" type="button">开始补录</button>
+              <button class="ghost" id="stop-backfill" type="button" disabled>停止</button>
+            </div>
+          </div>
+          <div id="backfill-progress" class="backfill-progress hidden"></div>
+        </section>
+        <section class="panel">
+          <div class="section-title"><div><h3>历史清单</h3><span class="tag" id="history-count">-</span></div><div class="history-sync-defaults"><label>导出层级<select id="history-export-depth" aria-label="历史记录导出地址时使用的层级"><option value="all">全部层级</option><option value="1">仅 1 级关联</option><option value="2">仅 2 级关联</option><option value="3">仅 3 级关联</option></select></label><label>同步分类<select id="history-sync-category" data-category-select aria-label="历史记录同步到地址库时使用的分类"></select></label><label>标签<input id="history-sync-label" maxlength="160" placeholder="留空用自动标签" autocomplete="off"></label></div></div>
+          <small>点击“查看结果”会回到扫描页并展示该次关联；“同步地址库”会把该记录的关联地址 + 发起地址去重写入，使用上面的分类和标签；导出遵循同一规则：排除已确认交易所和验证者地址。</small>
+          <div id="history-table" class="table-wrap"><div class="placeholder">查询记录加载中…</div></div>
+          <div class="history-pager"><button class="ghost" id="history-prev" type="button" disabled>上一页</button><span id="history-page">-</span><button class="ghost" id="history-next" type="button" disabled>下一页</button></div>
+        </section>
+      </div>
+
+      <div id="view-method" class="hidden">
+        <section class="panel prose"><span class="label">DESIGN NOTES</span><h2>什么算关联</h2><p>本工具将 Bittensor 的普通转账事件视为一条行为关系。第一跳支持低于阈值的金额，以保留小额试探路径；第二、三跳必须达到单边金额门槛，且最终地址累计金额达到累计门槛。公共系统账户默认排除。</p><h3>证据边界</h3><ul><li><b>已验证：</b>RPC 能读取最新块的交易与事件，<code>Balances.Transfer</code> 包含 from、to、amount。</li><li><b>已验证：</b>金额过滤、三级上限、去重、地址库命中可由确定性程序完成。</li><li><b>限制：</b>一次转账不能证明同一所有者。工具表达“发生资金关联”，不表达“同一人”或身份。</li><li><b>限制：</b>本地索引只管实际采集到的区块。公开节点旧状态可能已裁剪，不能据此宣称全历史完整性。</li></ul><h3>后续扩展</h3><p>可接入归档节点、补充质押与代理关系、加入时间窗和交易次数阈值，以及地址库命中审计日志。</p></section>
+      </div>
+      <div id="view-release" class="hidden">
+        <section class="panel prose release-page"><span class="label">RELEASE NOTES</span><h2>版本更新日志</h2><p>这里显示当前运行版本及已发布版本的功能变更，内容来自项目内的 <code>VERSION</code> 和 <code>CHANGELOG.md</code>。</p><div id="release-list" class="release-list"><div class="placeholder">更新日志加载中…</div></div></section>
+      </div>
+      <footer class="app-footer"><span>Bittensor 地址关联挖掘</span><span id="app-version">当前版本：读取中…</span><button class="footer-release-link" data-nav="release" type="button">查看更新日志</button></footer>
+      <div id="toast" class="toast"></div>
+    </main>
+  </div>
+  <script src="/static/app.js?v=0.6.16"></script>
+</body>
+</html>

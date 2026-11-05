@@ -1071,64 +1071,51 @@ async function loadLibrary() {
     renderBooks();
     renderBookFilter();
     renderLibraryList();
-    const selectAll = $("#select-all-addresses");
-    if (selectAll) selectAll.addEventListener("change", () => {
-      document.querySelectorAll("[data-library-select]").forEach((checkbox) => {
-        checkbox.checked = selectAll.checked;
-      });
-      updateLibrarySelection();
-    });
-    document.querySelectorAll("[data-library-toggle]").forEach((button) => button.addEventListener("click", () => {
-      const expanded = button.getAttribute("aria-expanded") === "true";
-      button.setAttribute("aria-expanded", String(!expanded));
-      const details = document.querySelector(`[data-library-details="${button.dataset.libraryToggle}"]`);
-      if (details) details.classList.toggle("hidden", expanded);
-    }));
-    document.querySelectorAll("[data-library-select]").forEach((checkbox) => {
-      checkbox.addEventListener("change", updateLibrarySelection);
-    });
     updateLibrarySelection();
-    document.querySelectorAll("[data-delete-address]").forEach((button) => button.addEventListener("click", async () => {
-      if (!window.confirm("确定删除这条地址库记录？")) return;
-      try {
-        await api(`/api/library/${button.dataset.deleteAddress}`, { method: "DELETE" });
-        await loadLibrary();
-        toast("地址已删除。");
-      } catch (error) { toast(error.message, true); }
-    }));
-    document.querySelectorAll("[data-save-library-note]").forEach((button) => button.addEventListener("click", async () => {
-      const row = button.closest("tr");
-      const input = row?.querySelector(`[data-library-note-input="${button.dataset.saveLibraryNote}"]`);
-      if (!input) return;
-      button.disabled = true;
-      try {
-        await api(`/api/library/${button.dataset.saveLibraryNote}`, {
-          method: "PATCH",
-          body: JSON.stringify({ note: input.value }),
-        });
-        const item = state.library.find((entry) => String(entry.id) === String(button.dataset.saveLibraryNote));
-        if (item) item.note = input.value;
-        button.textContent = "已保存";
-        window.setTimeout(() => { button.textContent = "保存"; }, 1400);
-      } catch (error) { toast(`备注保存失败：${error.message}`, true); }
-      finally { button.disabled = false; }
-    }));
-    document.querySelectorAll("[data-library-exchange-decision]").forEach((button) => button.addEventListener("click", async () => {
-      button.disabled = true;
-      try {
-        await api(`/api/library/${button.dataset.rowId}/confirm-exchange`, {
-          method: "POST",
-          body: JSON.stringify({ decision: button.dataset.libraryExchangeDecision }),
-        });
-        await loadLibrary();
-        const decision = button.dataset.libraryExchangeDecision;
-        toast(decision === "confirm" ? "已确认，扫描时允许过滤该交易所地址。" : decision === "reject" ? "已否定，该地址不会被交易所过滤。" : "已重置交易所人工结论。", false);
-      } catch (error) {
-        toast(`交易所人工结论更新失败：${error.message}`, true);
-        button.disabled = false;
-      }
-    }));
   } catch (error) { toast(error.message, true); }
+}
+
+async function deleteLibraryAddress(rowId) {
+  if (!window.confirm("确定删除这条地址库记录？")) return;
+  try {
+    await api(`/api/library/${rowId}`, { method: "DELETE" });
+    await loadLibrary();
+    toast("地址已删除。");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function saveLibraryNote(rowId, button) {
+  const row = button.closest("tr");
+  const input = row?.querySelector(`[data-library-note-input="${rowId}"]`);
+  if (!input) return;
+  button.disabled = true;
+  try {
+    await api(`/api/library/${rowId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ note: input.value }),
+    });
+    const item = state.library.find((entry) => String(entry.id) === String(rowId));
+    if (item) item.note = input.value;
+    button.textContent = "已保存";
+    window.setTimeout(() => { button.textContent = "保存"; }, 1400);
+  } catch (error) { toast(`备注保存失败：${error.message}`, true); }
+  finally { button.disabled = false; }
+}
+
+async function decideLibraryExchange(button) {
+  button.disabled = true;
+  try {
+    await api(`/api/library/${button.dataset.rowId}/confirm-exchange`, {
+      method: "POST",
+      body: JSON.stringify({ decision: button.dataset.libraryExchangeDecision }),
+    });
+    await loadLibrary();
+    const decision = button.dataset.libraryExchangeDecision;
+    toast(decision === "confirm" ? "已确认，扫描时允许过滤该交易所地址。" : decision === "reject" ? "已否定，该地址不会被交易所过滤。" : "已重置交易所人工结论。", false);
+  } catch (error) {
+    toast(`交易所人工结论更新失败：${error.message}`, true);
+    button.disabled = false;
+  }
 }
 
 async function exportLibrary(format) {
@@ -1610,8 +1597,31 @@ document.addEventListener("click", (event) => {
   if (bookExport) exportBook(bookExport.dataset.bookName, bookExport.dataset.bookExport);
   const bookDissolve = event.target.closest("[data-book-dissolve]");
   if (bookDissolve) dissolveBook(bookDissolve.dataset.bookDissolve);
+  const libraryToggle = event.target.closest("[data-library-toggle]");
+  if (libraryToggle) {
+    const expanded = libraryToggle.getAttribute("aria-expanded") === "true";
+    libraryToggle.setAttribute("aria-expanded", String(!expanded));
+    const details = document.querySelector(`[data-library-details="${libraryToggle.dataset.libraryToggle}"]`);
+    if (details) details.classList.toggle("hidden", expanded);
+  }
+  const deleteAddressButton = event.target.closest("[data-delete-address]");
+  if (deleteAddressButton) deleteLibraryAddress(deleteAddressButton.dataset.deleteAddress);
+  const libraryNoteButton = event.target.closest("[data-save-library-note]");
+  if (libraryNoteButton) saveLibraryNote(libraryNoteButton.dataset.saveLibraryNote, libraryNoteButton);
+  const libraryExchangeButton = event.target.closest("[data-library-exchange-decision]");
+  if (libraryExchangeButton) decideLibraryExchange(libraryExchangeButton);
   const categoryDelete = event.target.closest("[data-category-delete]");
   if (categoryDelete) deleteCategory(categoryDelete.dataset.categoryDelete);
+});
+document.addEventListener("change", (event) => {
+  if (event.target.matches("[data-library-select]")) updateLibrarySelection();
+});
+const selectAllAddresses = $("#select-all-addresses");
+if (selectAllAddresses) selectAllAddresses.addEventListener("change", () => {
+  document.querySelectorAll("[data-library-select]").forEach((checkbox) => {
+    checkbox.checked = selectAllAddresses.checked;
+  });
+  updateLibrarySelection();
 });
 $("#sync-all").addEventListener("click", () => syncCurrentResult("all"));
 $("#sync-matched").addEventListener("click", () => syncCurrentResult("matched"));
