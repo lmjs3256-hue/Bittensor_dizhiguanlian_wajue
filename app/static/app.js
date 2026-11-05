@@ -320,6 +320,7 @@ async function saveTaostatsKey() {
 }
 
 async function clearTaostatsKey() {
+  if (!window.confirm("确定清除本机保存的 Taostats API key？\n\n清除后 Taostats 余额/转账查询需要重新填写 key。")) return;
   const button = $("#clear-taostats-key");
   button.disabled = true;
   try {
@@ -1265,7 +1266,9 @@ async function promptNewCategory(select) {
 }
 
 async function deleteCategory(name) {
-  if (!window.confirm(`删除分类「${name}」？\n\n该分类下的地址会回到“其他”，地址本身不会被删除。`)) return;
+  const item = state.categories.find((entry) => entry.name === name);
+  const count = item && item.count ? `（当前 ${item.count} 个地址）` : "";
+  if (!window.confirm(`删除分类「${name}」${count}？\n\n该分类下的地址会回到“其他”，地址本身不会被删除。\n注意：删除分类只改分类归属，不影响地址库里的地址。`)) return;
   try {
     const result = await api(`/api/library/categories/${encodeURIComponent(name)}`, { method: "DELETE" });
     await loadCategories();
@@ -1310,8 +1313,52 @@ async function loadLibrary() {
   } catch (error) { toast(error.message, true); }
 }
 
+// -- 删除前的二次确认：把「要删的是什么」写清楚，避免误点 ------------------
+function libraryGroupOf(row) {
+  if (row.book) return row.book;
+  if (row.label_custom) return row.label;
+  return categoryLabel(row.category);
+}
+
+// 批量删除时按组汇总（自建库 / 标签组 / 分类兜底组），让人看清删的是哪几组。
+function selectionSummary(ids) {
+  const wanted = new Set(ids.map((id) => String(id)));
+  const groups = new Map();
+  state.library.forEach((row) => {
+    if (!wanted.has(String(row.id))) return;
+    const key = libraryGroupOf(row);
+    groups.set(key, (groups.get(key) || 0) + 1);
+  });
+  const ordered = [...groups.entries()].sort((a, b) => b[1] - a[1]);
+  const shown = ordered.slice(0, 6);
+  const lines = shown.map(([name, count]) => `· ${name} ${count} 条`);
+  const restCount = ordered.length - shown.length;
+  if (restCount > 0) {
+    const restRows = ordered.slice(6).reduce((sum, [, count]) => sum + count, 0);
+    lines.push(`· 其余 ${restCount} 个组共 ${restRows} 条`);
+  }
+  return { groups: ordered.length, lines };
+}
+
+function deleteAddressConfirmText(row) {
+  const lines = ["确定删除这条地址库记录？", "", `地址：${shortAddr(row.address)}`];
+  if (row.label) {
+    lines.push(`名称：${row.label}${row.book ? `（地址库「${row.book}」）` : ""}`);
+  } else if (row.book) {
+    lines.push(`地址库：${row.book}`);
+  }
+  const categories = (row.categories && row.categories.length ? row.categories : [row.category]).filter(Boolean);
+  if (categories.length) lines.push(`分类：${categories.map(categoryLabel).join("、")}`);
+  const note = String(row.note || "").trim();
+  if (note) lines.push(`备注：${note.length > 40 ? `${note.slice(0, 40)}…` : note}`);
+  lines.push("", "单条删除不可撤回（只有「解散地址库」能撤回）。");
+  return lines.join("\n");
+}
+
 async function deleteLibraryAddress(rowId) {
-  if (!window.confirm("确定删除这条地址库记录？")) return;
+  const row = state.library.find((item) => String(item.id) === String(rowId));
+  const text = row ? deleteAddressConfirmText(row) : "确定删除这条地址库记录？此操作不可撤回。";
+  if (!window.confirm(text)) return;
   try {
     await api(`/api/library/${rowId}`, { method: "DELETE" });
     await loadLibrary();
@@ -2285,7 +2332,14 @@ $("#delete-selected").addEventListener("click", async () => {
     .map((checkbox) => Number(checkbox.value))
     .filter((id) => Number.isInteger(id) && id > 0);
   if (!ids.length) return;
-  if (!window.confirm(`确定批量删除选中的 ${ids.length} 条地址库记录？此操作不可撤销。`)) return;
+  const summary = selectionSummary(ids);
+  const text = [
+    `确定删除选中的 ${ids.length} 条地址？`,
+    "",
+    ...(summary.groups ? [`涉及 ${summary.groups} 个组：`, ...summary.lines, ""] : []),
+    "批量删除不可撤回（只有「解散地址库」能撤回），建议先导出 TXT/CSV 备份。",
+  ].join("\n");
+  if (!window.confirm(text)) return;
   try {
     const result = await api("/api/library", {
       method: "DELETE",

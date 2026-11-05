@@ -315,3 +315,12 @@ Set-Location G:\bittensor-wallet-link-intel
 - 改动写 `ImportBatch(kind="category")` 快照（`updated` 里存 `_library_row_snapshot` 旧值），`undo_last_import()` 可整组还原。
 - 新接口 `POST /api/library/group-categories`（`GroupCategoriesInput`：`categories` + `book` / `label`）。单条 `PATCH /api/library/{id}/categories` 保留但界面不再调用。
 - 前端：`state.groupCategory = {kind, name}` 取代 `state.categoryEditorId`；编辑器整行渲染在组标题下（`.group-category-editor`），默认只勾该组主分类（`group.primaryCategory`），避免"其他 + 群友"这种误叠加。
+
+## 23. 2026-11-05 0.6.19 交接：删除类操作的前置确认
+
+- 本次只改前端确认文案与一处缺失确认，后端接口与数据模型未变，无需迁移。
+- 新增三个辅助函数（`app/static/app.js` 地址库区块）：`libraryGroupOf(row)`（按 `book` → `label_custom` → 分类兜底组算组名）、`selectionSummary(ids)`（批量选择按组汇总，最多列 6 组，其余折叠为“其余 N 个组共 M 条”）、`deleteAddressConfirmText(row)`（单条删除显示地址前后各四位 / 名称 / 所属库 / 分类 / 备注摘要）。
+- `deleteLibraryAddress` 先用 `state.library` 找到该行再拼确认文案；`#delete-selected` 用 `selectionSummary` 生成分组清单，并提示“批量删除不可撤回，建议先导出备份”。
+- `deleteCategory` 补上该分类当前地址数；`clearTaostatsKey` 补上确认框（此前点击即清除）。
+- 已有确认（解散地址库、清空/删除单条查询记录、撤回上次导入、整组改分类）保持不变。
+- 回归：`pytest -q` 全部通过；`node --check app/static/app.js` 通过。`app/templates/index.html` 资源戳升到 `v=0.6.24`，避免浏览器沿用旧 JS。

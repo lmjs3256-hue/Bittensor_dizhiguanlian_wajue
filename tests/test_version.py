@@ -7,9 +7,9 @@ from app.version_info import read_version_info
 def test_version_info_reads_current_version_and_release_notes():
     info = read_version_info()
 
-    assert info["version"] == "0.6.18"
-    assert info["entries"][0]["version"] == "0.6.18"
-    assert any("整组" in change for change in info["entries"][0]["changes"])
+    assert info["version"] == "0.6.19"
+    assert info["entries"][0]["version"] == "0.6.19"
+    assert any("确认" in change for change in info["entries"][0]["changes"])
 
 
 def test_version_endpoint_exposes_current_version_and_release_notes():
@@ -18,8 +18,8 @@ def test_version_endpoint_exposes_current_version_and_release_notes():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "0.6.18"
-    assert payload["entries"][0]["title"] == "整组改分类"
+    assert payload["version"] == "0.6.19"
+    assert payload["entries"][0]["title"] == "删除前确认更明确"
 
 
 def test_health_reports_service_root_and_pid():
