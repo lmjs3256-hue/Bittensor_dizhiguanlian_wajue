@@ -114,3 +114,122 @@ def test_bundled_seed_books_are_parseable():
         assert len(addresses) == len(set(addresses))
         total += len(addresses)
     assert total >= 300
+
+
+def test_reinstall_seed_books_brings_back_dissolved_group(tmp_path, monkeypatch):
+    """「重新导入预置库」：解散掉的组连库带地址补回来，已存在的地址不重复加。"""
+
+    from app import db as db_module
+
+    database = build_database(str(tmp_path), "seed-reinstall.db")
+    folder = tmp_path / "seed_books"
+    write_book(folder, "一只羊", [SEED_A, SEED_B])
+    write_book(folder, "DFV", [SEED_C])
+    monkeypatch.setattr(db_module, "SEED_BOOK_DIR", folder)
+    service = LinkService(database, "ws://127.0.0.1:1")
+    try:
+        install_seed_books(database, folder)
+        assert service.dissolve_address_book("一只羊")["deleted"] == 2
+
+        result = service.reinstall_seed_books()
+
+        assert result["inserted"] == 2
+        assert result["created_books"] == ["一只羊"]
+        assert {book["name"] for book in service.address_books()} == {"DFV", "一只羊"}
+        with database.session() as db:
+            assert db.query(AddressLibrary).count() == 3
+
+        # 再点一次：已经补齐，没有缺失地址，不产生新的撤回快照。
+        batch = service.last_import_batch()
+        install_again = service.reinstall_seed_books()
+        assert install_again["inserted"] == 0
+        assert service.last_import_batch()["created_at"] == batch["created_at"]
+    finally:
+        database.engine.dispose()
+
+
+def test_reinstall_seed_books_keeps_manual_edits_and_can_be_undone(tmp_path, monkeypatch):
+    """重新导入只补缺失地址：人工改过的记录原样保留，导入结果可以撤回。"""
+
+    from app import db as db_module
+
+    database = build_database(str(tmp_path), "seed-reinstall-undo.db")
+    folder = tmp_path / "seed_books"
+    write_book(folder, "埋伏党", [SEED_A, SEED_B])
+    monkeypatch.setattr(db_module, "SEED_BOOK_DIR", folder)
+    service = LinkService(database, "ws://127.0.0.1:1")
+    try:
+        install_seed_books(database, folder)
+        with database.session() as db:
+            row = db.query(AddressLibrary).filter_by(address=SEED_A).one()
+            row.category = "大V"
+            row.note = "人工备注"
+            kept_id = row.id
+            # 手动删掉 SEED_B，模拟误删后想用预置库补回来。
+            db.delete(db.query(AddressLibrary).filter_by(address=SEED_B).one())
+
+        result = service.reinstall_seed_books()
+
+        assert result["inserted"] == 1
+        assert result["created_books"] == []
+        with database.session() as db:
+            kept = db.get(AddressLibrary, kept_id)
+            assert kept.category == "大V" and kept.note == "人工备注"
+            added = db.query(AddressLibrary).filter_by(address=SEED_B).one()
+            assert added.book == "埋伏党"
+        batch = service.last_import_batch()
+        assert batch["kind"] == "seed"
+        assert batch["inserted"] == 1
+
+        undo = service.undo_last_import()
+
+        assert undo["deleted"] == 1
+        with database.session() as db:
+            assert db.query(AddressLibrary).filter_by(address=SEED_B).first() is None
+            assert db.get(AddressLibrary, kept_id).category == "大V"
+    finally:
+        database.engine.dispose()
+
+
+def test_seed_book_status_counts_files():
+    from app.db import seed_book_status
+
+    status = seed_book_status()
+    assert status["groups"] >= 1
+    assert status["addresses"] >= 300
+
+
+def test_seed_book_endpoints_report_and_reinstall(tmp_path, monkeypatch):
+    """GET 概况 + POST 重新导入 两个接口。"""
+
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+    from app import db as db_module
+    from app.jobs import RelationJobManager
+
+    database = build_database(str(tmp_path), "seed-api.db")
+    folder = tmp_path / "seed_books"
+    write_book(folder, "taoBot", [SEED_A])
+    monkeypatch.setattr(db_module, "SEED_BOOK_DIR", folder)
+    service = LinkService(database, "ws://127.0.0.1:1")
+    monkeypatch.setattr(main_module, "DATABASE", database)
+    monkeypatch.setattr(main_module, "SERVICE", service)
+    monkeypatch.setattr(main_module, "JOBS", RelationJobManager())
+    try:
+        with TestClient(main_module.app) as client:
+            info = client.get("/api/library/seed-books").json()
+            assert info == {"groups": 1, "addresses": 1}
+
+            first = client.post("/api/library/seed-books/reinstall").json()
+            assert first["inserted"] == 1
+            assert first["created_books"] == ["taoBot"]
+
+            again = client.post("/api/library/seed-books/reinstall").json()
+            assert again["inserted"] == 0
+
+            batch = client.get("/api/library/last-import").json()["item"]
+            assert batch["kind"] == "seed"
+            assert client.post("/api/library/undo-last-import").json()["deleted"] == 1
+    finally:
+        database.engine.dispose()

@@ -25,6 +25,8 @@ const state = {
   syncTargetTouched: false,
   // 最近一次批量导入摘要：null 表示没有可撤回的导入。
   lastImport: null,
+  // 外发预置地址库概况：{groups, addresses}，只用来提示按钮内容。
+  seedInfo: { groups: 0, addresses: 0 },
   categoryEditorId: null,
   // 整组改名：{kind: "book"|"label", name: "组名"}，null 表示没有在改名。
   groupRename: null,
@@ -1274,20 +1276,23 @@ async function addCategoryFromPanel() {
 async function loadLibrary() {
   try {
     if (!state.categories.length) await loadCategories();
-    const [data, bookData, batch] = await Promise.all([
+    const [data, bookData, batch, seedInfo] = await Promise.all([
       api("/api/library"),
       api("/api/library/books").catch(() => ({ items: [] })),
       api("/api/library/last-import").catch(() => ({ item: null })),
+      api("/api/library/seed-books").catch(() => ({ groups: 0, addresses: 0 })),
     ]);
     state.library = data.items;
     state.books = bookData.items || [];
     state.lastImport = batch.item;
+    state.seedInfo = { groups: seedInfo.groups || 0, addresses: seedInfo.addresses || 0 };
     renderBooks();
     renderBookFilter();
     renderLibraryList();
     fillSyncGroupSelect();
     updateLibrarySelection();
     updateUndoButton();
+    updateSeedButton();
   } catch (error) { toast(error.message, true); }
 }
 
@@ -1380,14 +1385,57 @@ async function undoLastImport(button) {
     const parts = [`「${item.summary}」`];
     if (item.inserted) parts.push(`删除新导入 ${item.inserted} 条`);
     if (item.updated) parts.push(`还原被改写 ${item.updated} 条`);
-    if (item.book) parts.push(`移除地址库「${item.book}」`);
+    const createdBooks = (item.books && item.books.length ? item.books : (item.book ? [item.book] : []));
+    if (createdBooks.length) parts.push(`移除地址库「${createdBooks.join("、")}」`);
     if (!window.confirm(`撤回上一次导入 ${parts.join("，")}？\n\n撤回只做一次，删除的地址无法恢复。`)) return;
     const result = await api("/api/library/undo-last-import", { method: "POST" });
     await loadLibrary();
     finished = true;
-    toast(`已撤回：删除 ${result.deleted} 条，还原 ${result.restored} 条${result.book_removed ? `，并移除地址库「${item.book}」` : ""}。`);
+    toast(`已撤回：删除 ${result.deleted} 条，还原 ${result.restored} 条${result.book_removed ? `，并移除地址库「${createdBooks.join("、")}」` : ""}。`);
   } catch (error) {
     toast(`撤回失败：${error.message}`, true);
+  } finally {
+    if (!finished) button.disabled = false;
+  }
+}
+
+function updateSeedButton() {
+  const button = $("#reinstall-seed-books");
+  if (!button) return;
+  button.title = state.seedInfo.groups
+    ? `重新导入外发包预置地址库（${state.seedInfo.groups} 组 / ${state.seedInfo.addresses} 个地址）：只补回地址库里缺失的地址，已存在的跳过，不覆盖人工改动。`
+    : "外发包里没有预置地址库文件（app/seed_books）";
+}
+
+async function reinstallSeedBooks(button) {
+  button.disabled = true;
+  let finished = false;
+  try {
+    const info = await api("/api/library/seed-books").catch(() => ({ groups: 0, addresses: 0 }));
+    if (!info.groups) { toast("外发包里没有预置地址库文件（app/seed_books）。", true); return; }
+    const okay = window.confirm(
+      `重新导入外发包预置地址库（${info.groups} 组 / ${info.addresses} 个地址）？\n\n` +
+      `· 只补回地址库里缺失的地址，已存在的跳过，不会覆盖你改过的分类 / 标签 / 备注。\n` +
+      `· 之前解散过的预置组会被重新建出来。\n` +
+      `· 导错了可点「撤回上次导入」撤销。`
+    );
+    if (!okay) return;
+    const result = await api("/api/library/seed-books/reinstall", { method: "POST" });
+    if (state.bookFilter) state.bookFilter = "";
+    await loadLibrary();
+    finished = true;
+    button.disabled = false;
+    if (!result.inserted) {
+      toast("预置地址库已是最新，没有缺失的地址。");
+      return;
+    }
+    const detail = (result.groups || [])
+      .filter((group) => group.inserted > 0)
+      .map((group) => `${group.name} +${group.inserted}`)
+      .join("、");
+    toast(`已重新导入 ${result.inserted} 个地址${detail ? `（${detail}）` : ""}${result.created_books?.length ? `，重建地址库 ${result.created_books.join("、")}` : ""}。`);
+  } catch (error) {
+    toast(`重新导入失败：${error.message}`, true);
   } finally {
     if (!finished) button.disabled = false;
   }
@@ -2176,6 +2224,8 @@ $("#sync-label-group").addEventListener("change", () => {
 });
 const undoImportButton = $("#undo-last-import");
 if (undoImportButton) undoImportButton.addEventListener("click", () => undoLastImport(undoImportButton));
+const reinstallSeedButton = $("#reinstall-seed-books");
+if (reinstallSeedButton) reinstallSeedButton.addEventListener("click", () => reinstallSeedBooks(reinstallSeedButton));
 $("#sync-matched").addEventListener("click", () => syncCurrentResult("matched"));
 $("#create-book").addEventListener("click", createBookFromResult);
 $("#book-include-seed").addEventListener("change", updateBookHint);

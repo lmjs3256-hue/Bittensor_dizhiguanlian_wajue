@@ -219,7 +219,7 @@ JSON：
 **给开发者**
 
 - `app/`：FastAPI 后端、关联算法、Taostats 客户端和前端页面。
-- `app/seed_books/`：随包分发的预置地址库，每个 TXT 文件是一个标签组（文件名即组名），首次启动自动导入已知地址库。
+- `app/seed_books/`：随包分发的预置地址库，每个 TXT 文件是一个标签组（文件名即组名），首次启动自动导入已知地址库。地址库里缺失时可在界面点「重新导入预置库」补齐（解散 / 误删后也能补回）。
 - `tests/`：单元测试和 API 测试。
 - `tools/build_usage_html.py`：由 `使用说明.md` 生成 `使用说明.html`（改完说明后运行一次）。
 - `tools/make_release.py`：打外发包，生成 `Bittensor地址关联挖掘-<版本>-外发包.zip`（自动排除 `.venv`、`data`、`logs`、`license.key`、管理员与开发文件）；加 `--with-admin` 则连 `tools`、`docs`、`授权管理.md`、`签发授权.cmd` 一起打。

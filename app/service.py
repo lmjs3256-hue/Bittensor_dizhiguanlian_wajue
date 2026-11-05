@@ -27,6 +27,8 @@ from .db import (
     ScanLock,
     SYSTEM_CLASSIFICATION,
     Transfer,
+    install_seed_books,
+    seed_book_status,
     to_relation_records,
     utcnow,
 )
@@ -245,11 +247,13 @@ def _record_import_batch(
     created_book: str | None = None,
     deleted: Iterable[dict[str, Any]] | None = None,
     removed_book: str | None = None,
+    created_books: Iterable[str] | None = None,
 ) -> None:
     """写入“撤回上次导入”的快照；只保留最新一条，空操作不覆盖上一条。
 
     ``deleted`` 是解散地址库时被整批删掉的地址快照，撤回时按它重建记录；
-    ``removed_book`` 对应被删掉的库名。
+    ``removed_book`` 对应被删掉的库名；``created_books`` 是本次新建的多个库
+    （重新导入预置库会一次建出好几个），撤回时一并删掉。
     """
 
     payload = json.dumps(
@@ -258,6 +262,7 @@ def _record_import_batch(
             "updated": list(updated),
             "deleted": list(deleted or []),
             "created_book": created_book or "",
+            "created_books": list(created_books or []),
             "removed_book": removed_book or "",
         },
         ensure_ascii=False,
@@ -646,6 +651,7 @@ class LinkService:
                 "updated": len(data.get("updated") or []),
                 "deleted": len(data.get("deleted") or []),
                 "book": data.get("created_book") or "",
+                "books": list(data.get("created_books") or []),
                 "removed_book": data.get("removed_book") or "",
             }
 
@@ -687,13 +693,22 @@ class LinkService:
                 row.exchange_confirmed = bool(snapshot.get("exchange_confirmed", False))
                 row.exchange_rejected = bool(snapshot.get("exchange_rejected", False))
                 restored += 1
+            created_books = [
+                name.strip()
+                for name in (data.get("created_books") or [])
+                if str(name).strip()
+            ]
             book_name = (data.get("created_book") or "").strip()
+            if book_name and book_name not in created_books:
+                created_books.append(book_name)
             book_removed = False
-            if book_name:
-                registry = db.scalar(select(AddressBook).where(AddressBook.name == book_name))
+            books_removed = 0
+            for name in created_books:
+                registry = db.scalar(select(AddressBook).where(AddressBook.name == name))
                 if registry is not None:
                     db.delete(registry)
-                    book_removed = True
+                    books_removed += 1
+            book_removed = books_removed > 0
             # 解散地址库删掉的地址：按快照重建，连库名一起恢复。
             restored_deleted = 0
             for item in data.get("deleted") or []:
@@ -734,6 +749,52 @@ class LinkService:
                 "book_removed": book_removed,
                 "book_restored": book_restored,
             }
+
+    def reinstall_seed_books(self) -> dict[str, Any]:
+        """重新导入外发预置地址库：把预置组里地址库中缺失的地址补回来。
+
+        用于「解散 / 删地址后想还原预置的几组」。已在地址库里的地址一律跳过，
+        不会覆盖人工改过的分类、标签、备注；新导入的地址可点「撤回上次导入」撤销。
+        """
+
+        results = install_seed_books(self.database, force=True)
+        if not results:
+            raise InputError("外发包里没有预置地址库文件")
+        inserted: list[str] = []
+        created_books: list[str] = []
+        groups: list[dict[str, Any]] = []
+        for item in results:
+            inserted.extend(item.pop("new_addresses", []) or [])
+            if item.get("created"):
+                created_books.append(str(item["name"]))
+            groups.append(item)
+        if inserted or created_books:
+            detail = "、".join(
+                f"{item['name']} +{item['inserted']}" for item in groups if item["inserted"]
+            )
+            summary = f"重新导入预置地址库：新增 {len(inserted)} 个地址"
+            if detail:
+                summary = f"{summary}（{detail}）"
+            with self.database.session() as db:
+                _record_import_batch(
+                    db,
+                    kind="seed",
+                    summary=summary,
+                    inserted=inserted,
+                    updated=[],
+                    created_books=created_books,
+                )
+        return {
+            "groups": groups,
+            "inserted": len(inserted),
+            "created_books": created_books,
+            "total": sum(int(item["total"]) for item in results),
+        }
+
+    def seed_books_info(self) -> dict[str, Any]:
+        """预置地址库文件概况（组数、地址数），供界面显示按钮提示。"""
+
+        return seed_book_status()
 
     def update_library_categories(
         self, row_id: int, categories: Iterable[str]

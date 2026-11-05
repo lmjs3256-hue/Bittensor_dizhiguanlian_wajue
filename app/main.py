@@ -495,6 +495,23 @@ def rename_label_group(
         raise HTTPException(422, str(exc)) from exc
 
 
+@app.get("/api/library/seed-books")
+def seed_books_info(svc: Annotated[LinkService, Depends(service)]):
+    """外发预置地址库概况：有几个组、合计多少个地址。"""
+
+    return svc.seed_books_info()
+
+
+@app.post("/api/library/seed-books/reinstall")
+def reinstall_seed_books(svc: Annotated[LinkService, Depends(service)]):
+    """重新导入预置地址库：补齐预置组里地址库中缺失的地址。"""
+
+    try:
+        return svc.reinstall_seed_books()
+    except InputError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @app.get("/api/library/last-import")
 def last_import_batch(svc: Annotated[LinkService, Depends(service)]):
     """最近一次批量导入（同步 / 建库 / 文件导入）的摘要。"""

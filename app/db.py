@@ -532,25 +532,39 @@ def read_seed_addresses(path: Path) -> list[str]:
     return result
 
 
-def install_seed_books(
-    database: "Database", directory: Path | None = None
-) -> list[dict[str, Any]]:
-    """把预置地址库装进已知地址库，返回每个库的导入结果。
-
-    幂等：装过的库记在 ``seed_books`` 表里，之后不再重复导入——用户解散或
-    删掉其中地址后也不会被它重新装回来。已在地址库里（不论属于哪个库）的
-    地址一律跳过，不改动人工维护过的记录。
-    """
+def list_seed_files(directory: Path | None = None) -> list[tuple[str, Path]]:
+    """列出预置地址库文件：``[(组名, 文件路径), ...]``，按组名排序。"""
 
     folder = Path(directory) if directory is not None else SEED_BOOK_DIR
     if not folder.is_dir():
         return []
+    return [(path.stem.strip(), path) for path in sorted(folder.glob("*.txt")) if path.stem.strip()]
+
+
+def install_seed_books(
+    database: "Database",
+    directory: Path | None = None,
+    *,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    """把预置地址库装进已知地址库，返回每个库的导入结果。
+
+    默认幂等：装过的库记在 ``seed_books`` 表里，之后不再重复导入——用户解散
+    或删掉其中地址后也不会被它重新装回来。
+
+    ``force=True`` 是工具栏「重新导入预置库」用的：无视安装记录，把每个预置
+    组里**当前地址库里还没有的**地址补回来（解散过的库会重新建出来）。已经存在
+    的地址一律跳过，与人工维护过的记录冲突时不覆盖分类 / 标签 / 备注。
+    """
+
     results: list[dict[str, Any]] = []
+    files = list_seed_files(directory)
+    if not files:
+        return results
     with database.session() as db:
         installed = {row.name for row in db.scalars(select(SeedBook)).all()}
-        for path in sorted(folder.glob("*.txt")):
-            name = path.stem.strip()
-            if not name or name in installed:
+        for name, path in files:
+            if name in installed and not force:
                 continue
             addresses = read_seed_addresses(path)
             if not addresses:
@@ -566,25 +580,32 @@ def install_seed_books(
                     ).all()
                 )
             missing = [address for address in addresses if address not in existing]
-            if db.scalar(select(AddressBook).where(AddressBook.name == name)) is None:
+            book = db.scalar(select(AddressBook).where(AddressBook.name == name))
+            created = book is None
+            if created:
                 db.add(AddressBook(name=name, note="外发包预置地址库"))
-                for address in missing:
-                    db.add(
-                        AddressLibrary(
-                            address=address,
-                            label=name,
-                            category=DEFAULT_CATEGORY_NAMES[-1],
-                            note="",
-                            source=SEED_BOOK_SOURCE,
-                            book=name,
-                            exchange_confirmed=False,
-                            exchange_rejected=False,
-                        )
-                    )
-            else:
+            elif not force:
                 # 已有同名地址库（用户自己建的）不去改动它，只记一笔，避免以后重复导入。
                 missing = []
-            db.add(SeedBook(name=name, addresses=len(missing)))
+            for address in missing:
+                db.add(
+                    AddressLibrary(
+                        address=address,
+                        label=name,
+                        category=DEFAULT_CATEGORY_NAMES[-1],
+                        note="",
+                        source=SEED_BOOK_SOURCE,
+                        book=name,
+                        exchange_confirmed=False,
+                        exchange_rejected=False,
+                    )
+                )
+            record = db.get(SeedBook, name)
+            if record is None:
+                db.add(SeedBook(name=name, addresses=len(missing)))
+            else:
+                record.addresses = (0 if force else record.addresses) + len(missing)
+                record.created_at = utcnow()
             db.flush()
             results.append(
                 {
@@ -592,6 +613,19 @@ def install_seed_books(
                     "total": len(addresses),
                     "inserted": len(missing),
                     "skipped": len(addresses) - len(missing),
+                    "created": created,
+                    # 供调用方写撤回快照用，接口层返回前会摘掉。
+                    "new_addresses": missing,
                 }
             )
     return results
+
+
+def seed_book_status(directory: Path | None = None) -> dict[str, Any]:
+    """预置地址库文件概况：有几个组、总共多少个地址。"""
+
+    files = list_seed_files(directory)
+    total = 0
+    for _name, path in files:
+        total += len(read_seed_addresses(path))
+    return {"groups": len(files), "addresses": total}
