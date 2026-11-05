@@ -134,9 +134,11 @@ def test_notes_can_be_saved_for_library_rows_and_new_relation_addresses():
             database.engine.dispose()
 
 
-def test_dsv_source_without_label_is_presented_as_one_group_label():
+def test_address_without_label_falls_back_to_last_four_characters():
+    """标签没写时默认显示地址后四位，并标记为“非人工命名”。"""
+
     with TemporaryDirectory() as directory:
-        database = Database(Path(directory) / "dsv-label.db")
+        database = Database(Path(directory) / "default-label.db")
         try:
             database.initialize()
             service = LinkService(database, "wss://example.invalid")
@@ -144,7 +146,66 @@ def test_dsv_source_without_label_is_presented_as_one_group_label():
                 [{"address": ADDRESSES[0], "category": "WATCH"}],
                 "DSV_normalized.txt",
             )
-            assert service.library()[0]["label"] == "DSV"
+            item = service.library()[0]
+            assert item["label"] == ADDRESSES[0][-4:] == "jEbt"
+            assert item["label_custom"] is False
+        finally:
+            database.engine.dispose()
+
+
+def test_rename_address_label_and_reset_to_default():
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "rename-label.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            service.import_rows([{"address": ADDRESSES[0]}], "manual")
+            row_id = service.library()[0]["id"]
+
+            saved = service.update_library_label(row_id, "  某鲸鱼  ")
+            assert saved["item"]["label"] == "某鲸鱼"
+            assert saved["item"]["label_custom"] is True
+            assert service.library()[0]["label"] == "某鲸鱼"
+
+            reset = service.update_library_label(row_id, "")
+            assert reset["item"]["label"] == ADDRESSES[0][-4:]
+            assert reset["item"]["label_custom"] is False
+        finally:
+            database.engine.dispose()
+
+
+def test_rename_label_endpoint_and_default_sync_label(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "rename-api.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            monkeypatch.setattr(main_module, "SERVICE", service)
+            client = TestClient(main_module.app)
+            created = service.import_rows([{"address": ADDRESSES[0]}], "manual")
+            row_id = service.library()[0]["id"]
+            assert created["inserted"] == 1
+
+            response = client.patch(f"/api/library/{row_id}/label", json={"label": "交易所热钱包"})
+            assert response.status_code == 200
+            assert response.json()["item"]["label"] == "交易所热钱包"
+
+            response = client.patch(f"/api/library/{row_id}/label", json={"label": ""})
+            assert response.status_code == 200
+            assert response.json()["item"]["label"] == ADDRESSES[0][-4:]
+
+            synced = service.sync_relation_addresses(
+                seed=ADDRESSES[2],
+                addresses=[ADDRESSES[1]],
+                include_seed=False,
+            )
+            labels = {item["address"]: item["label"] for item in service.library()}
+            assert labels[ADDRESSES[1]] == ADDRESSES[2][-4:] == "SxsN"
+            assert synced["label"] == "SxsN"
         finally:
             database.engine.dispose()
 

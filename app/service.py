@@ -212,19 +212,22 @@ def job_dict(job: ScanJob) -> dict[str, Any]:
     }
 
 
+def default_address_label(address: str) -> str:
+    """标签没写时的默认名称：取地址后四位，方便在列表里一眼分辨。"""
+
+    value = (address or "").strip()
+    return value[-4:] if len(value) > 4 else value
+
+
 def address_dict(row: AddressLibrary) -> dict[str, Any]:
     label = row.label.strip()
-    if not label:
-        raw_source = row.source or ""
-        source = Path(raw_source).stem
-        if source.lower().startswith("dsv"):
-            label = "DSV"
-        elif source and raw_source not in {"manual", "relation-note"} and not raw_source.startswith("taostats:"):
-            label = source
     return {
         "id": row.id,
         "address": row.address,
-        "label": label,
+        # 未命名时展示地址后四位；label_custom 区分“人工命名”与“默认名”，
+        # 地址库清单按它决定是否把同分类的未命名地址并成一组。
+        "label": label or default_address_label(row.address),
+        "label_custom": bool(label),
         "category": row.category,
         "category_label": category_label(row.category),
         "categories": row_categories(row),
@@ -506,6 +509,17 @@ class LinkService:
             current.note = note.strip()
             return {"saved": True, "item": address_dict(current)}
 
+    def update_library_label(self, row_id: int, label: str) -> dict[str, Any]:
+        """人工改名；传空字符串表示恢复默认（地址后四位）。"""
+
+        value = " ".join(str(label or "").split())[:160]
+        with self.database.session() as db:
+            current = db.get(AddressLibrary, row_id)
+            if current is None:
+                raise InputError("address not found")
+            current.label = value
+            return {"saved": True, "item": address_dict(current)}
+
     def update_library_categories(
         self, row_id: int, categories: Iterable[str]
     ) -> dict[str, Any]:
@@ -760,7 +774,8 @@ class LinkService:
         portable = [
             {
                 "address": item["address"],
-                "label": item["label"],
+                # 默认标签（地址后四位）不写进备份，导入后仍然跟随地址自动生成。
+                "label": item["label"] if item.get("label_custom") else "",
                 "category": item["category"],
                 "categories": item.get("categories") or [item["category"]],
                 "note": item["note"],
@@ -1356,7 +1371,8 @@ class LinkService:
                     "added": [],
                 }
 
-            default_label = label.strip() or f"关联同步 · {seed[:8] or '未命名'}"
+            # 没填标签时用发起地址后四位，同一批扫描同步进来的地址天然归成一组。
+            default_label = label.strip() or default_address_label(seed)
             note_text = note.strip() or (
                 f"由关联扫描同步：发起地址 {seed}" if seed else "由关联扫描同步"
             )
@@ -1602,7 +1618,9 @@ class LinkService:
             library = [
                 LibraryEntry(
                     address=row.address,
-                    label=address_dict(row)["label"],
+                    # 只传人工命名的标签；默认标签是地址后四位，拿它当“角色名”
+                    # 会把“交易所地址”这类角色覆盖成 jEbt 之类的短码。
+                    label=row.label.strip(),
                     category=row.category,
                     note=row.note,
                     source=row.source,

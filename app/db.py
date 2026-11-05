@@ -319,6 +319,33 @@ class Database:
                 },
             )
 
+            # 0.6.14：标签默认值改成「地址后四位」。旧版同步生成的
+            # 「关联同步 · 地址前缀」从历史记录里找回完整发起地址，
+            # 折算成后四位，避免地址库清单里挂着一长串前缀标签。
+            legacy_labels = connection.execute(
+                text(
+                    "SELECT DISTINCT label FROM address_library "
+                    "WHERE label LIKE '关联同步 · %'"
+                )
+            ).scalars().all()
+            for label in legacy_labels:
+                prefix = str(label).split("·", 1)[-1].strip()
+                if not prefix:
+                    continue
+                seed = connection.execute(
+                    text(
+                        "SELECT seed FROM relation_archives "
+                        "WHERE seed LIKE :prefix LIMIT 1"
+                    ),
+                    {"prefix": f"{prefix}%"},
+                ).scalar()
+                if not seed:
+                    continue
+                connection.execute(
+                    text("UPDATE address_library SET label = :new WHERE label = :old"),
+                    {"new": str(seed)[-4:], "old": label},
+                )
+
     @contextmanager
     def session(self) -> Iterator[Session]:
         db = self.sessions()

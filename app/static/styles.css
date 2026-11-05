@@ -259,3 +259,13 @@ body.license-locked .shell { filter:blur(2px); pointer-events:none; user-select:
 .pagination-input input { width:66px; padding:4px 6px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--ink); font-size:12.5px; text-align:center; }
 .pagination button { padding:5px 10px; }
 .pagination button[disabled] { opacity:.45; cursor:not-allowed; }
+
+/* 地址标签（名称列）：未命名时显示地址后四位，可点「改名」自定义 */
+.library-label-cell { min-width:104px; }
+.label-main { display:flex; align-items:center; gap:6px; }
+.label-text { display:inline-block; max-width:170px; overflow:hidden; text-overflow:ellipsis; vertical-align:bottom; }
+.label-text.is-default { color:var(--muted); border-bottom:1px dashed var(--line); }
+.label-main .label-edit { padding:3px 7px; }
+.label-editor-line { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.label-editor-line .label-input { flex:1; min-width:180px; max-width:340px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font-size:13px; }
+.label-editor-line .label-input:focus { outline:2px solid var(--accent, #7fb0ee); outline-offset:1px; }

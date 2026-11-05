@@ -141,6 +141,10 @@ class NoteInput(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
+class LabelInput(BaseModel):
+    label: str = Field(default="", max_length=160)
+
+
 class CategoriesInput(BaseModel):
     categories: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(
         default_factory=list, max_length=10
@@ -439,6 +443,20 @@ def update_address_note(
 ):
     try:
         return svc.update_library_note(row_id, payload.note)
+    except InputError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.patch("/api/library/{row_id}/label")
+def update_address_label(
+    row_id: int,
+    payload: LabelInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """人工修改地址标签；留空表示恢复默认（地址后四位）。"""
+
+    try:
+        return svc.update_library_label(row_id, payload.label)
     except InputError as exc:
         raise HTTPException(404, str(exc)) from exc
 

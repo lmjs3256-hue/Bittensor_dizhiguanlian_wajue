@@ -21,6 +21,7 @@ const state = {
   page: 1,
   pageSize: 10,
   categoryEditorId: null,
+  labelEditorId: null,
   libraryGroupsOpen: new Set(),
   history: { offset: 0, total: 0, items: [] },
 };
@@ -954,17 +955,22 @@ function libraryRowsTable(rows) {
     const chips = displayCategories.map((name) =>
       `<span class="lib-category" data-category="${esc(name)}">${esc(categoryLabel(name))}</span>`
     ).join("");
+    const labelEditing = state.labelEditorId === row.id;
+    const labelCell = `<div class="label-main"><span class="label-text${row.label_custom ? "" : " is-default"}" title="${row.label_custom ? "人工命名" : `未命名，默认显示地址后四位（${esc(row.label)}），可点「改名」自定义`}">${esc(row.label || "-")}</span><button class="ghost note-save label-edit" data-edit-label="${row.id}" type="button">改名</button></div>`;
     const editing = state.categoryEditorId === row.id;
-    // 分类编辑器单独占一行（colspan），避免把「分类」列撑宽导致其他列被挤出表格。
-    const editorRow = editing
-      ? `<tr class="category-editor-row" data-editor-for="${row.id}"><td colspan="8"><div class="category-editor"><div class="category-editor-title">选择分类（可多选，第一个为主分类）</div><div class="category-editor-choices">${categoryNames.map((name) =>
+    // 分类 / 标签编辑器单独占一行（colspan），避免把所在列撑宽把其他列挤出表格。
+    let editorRow = "";
+    if (editing) {
+      editorRow = `<tr class="category-editor-row" data-editor-for="${row.id}"><td colspan="8"><div class="category-editor"><div class="category-editor-title">选择分类（可多选，第一个为主分类）</div><div class="category-editor-choices">${categoryNames.map((name) =>
           `<label><input type="checkbox" data-category-choice value="${esc(name)}"${categories.includes(name) ? " checked" : ""}>${esc(categoryLabel(name))}</label>`
-        ).join("")}</div><div class="category-editor-actions"><button class="secondary note-save" data-save-categories="${row.id}" type="button">保存分类</button><button class="ghost note-save" data-cancel-categories type="button">取消</button></div></div></td></tr>`
-      : "";
+        ).join("")}</div><div class="category-editor-actions"><button class="secondary note-save" data-save-categories="${row.id}" type="button">保存分类</button><button class="ghost note-save" data-cancel-categories type="button">取消</button></div></div></td></tr>`;
+    } else if (labelEditing) {
+      editorRow = `<tr class="category-editor-row" data-label-editor-for="${row.id}"><td colspan="8"><div class="category-editor label-editor"><div class="category-editor-title">修改标签（留空保存则恢复默认：地址后四位）</div><div class="label-editor-line"><input class="label-input" data-label-input="${row.id}" maxlength="160" value="${esc(row.label_custom ? row.label : "")}" placeholder="留空则用地址后四位" autocomplete="off"><button class="secondary note-save" data-save-label="${row.id}" type="button">保存</button><button class="ghost note-save" data-cancel-label type="button">取消</button></div></div></td></tr>`;
+    }
     return `<tr>
       <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td>
       <td class="mono address library-address-cell"><div class="address-main">${addressLink(row.address, row.address)}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button></div></td>
-      <td>${esc(row.label || "-")}</td>
+      <td class="library-label-cell">${labelCell}</td>
       <td><div class="category-chips">${chips}</div><button class="ghost note-save" data-edit-categories="${row.id}" type="button">改分类</button>${exchangeControl}</td>
       <td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td>
       <td>${bookCell}</td><td>${esc(row.source || "-")}</td>
@@ -983,9 +989,12 @@ function libraryTable(rows) {
   }
   const groups = new Map();
   rows.forEach((row) => {
-    const label = (row.label || `${categoryLabel(row.category)} · 未命名`).trim();
+    // 默认标签是地址后四位，逐条都不同；未人工命名的地址仍按分类归组，
+    // 避免地址库清单被拆成上百个单条分组。
+    const customLabel = Boolean(row.label_custom);
+    const label = (customLabel ? row.label : `${categoryLabel(row.category)} · 未命名`).trim();
     // 自建地址库优先按库名归组，其余仍按「分类 + 名称」。
-    const key = row.book ? `book\u0000${row.book}` : `${row.category}\u0000${label}`;
+    const key = row.book ? `book\u0000${row.book}` : `${row.category}\u0000${customLabel ? label : ""}`;
     if (!groups.has(key)) {
       groups.set(key, {
         label: row.book || label,
@@ -1255,6 +1264,39 @@ async function saveLibraryNote(rowId, button) {
     window.setTimeout(() => { button.textContent = "保存"; }, 1400);
   } catch (error) { toast(`备注保存失败：${error.message}`, true); }
   finally { button.disabled = false; }
+}
+
+function startLabelEdit(rowId) {
+  state.labelEditorId = Number(rowId);
+  state.categoryEditorId = null;
+  renderLibraryList();
+  const input = document.querySelector(`[data-label-input="${rowId}"]`);
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+
+async function saveLibraryLabel(rowId, button) {
+  const row = button.closest("tr");
+  const input = row?.querySelector(`[data-label-input="${rowId}"]`);
+  if (!input) return;
+  button.disabled = true;
+  try {
+    const result = await api(`/api/library/${rowId}/label`, {
+      method: "PATCH",
+      body: JSON.stringify({ label: input.value }),
+    });
+    state.labelEditorId = null;
+    await loadLibrary();
+    const item = result.item || {};
+    toast(item.label_custom
+      ? `标签已改为「${item.label}」。`
+      : "已清空标签，恢复为地址后四位。");
+  } catch (error) {
+    toast(`标签保存失败：${error.message}`, true);
+    button.disabled = false;
+  }
 }
 
 async function saveLibraryCategories(rowId, button) {
@@ -1818,6 +1860,16 @@ document.addEventListener("click", (event) => {
   const editCategoriesButton = event.target.closest("[data-edit-categories]");
   if (editCategoriesButton) {
     state.categoryEditorId = Number(editCategoriesButton.dataset.editCategories);
+    state.labelEditorId = null;
+    renderLibraryList();
+  }
+  const editLabelButton = event.target.closest("[data-edit-label]");
+  if (editLabelButton) startLabelEdit(editLabelButton.dataset.editLabel);
+  const saveLabelButton = event.target.closest("[data-save-label]");
+  if (saveLabelButton) saveLibraryLabel(saveLabelButton.dataset.saveLabel, saveLabelButton);
+  const cancelLabelButton = event.target.closest("[data-cancel-label]");
+  if (cancelLabelButton) {
+    state.labelEditorId = null;
     renderLibraryList();
   }
   const cancelCategoriesButton = event.target.closest("[data-cancel-categories]");
@@ -1842,6 +1894,19 @@ document.addEventListener("change", (event) => {
   if (event.target.id === "related-page-input") gotoRelatedPage(event.target.value);
 });
 document.addEventListener("keydown", (event) => {
+  if (event.target.matches("[data-label-input]")) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const id = event.target.dataset.labelInput;
+      const save = event.target.closest("tr")?.querySelector(`[data-save-label="${id}"]`);
+      if (save) saveLibraryLabel(id, save);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      state.labelEditorId = null;
+      renderLibraryList();
+    }
+    return;
+  }
   if (event.target.id !== "related-page-input") return;
   if (event.key !== "Enter") return;
   event.preventDefault();
