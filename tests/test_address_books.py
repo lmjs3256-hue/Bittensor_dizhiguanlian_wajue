@@ -139,7 +139,9 @@ def test_create_address_book_rejects_empty_or_public_only_imports():
             database.engine.dispose()
 
 
-def test_dissolve_address_book_keeps_addresses():
+def test_dissolve_address_book_deletes_addresses_and_can_be_undone():
+    """解散要把库里的地址一起删掉；误删用「撤回上次导入」连库带地址恢复。"""
+
     with TemporaryDirectory() as directory:
         database, service = build_service(directory, "dissolve.db")
         try:
@@ -148,11 +150,21 @@ def test_dissolve_address_book_keeps_addresses():
             )
             result = service.dissolve_address_book("临时库")
 
-            assert result["addresses_kept"] == 2
+            assert result["deleted"] == 2
             assert service.address_books() == []
             with database.session() as db:
-                assert db.query(AddressLibrary).count() == 2
+                assert db.query(AddressLibrary).count() == 0
                 assert db.query(AddressBook).count() == 0
+
+            undo = service.undo_last_import()
+
+            assert undo["restored_deleted"] == 2
+            assert undo["book_restored"] is True
+            assert [book["name"] for book in service.address_books()] == ["临时库"]
+            with database.session() as db:
+                rows = db.query(AddressLibrary).all()
+                assert {row.address for row in rows} == {SEED, NEIGHBORS[2]}
+                assert {row.book for row in rows} == {"临时库"}
         finally:
             database.engine.dispose()
 
@@ -223,7 +235,11 @@ def test_book_endpoints_create_list_export_and_dissolve(monkeypatch):
 
                 dissolved = client.delete("/api/library/books/接口库")
                 assert dissolved.status_code == 200
-                assert dissolved.json()["addresses_kept"] == 2
+                assert dissolved.json()["deleted"] == 2
                 assert client.get("/api/library/books").json()["items"] == []
+                remaining = client.get("/api/library").json()["items"]
+                assert all(
+                    item["book"] != "接口库" for item in remaining
+                ), "解散后地址库清单里不应再留着这个库的地址"
         finally:
             database.engine.dispose()

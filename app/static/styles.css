@@ -267,3 +267,10 @@ body.license-locked .shell { filter:blur(2px); pointer-events:none; user-select:
 .label-text.is-default { color:var(--muted); border-bottom:1px dashed var(--line); }
 .label-main .label-edit { padding:3px 7px; }
 .library-group-head .group-rename-editor input:focus { outline:2px solid var(--accent, #7fb0ee); outline-offset:1px; }
+
+/* 标签组标题右侧：全选本组 + 已选计数 + 改名 */
+.library-group-actions { display:flex; align-items:center; gap:9px; flex:0 0 auto; }
+.group-select { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:11.5px; white-space:nowrap; cursor:pointer; }
+.group-select input { width:15px; height:15px; padding:0; accent-color:var(--accent); cursor:pointer; }
+.group-selected { color:var(--accent); font-size:11.5px; white-space:nowrap; }
+.group-selected:empty { display:none; }

@@ -21,6 +21,11 @@ def _license_gate_open(monkeypatch, tmp_path):
     # 每个测试一份独立的设置文件；同时清掉进程内缓存的 key。
     monkeypatch.setenv("WALLET_LINK_SETTINGS", str(tmp_path / "settings.json"))
     monkeypatch.delenv("TAOSTATS_API_KEY", raising=False)
+    # 预置地址库（app/seed_books）只在真实启动时导入；测试用临时库，
+    # 关掉它，避免每个用例都凭空多出几百条地址。
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "SEED_BOOKS_ENABLED", False)
     from app import taostats
 
     taostats.clear_api_key()

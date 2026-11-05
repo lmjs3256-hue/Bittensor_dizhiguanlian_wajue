@@ -73,6 +73,20 @@ class AddressBook(Base):
     )
 
 
+class SeedBook(Base):
+    """外发预置地址库的安装记录。
+
+    ``app/seed_books/*.txt`` 每个文件是一个预置标签组（文件名就是组名），
+    第一次启动时装进已知地址库，并在这里记一笔。用户之后解散、改名或删掉
+    其中地址都不会再被自动装回来。
+    """
+
+    __tablename__ = "seed_books"
+    name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    addresses: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AddressLibrary(Base):
     __tablename__ = "address_library"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -490,3 +504,94 @@ def to_relation_records(transfers: list[Transfer]):
         )
         for row in transfers
     ]
+
+
+# -- 外发预置地址库 -------------------------------------------------------
+# 随包分发的地址清单：`app/seed_books/<组名>.txt`，每行一个 SS58 地址。
+# 文件名就是标签组名（同时也是自建库名），第一次启动时导入已知地址库。
+SEED_BOOK_DIR = Path(__file__).resolve().parent / "seed_books"
+SEED_BOOK_SOURCE = "预置地址库"
+
+
+def read_seed_addresses(path: Path) -> list[str]:
+    """读一个预置地址文件：忽略空行、注释和非法地址，按原顺序去重。"""
+
+    from .validation import is_valid_ss58
+
+    result: list[str] = []
+    try:
+        text_value = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return result
+    for raw_line in text_value.splitlines():
+        value = raw_line.strip().strip(",").strip().strip('"').strip()
+        if not value or value.startswith("#"):
+            continue
+        if is_valid_ss58(value) and value not in result:
+            result.append(value)
+    return result
+
+
+def install_seed_books(
+    database: "Database", directory: Path | None = None
+) -> list[dict[str, Any]]:
+    """把预置地址库装进已知地址库，返回每个库的导入结果。
+
+    幂等：装过的库记在 ``seed_books`` 表里，之后不再重复导入——用户解散或
+    删掉其中地址后也不会被它重新装回来。已在地址库里（不论属于哪个库）的
+    地址一律跳过，不改动人工维护过的记录。
+    """
+
+    folder = Path(directory) if directory is not None else SEED_BOOK_DIR
+    if not folder.is_dir():
+        return []
+    results: list[dict[str, Any]] = []
+    with database.session() as db:
+        installed = {row.name for row in db.scalars(select(SeedBook)).all()}
+        for path in sorted(folder.glob("*.txt")):
+            name = path.stem.strip()
+            if not name or name in installed:
+                continue
+            addresses = read_seed_addresses(path)
+            if not addresses:
+                continue
+            existing: set[str] = set()
+            for index in range(0, len(addresses), 400):
+                chunk = addresses[index : index + 400]
+                existing.update(
+                    db.scalars(
+                        select(AddressLibrary.address).where(
+                            AddressLibrary.address.in_(chunk)
+                        )
+                    ).all()
+                )
+            missing = [address for address in addresses if address not in existing]
+            if db.scalar(select(AddressBook).where(AddressBook.name == name)) is None:
+                db.add(AddressBook(name=name, note="外发包预置地址库"))
+                for address in missing:
+                    db.add(
+                        AddressLibrary(
+                            address=address,
+                            label=name,
+                            category=DEFAULT_CATEGORY_NAMES[-1],
+                            note="",
+                            source=SEED_BOOK_SOURCE,
+                            book=name,
+                            exchange_confirmed=False,
+                            exchange_rejected=False,
+                        )
+                    )
+            else:
+                # 已有同名地址库（用户自己建的）不去改动它，只记一笔，避免以后重复导入。
+                missing = []
+            db.add(SeedBook(name=name, addresses=len(missing)))
+            db.flush()
+            results.append(
+                {
+                    "name": name,
+                    "total": len(addresses),
+                    "inserted": len(missing),
+                    "skipped": len(addresses) - len(missing),
+                }
+            )
+    return results

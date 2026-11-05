@@ -7,9 +7,9 @@ from app.version_info import read_version_info
 def test_version_info_reads_current_version_and_release_notes():
     info = read_version_info()
 
-    assert info["version"] == "0.6.15"
-    assert info["entries"][0]["version"] == "0.6.15"
-    assert any("撤回" in change or "合并" in change for change in info["entries"][0]["changes"])
+    assert info["version"] == "0.6.16"
+    assert info["entries"][0]["version"] == "0.6.16"
+    assert any("预置地址库" in change or "全选" in change for change in info["entries"][0]["changes"])
 
 
 def test_version_endpoint_exposes_current_version_and_release_notes():
@@ -18,8 +18,8 @@ def test_version_endpoint_exposes_current_version_and_release_notes():
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "0.6.15"
-    assert payload["entries"][0]["title"] == "整组改名 / 合并进已知地址库 / 撤回上次导入"
+    assert payload["version"] == "0.6.16"
+    assert payload["entries"][0]["title"] == "预置地址库 / 解散清库 / 组内全选"
 
 
 def test_health_reports_service_root_and_pid():

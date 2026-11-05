@@ -1043,7 +1043,7 @@ function libraryTable(rows) {
     } else if (group.canRename) {
       renameControl = `<button class="ghost note-save group-rename" data-rename-group data-group-kind="${kind}" data-group-name="${esc(group.label)}" title="整组改名：这一组的所有地址一起更新" type="button">改名</button>`;
     }
-    return `<section class="library-group"><div class="library-group-head"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button>${renameControl}</div><div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
+    return `<section class="library-group"><div class="library-group-head"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-actions"><label class="group-select" title="全选「${esc(group.label)}」这一组的 ${group.rows.length} 个地址"><input type="checkbox" data-group-select="${groupId}" aria-label="全选「${esc(group.label)}」组地址">全选本组</label><span class="group-selected" data-group-selected="${groupId}"></span>${renameControl}</div></div><div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -1059,6 +1059,19 @@ function updateLibrarySelection() {
     selectAll.checked = checkboxes.length > 0 && selected === checkboxes.length;
     selectAll.indeterminate = selected > 0 && selected < checkboxes.length;
   }
+  // 每个标签组自己的「全选本组」：全选 / 部分选中（半选）/ 未选。
+  document.querySelectorAll("[data-library-details]").forEach((container) => {
+    const groupId = container.dataset.libraryDetails;
+    const boxes = [...container.querySelectorAll("[data-library-select]")];
+    const checked = boxes.filter((checkbox) => checkbox.checked).length;
+    const toggle = document.querySelector(`[data-group-select="${groupId}"]`);
+    if (toggle) {
+      toggle.checked = boxes.length > 0 && checked === boxes.length;
+      toggle.indeterminate = checked > 0 && checked < boxes.length;
+    }
+    const counter = document.querySelector(`[data-group-selected="${groupId}"]`);
+    if (counter) counter.textContent = checked ? `已选 ${checked}` : "";
+  });
 }
 
 function renderLibraryList() {
@@ -1070,6 +1083,7 @@ function renderLibraryList() {
     ? `${rows.length} / ${total} 条`
     : `${total} 条`;
   $("#library-table").innerHTML = libraryTable(rows);
+  updateLibrarySelection();
 }
 
 function bookCard(book) {
@@ -1144,12 +1158,14 @@ async function exportBook(name, format) {
 }
 
 async function dissolveBook(name) {
-  if (!window.confirm(`确定解散地址库「${name}」？\n\n只会去掉库名标记，库里的地址仍然保留在已知地址库中，不会删除。`)) return;
+  const book = state.books.find((item) => item.name === name);
+  const count = book ? book.count : 0;
+  if (!window.confirm(`确定解散地址库「${name}」？\n\n库里的 ${count} 个地址会一起从已知地址库删除，清单里不再显示。\n误删可以点「撤回上次导入」连库带地址恢复。`)) return;
   try {
     const result = await api(`/api/library/books/${encodeURIComponent(name)}`, { method: "DELETE" });
     if (state.bookFilter === name) state.bookFilter = "";
     await loadLibrary();
-    toast(`已解散地址库「${name}」，${result.addresses_kept} 个地址仍保留在已知地址库。`);
+    toast(`已解散地址库「${name}」，删除 ${result.deleted} 个地址（可用「撤回上次导入」恢复）。`);
   } catch (error) {
     toast(`解散失败：${error.message}`, true);
   }
@@ -2112,6 +2128,17 @@ document.addEventListener("click", (event) => {
 });
 document.addEventListener("change", (event) => {
   if (event.target.matches("[data-library-select]")) updateLibrarySelection();
+  if (event.target.matches("[data-group-select]")) {
+    // 组内全选：只影响这一组的地址（收起状态下也能选中，删除时一并生效）。
+    const groupId = event.target.dataset.groupSelect;
+    const container = document.querySelector(`[data-library-details="${groupId}"]`);
+    if (container) {
+      container.querySelectorAll("[data-library-select]").forEach((checkbox) => {
+        checkbox.checked = event.target.checked;
+      });
+    }
+    updateLibrarySelection();
+  }
   if (event.target.id === "related-page-size") setRelatedPageSize(event.target.value);
   if (event.target.id === "related-page-input") gotoRelatedPage(event.target.value);
 });

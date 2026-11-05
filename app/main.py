@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -17,7 +18,7 @@ from pydantic import BaseModel, Field
 from . import license as license_mod
 from . import settings_store
 from .config import ROOT_DIR, database_path, settings
-from .db import Database
+from .db import Database, install_seed_books
 from .inputs import InputError
 from .jobs import RelationJobManager
 from .validation import is_valid_ss58
@@ -37,11 +38,20 @@ ROOT = Path(__file__).resolve().parent
 CONFIG = settings()
 DATABASE = Database(database_path())
 VERSION_INFO = read_version_info()
+# 预置地址库只在真实启动时导入；测试里换成临时库后关掉，避免污染用例数据。
+SEED_BOOKS_ENABLED = True
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     DATABASE.initialize()
+    # 外发包自带的预置地址库（app/seed_books/*.txt，文件名即标签组名）：
+    # 第一次启动时装进已知地址库，装过就记在 seed_books 表里不再重复导入。
+    try:
+        if SEED_BOOKS_ENABLED:
+            install_seed_books(DATABASE)
+    except Exception as exc:  # noqa: BLE001 - 预置库导入失败不应拦住服务启动
+        print(f"[seed_books] 预置地址库导入失败：{exc}", file=sys.stderr)
     # 上次保存过 Taostats key 就自动装回内存，避免每次重启都要重填。
     if not taostats_is_configured():
         saved_key = settings_store.load_api_key()
@@ -431,7 +441,7 @@ def export_address_book(
 
 @app.delete("/api/library/books/{name}")
 def dissolve_address_book(name: str, svc: Annotated[LinkService, Depends(service)]):
-    """解散地址库：只清除库名标记，地址继续留在已知地址库中。"""
+    """解散地址库：库名和库里的地址一起删除（可用「撤回上次导入」恢复）。"""
 
     try:
         return svc.dissolve_address_book(name)

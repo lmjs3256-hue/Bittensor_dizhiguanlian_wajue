@@ -243,14 +243,22 @@ def _record_import_batch(
     inserted: Iterable[str],
     updated: Iterable[dict[str, Any]],
     created_book: str | None = None,
+    deleted: Iterable[dict[str, Any]] | None = None,
+    removed_book: str | None = None,
 ) -> None:
-    """写入“撤回上次导入”的快照；只保留最新一条，空操作不覆盖上一条。"""
+    """写入“撤回上次导入”的快照；只保留最新一条，空操作不覆盖上一条。
+
+    ``deleted`` 是解散地址库时被整批删掉的地址快照，撤回时按它重建记录；
+    ``removed_book`` 对应被删掉的库名。
+    """
 
     payload = json.dumps(
         {
             "inserted": list(inserted),
             "updated": list(updated),
+            "deleted": list(deleted or []),
             "created_book": created_book or "",
+            "removed_book": removed_book or "",
         },
         ensure_ascii=False,
     )
@@ -636,7 +644,9 @@ class LinkService:
                 "created_at": batch.created_at.isoformat() if batch.created_at else None,
                 "inserted": len(data.get("inserted") or []),
                 "updated": len(data.get("updated") or []),
+                "deleted": len(data.get("deleted") or []),
                 "book": data.get("created_book") or "",
+                "removed_book": data.get("removed_book") or "",
             }
 
     def undo_last_import(self) -> dict[str, Any]:
@@ -684,12 +694,45 @@ class LinkService:
                 if registry is not None:
                     db.delete(registry)
                     book_removed = True
+            # 解散地址库删掉的地址：按快照重建，连库名一起恢复。
+            restored_deleted = 0
+            for item in data.get("deleted") or []:
+                address = str(item.get("address") or "")
+                if not address:
+                    continue
+                if db.scalar(
+                    select(AddressLibrary).where(AddressLibrary.address == address)
+                ) is not None:
+                    continue
+                db.add(
+                    AddressLibrary(
+                        address=address,
+                        label=str(item.get("label") or ""),
+                        category=str(item.get("category") or DEFAULT_CATEGORY),
+                        categories=str(item.get("categories") or ""),
+                        note=str(item.get("note") or ""),
+                        source=str(item.get("source") or "manual"),
+                        book=str(item.get("book") or ""),
+                        exchange_confirmed=bool(item.get("exchange_confirmed", False)),
+                        exchange_rejected=bool(item.get("exchange_rejected", False)),
+                    )
+                )
+                restored_deleted += 1
+            removed_book = (data.get("removed_book") or "").strip()
+            book_restored = False
+            if removed_book and db.scalar(
+                select(AddressBook).where(AddressBook.name == removed_book)
+            ) is None:
+                db.add(AddressBook(name=removed_book))
+                book_restored = True
             db.delete(batch)
             return {
                 "summary": summary,
                 "deleted": deleted,
                 "restored": restored,
+                "restored_deleted": restored_deleted,
                 "book_removed": book_removed,
+                "book_restored": book_restored,
             }
 
     def update_library_categories(
@@ -1273,7 +1316,13 @@ class LinkService:
         return output.getvalue(), "text/csv; charset=utf-8", f"{safe_name}.csv"
 
     def dissolve_address_book(self, name: str) -> dict[str, Any]:
-        """解散地址库：只去掉库名标记，地址仍保留在已知地址库中。"""
+        """解散地址库：库名标记和库里的地址一起删除。
+
+        之前只去掉 ``book`` 标记，地址会继续挂在已知地址库里，清单里仍然
+        看得到，等于“解散了但没清干净”。现在按库整体删除，只删属于这个库
+        的地址（``book == 库名``）；同时写一条撤回快照，误删可用「撤回上次
+        导入」连库带地址恢复。
+        """
 
         book_name = self._clean_book_name(name)
         with self.database.session() as db:
@@ -1281,11 +1330,30 @@ class LinkService:
             registry = db.scalar(select(AddressBook).where(AddressBook.name == book_name))
             if not rows and registry is None:
                 raise InputError("地址库不存在")
+            snapshots = [
+                {"address": row.address, **_library_row_snapshot(row)} for row in rows
+            ]
             for row in rows:
-                row.book = ""
+                db.delete(row)
             if registry is not None:
                 db.delete(registry)
-        return {"dissolved": True, "name": book_name, "addresses_kept": len(rows)}
+            if snapshots:
+                _record_import_batch(
+                    db,
+                    kind="dissolve",
+                    summary=f"解散地址库「{book_name}」· 删除 {len(snapshots)} 个地址",
+                    inserted=[],
+                    updated=[],
+                    deleted=snapshots,
+                    removed_book=book_name,
+                )
+        return {
+            "dissolved": True,
+            "name": book_name,
+            "deleted": len(snapshots),
+            # 兼容旧前端字段：解散不再保留地址。
+            "addresses_kept": 0,
+        }
 
     # -- 关联查询历史 -----------------------------------------------------
     def archive_relation(
