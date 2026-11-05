@@ -1,10 +1,10 @@
 # 地址关联工具设计、可行性与验收记录
 
-**文档版本：** 0.2.0
-**验证日期：** 2026-10-31（Asia/Shanghai）
+**文档版本：** 0.6.18
+**验证日期：** 2026-11-05（Asia/Shanghai）
 **数据网络：** Bittensor mainnet / Finney
 **验证时最新高度（抽样）：** 约 9,401,465
-**实现状态：** MVP 已完成核心链路验证；Taostats 免费档客户端与三级查询已实现并通过 mock/API 测试，真实账户可用性和历史覆盖仍待 API key 实测
+**实现状态：** 核心链路、三级查询、Taostats 客户端、离线授权、地址库（分类/标签组/自建库/预置库）均已实现并有自动化测试；Taostats 真实账户可用性与历史覆盖仍待 API key 实测
 
 ## 一、结论
 
@@ -75,15 +75,24 @@
 
 | 数据表 | 核心字段 | 作用 |
 | --- | --- | --- |
-| `address_library` | address、label、category、note、source | 人工地址库 |
-| `transfers` | block_number、block_hash、tx_hash、event_index、from、to、amount_rao、amount_tao | 本地资金边索引 |
+| `address_library` | address、label、category、categories、note、source、book、exchange_confirmed、exchange_rejected | 人工地址库；`categories` 支持一个地址多分类，`book` 是所属自建库 |
+| `address_books` | name、note、created_at | 自建地址库台账（库名列表） |
+| `address_categories` | name | 人工分类（大V/群友/其他/自定义） |
+| `transfers` | block_number、block_hash、tx_hash、event_index、from、to、amount_rao、amount_tao、edge_type、netuid、hotkey | 本地资金边索引 |
 | `scan_jobs` | start/end、head、status、error、scanned_blocks | 扫描任务审计 |
+| `scan_lock` | 租约与持有者信息 | 保证同一时刻只有一个扫描在写库 |
 | `chain_cursors` | rpc_url、last_block、last_hash | 连续增量水位 |
 | `relation_archives` | seed、status、rounds、requests、related_count、payload、created_at | 每次关联查询的结果快照，供查询记录回看与重新导出；最多保留 500 条，总体积超过 200 MB 时淘汰最旧记录 |
+| `import_batches` | kind、summary、payload（单槽 id=1） | 「撤回上次导入」的快照：新增地址、被改写字段原值、本次新建/删除的库 |
+| `seed_books` | name、addresses、created_at | 外发预置地址库的安装记录（幂等，解散后不自动复活） |
 
 索引的唯一约束来自区块与事件序号，并另外对事件字段建立唯一键；导入重复不会重复累加金额。
 
 关联查询的归档不参与关联计算，只是结果的只读快照：`payload` 保存去掉用量统计后的完整 JSON（超过 8 MB 时丢弃逐笔 `edges` 明细），历史页据此还原表格和导出地址。同步地址库时按地址去重，已存在的行不覆盖，保证人工维护的分类与备注不会被自动流程改写。
+
+撤回机制：任何批量写入（同步地址库 / 新建地址库 / 导入文件 / 解散地址库 / 重新导入预置库）都会写一条 `import_batches` 快照，只保留最新一条。`undo_last_import()` 删除该批新插入的地址、按快照还原被改写的字段、并移除本次新建的库；解散则按 `deleted` 快照重建地址与库名。
+
+标签与分类语义：`label` 为空时对外展示地址后四位（`label_custom=false`），人工命名过的为自定标签（`label_custom=true`）。**改名和改分类都只能整组进行**（按 label 或 book 批量改），单条地址只改备注，避免把同一组拆散；整组改分类时交易所/验证者地址自动跳过，并写撤回快照。
 
 ## 五、已验证证据
 
@@ -171,6 +180,8 @@
 | Taostats 历史转账 API 接入 | 已实现，mock 与隔离 API 测试通过 | 已核对 `/v1/transfers` 字段、RAO 数量格式及分页契约；尚未用本项目 API key 实测真实权限和返回数据 |
 | 任意历史时间全链追溯 | **未满足** | Taostats 接口已接入，但本项目尚未用已认证 key 验证历史上限和覆盖完整性；公开 RPC 旧状态也会被裁剪 |
 | 后台持续索引 | **未完成** | MVP 有“继续水位”手动增量，尚无 24×7 调度器 |
+| 关联结果分页与整组管理 | 已验证 | 每页 10/20/50/100（默认 10）、页码跳转与记忆；标签组整组改名、整组全选、按库筛选 |
+| 预置地址库随包分发 | 已验证 | `app/seed_books/*.txt` 首次启动导入（6 组 / 355 地址），支持「重新导入预置库」补齐缺失地址 |
 
 ## 八、后续开发顺序
 

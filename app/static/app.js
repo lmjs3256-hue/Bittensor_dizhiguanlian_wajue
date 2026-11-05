@@ -27,7 +27,8 @@ const state = {
   lastImport: null,
   // 外发预置地址库概况：{groups, addresses}，只用来提示按钮内容。
   seedInfo: { groups: 0, addresses: 0 },
-  categoryEditorId: null,
+  // 整组改分类：{kind: "book"|"label", name: "组名"}，null 表示没有在改。
+  groupCategory: null,
   // 整组改名：{kind: "book"|"label", name: "组名"}，null 表示没有在改名。
   groupRename: null,
   libraryGroupsOpen: new Set(),
@@ -958,7 +959,6 @@ function addressLink(address, text) {
 }
 
 function libraryRowsTable(rows) {
-  const categoryNames = state.categories.map((item) => item.name);
   const rowsHtml = rows.map((row) => {
     const exchangeControl = row.category === "EXCHANGE"
       ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销确认</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">重新确认</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" type="button">撤销否定</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>`
@@ -973,19 +973,13 @@ function libraryRowsTable(rows) {
     ).join("");
     // 标签是「组」的属性：单条地址只维护备注，改名在组标题上做。
     const labelCell = `<span class="label-text${row.label_custom ? "" : " is-default"}" title="${row.label_custom ? "组名（整组共用）" : `未命名，默认显示地址后四位（${esc(row.label)}）`}">${esc(row.label || "-")}</span>`;
-    const editing = state.categoryEditorId === row.id;
-    // 分类编辑器单独占一行（colspan），避免把所在列撑宽把其他列挤出表格。
-    let editorRow = "";
-    if (editing) {
-      editorRow = `<tr class="category-editor-row" data-editor-for="${row.id}"><td colspan="8"><div class="category-editor"><div class="category-editor-title">选择分类（可多选，第一个为主分类）</div><div class="category-editor-choices">${categoryNames.map((name) =>
-          `<label><input type="checkbox" data-category-choice value="${esc(name)}"${categories.includes(name) ? " checked" : ""}>${esc(categoryLabel(name))}</label>`
-        ).join("")}</div><div class="category-editor-actions"><button class="secondary note-save" data-save-categories="${row.id}" type="button">保存分类</button><button class="ghost note-save" data-cancel-categories type="button">取消</button></div></div></td></tr>`;
-    }
+    // 分类是「组」的属性：单条地址不单独改分类，改分类在组标题上做。
+    const editorRow = "";
     return `<tr>
       <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td>
       <td class="mono address library-address-cell"><div class="address-main">${addressLink(row.address, row.address)}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button></div></td>
       <td class="library-label-cell">${labelCell}</td>
-      <td><div class="category-chips">${chips}</div><button class="ghost note-save" data-edit-categories="${row.id}" type="button">改分类</button>${exchangeControl}</td>
+      <td><div class="category-chips">${chips}</div>${exchangeControl}</td>
       <td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td>
       <td>${bookCell}</td><td>${esc(row.source || "-")}</td>
       <td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td>
@@ -1018,6 +1012,9 @@ function libraryTable(rows) {
         label: row.book || label,
         book: row.book || "",
         categories: new Set(),
+        // 组的主分类（第一条记录的主分类）：整组改分类时默认只勾它，
+        // 避免“把 其他 换成 群友”时忘了取消而变成多分类。
+        primaryCategory: row.category,
         // 只有「自建库」和人工命名的标签组可以整组改名；未命名分类组不动。
         canRename: Boolean(row.book || customLabel),
         rows: [],
@@ -1040,12 +1037,29 @@ function libraryTable(rows) {
       && state.groupRename.kind === kind
       && state.groupRename.name === group.label;
     let renameControl = "";
+    let categoryControl = "";
     if (renaming) {
       renameControl = `<div class="group-rename-editor"><input data-group-rename-input maxlength="160" value="${esc(group.label)}" autocomplete="off" aria-label="新的组名"><button class="secondary note-save" data-save-group-rename data-group-kind="${kind}" data-group-name="${esc(group.label)}" type="button">保存</button><button class="ghost note-save" data-cancel-group-rename type="button">取消</button></div>`;
     } else if (group.canRename) {
       renameControl = `<button class="ghost note-save group-rename" data-rename-group data-group-kind="${kind}" data-group-name="${esc(group.label)}" title="整组改名：这一组的所有地址一起更新" type="button">改名</button>`;
     }
-    return `<section class="library-group"><div class="library-group-head"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-actions"><label class="group-select" title="全选「${esc(group.label)}」这一组的 ${group.rows.length} 个地址"><input type="checkbox" data-group-select="${groupId}" aria-label="全选「${esc(group.label)}」组地址">全选本组</label><span class="group-selected" data-group-selected="${groupId}"></span>${renameControl}</div></div><div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
+    // 整组改分类：分类是「组」的属性，单条地址不再单独改分类。
+    const editingCategory = Boolean(state.groupCategory)
+      && state.groupCategory.kind === kind
+      && state.groupCategory.name === group.label;
+    // 只有真正的「组」（自建库 / 人工命名的标签组）能整组改分类；
+    // 未命名地址是按分类兜底归到一起的，分类本身就是它的分组依据。
+    let categoryEditor = "";
+    if (!group.canRename) categoryControl = "";
+    else if (editingCategory) {
+      // 编辑器单独占一行，避免把组标题挤变形。
+      categoryEditor = `<div class="group-category-editor"><div class="group-category-title">整组改分类：勾一个就是整组替换成该分类，勾多个表示同时属于多个分类；交易所/验证者地址会跳过</div><div class="category-editor-choices">${state.categories.map((item) =>
+        `<label><input type="checkbox" data-group-category-choice value="${esc(item.name)}"${item.name === group.primaryCategory ? " checked" : ""}>${esc(categoryLabel(item.name))}</label>`
+      ).join("")}</div><div class="category-editor-actions"><button class="secondary note-save" data-save-group-categories data-group-kind="${kind}" data-group-name="${esc(group.label)}" type="button">保存分类</button><button class="ghost note-save" data-cancel-group-categories type="button">取消</button></div></div>`;
+    } else {
+      categoryControl = `<button class="ghost note-save group-category" data-edit-group-categories data-group-kind="${kind}" data-group-name="${esc(group.label)}" data-group-book="${esc(group.book)}" title="整组改分类：这一组的所有地址一起更新" type="button">改分类</button>`;
+    }
+    return `<section class="library-group"><div class="library-group-head"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-actions"><label class="group-select" title="全选「${esc(group.label)}」这一组的 ${group.rows.length} 个地址"><input type="checkbox" data-group-select="${groupId}" aria-label="全选「${esc(group.label)}」组地址">全选本组</label><span class="group-selected" data-group-selected="${groupId}"></span>${categoryControl}${renameControl}</div></div>${categoryEditor}<div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -1325,7 +1339,6 @@ async function saveLibraryNote(rowId, button) {
 
 function startGroupRename(kind, name) {
   state.groupRename = { kind, name };
-  state.categoryEditorId = null;
   renderLibraryList();
   const input = document.querySelector("[data-group-rename-input]");
   if (input) {
@@ -1441,20 +1454,26 @@ async function reinstallSeedBooks(button) {
   }
 }
 
-async function saveLibraryCategories(rowId, button) {
-  const row = button.closest("tr");
-  const selected = [...(row?.querySelectorAll("[data-category-choice]:checked") || [])]
+async function saveGroupCategories(button) {
+  const kind = button.dataset.groupKind;
+  const name = button.dataset.groupName;
+  const selected = [...(button.closest(".group-category-editor")?.querySelectorAll("[data-group-category-choice]:checked") || [])]
     .map((checkbox) => checkbox.value);
   if (!selected.length) { toast("请至少勾选一个分类。", true); return; }
+  if (!window.confirm(`把「${name}」这一组的地址分类统一改为「${selected.map(categoryLabel).join("、")}」${selected.length > 1 ? "（这组地址会同时属于这几个分类）" : ""}？\n\n整组一起改，交易所/验证者地址会跳过；改错了可点「撤回上次导入」还原。`)) return;
   button.disabled = true;
   try {
-    await api(`/api/library/${rowId}/categories`, {
-      method: "PATCH",
-      body: JSON.stringify({ categories: selected }),
+    const result = await api("/api/library/group-categories", {
+      method: "POST",
+      body: JSON.stringify({
+        categories: selected,
+        book: kind === "book" ? name : "",
+        label: kind === "label" ? name : "",
+      }),
     });
-    state.categoryEditorId = null;
+    state.groupCategory = null;
     await loadLibrary();
-    toast(`分类已更新：${selected.join("、")}。`);
+    toast(`「${name}」整组分类已改为 ${selected.map(categoryLabel).join("、")}（${result.updated} 个地址${result.skipped ? `，跳过 ${result.skipped} 个交易所/验证者地址` : ""}）。`);
   } catch (error) {
     toast(`分类保存失败：${error.message}`, true);
     button.disabled = false;
@@ -2138,9 +2157,12 @@ document.addEventListener("click", (event) => {
     const details = document.querySelector(`[data-library-details="${groupId}"]`);
     if (details) details.classList.toggle("hidden", expanded);
   }
-  const editCategoriesButton = event.target.closest("[data-edit-categories]");
-  if (editCategoriesButton) {
-    state.categoryEditorId = Number(editCategoriesButton.dataset.editCategories);
+  const editGroupCategoriesButton = event.target.closest("[data-edit-group-categories]");
+  if (editGroupCategoriesButton) {
+    state.groupCategory = {
+      kind: editGroupCategoriesButton.dataset.groupKind,
+      name: editGroupCategoriesButton.dataset.groupName,
+    };
     state.groupRename = null;
     renderLibraryList();
   }
@@ -2158,13 +2180,13 @@ document.addEventListener("click", (event) => {
     state.groupRename = null;
     renderLibraryList();
   }
-  const cancelCategoriesButton = event.target.closest("[data-cancel-categories]");
-  if (cancelCategoriesButton) {
-    state.categoryEditorId = null;
+  const cancelGroupCategoriesButton = event.target.closest("[data-cancel-group-categories]");
+  if (cancelGroupCategoriesButton) {
+    state.groupCategory = null;
     renderLibraryList();
   }
-  const saveCategoriesButton = event.target.closest("[data-save-categories]");
-  if (saveCategoriesButton) saveLibraryCategories(saveCategoriesButton.dataset.saveCategories, saveCategoriesButton);
+  const saveGroupCategoriesButton = event.target.closest("[data-save-group-categories]");
+  if (saveGroupCategoriesButton) saveGroupCategories(saveGroupCategoriesButton);
   const deleteAddressButton = event.target.closest("[data-delete-address]");
   if (deleteAddressButton) deleteLibraryAddress(deleteAddressButton.dataset.deleteAddress);
   const libraryNoteButton = event.target.closest("[data-save-library-note]");

@@ -812,6 +812,63 @@ class LinkService:
             current.categories = encode_categories(values)
             return {"saved": True, "item": address_dict(current)}
 
+    def update_group_categories(
+        self,
+        categories: Iterable[str],
+        *,
+        book: str | None = None,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """整组改分类：把同一标签组（自建库或人工标签组）的地址一起改掉。
+
+        分类是「组」的属性：单条地址不单独改分类，避免同组里出现不同分类。
+        改动的旧值写进撤回快照，可用「撤回上次导入」还原。
+        """
+
+        values = normalize_category_list(categories)
+        book_name = " ".join(str(book or "").split())
+        label_name = " ".join(str(label or "").split())
+        if not book_name and not label_name:
+            raise InputError("请指定要改分类的标签组")
+        with self.database.session() as db:
+            query = select(AddressLibrary)
+            if book_name:
+                query = query.where(AddressLibrary.book == book_name)
+            else:
+                query = query.where(AddressLibrary.label == label_name)
+            rows = db.scalars(query).all()
+            if not rows:
+                raise InputError("没有找到这个标签组")
+            for name in values:
+                self._ensure_category(db, name)
+            # 系统分类（交易所/验证者）不参与人工分类：这些地址跳过，避免把角色信息冲掉。
+            editable = [
+                row
+                for row in rows
+                if not (row.exchange_confirmed or row.exchange_rejected)
+                and not set(row_categories(row)) & {"EXCHANGE", "VALIDATOR"}
+            ]
+            if not editable:
+                raise InputError("这一组都是交易所/验证者地址，不能改人工分类")
+            updated: list[dict[str, Any]] = []
+            for row in editable:
+                updated.append({"address": row.address, "snapshot": _library_row_snapshot(row)})
+                row.category = values[0]
+                row.categories = encode_categories(values)
+            _record_import_batch(
+                db,
+                kind="category",
+                summary=f"整组改分类：{'、'.join(values)}（{len(editable)} 个地址）",
+                inserted=[],
+                updated=updated,
+            )
+            return {
+                "saved": True,
+                "updated": len(editable),
+                "skipped": len(rows) - len(editable),
+                "categories": values,
+            }
+
     def decide_exchange(self, row_id: int, decision: str) -> dict[str, Any]:
         with self.database.session() as db:
             current = db.get(AddressLibrary, row_id)

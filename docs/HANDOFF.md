@@ -269,3 +269,49 @@ Set-Location G:\bittensor-wallet-link-intel
 2. 离线授权无法远程吊销，只能等到期；要即时吊销必须引入联网校验。
 3. 单码最多 50 个机器码，团队规模更大时按批次拆码，并在团队名里带成员标识以便溯源。
 
+
+## 21. 2026-11-05 0.6.13–0.6.17 交接：分页、标签组、预置地址库
+
+**分页与路径定向（0.6.13）**
+
+- 关联结果分页：`state.page` / `state.pageSize`，每页可选 10 / 20 / 50 / 100（默认 10），首页 / 上一页 / 输入页码跳转 / 下一页 / 末页，页码写进 `localStorage` 记忆；越界自动回末页。实现见 `app/static/app.js` 的 `relatedTable()` / `refreshRelatedTable()`，样式在 `.pagination*`。
+- 路径明细定向：`app/relation.py` 的 `_oriented_path(path, seed)` 从发起扫描的地址出发逐跳推导方向，输出 `path_from` / `path_to` / `direction`（`out` 向外转出 / `in` 对方转入），保证每一行明细的起点都是扫描起始地址。
+- 交易所终点剪枝：地址库里 `exchange_confirmed` 或带「系统」分类的地址在 discover 中不向下扩展；路径中途经过终点的下游地址整体剔除，并返回 warning「已剪除 N 个只经由交易所/系统地址连通的地址」。结果行上的「标为交易所」会即时隐藏下游关联，刷新后由后端规则彻底移除。
+
+**标签默认值与整组改名（0.6.14 → 0.6.15）**
+
+- `default_address_label(address)` 取地址后四位；`address_dict()` 额外返回 `label_custom` 区分「人工命名」与「默认名」，前端用 `.label-text.is-default` 虚线弱化。
+- 0.6.15 起**取消单条改名**：只保留组级改名（`POST /api/library/rename-label`、`POST /api/library/books/{name}/rename`，前端 `startGroupRename(kind, name)` / `saveGroupRename()`），单条地址只改备注。地址库清单按 `label` 归并分组，同组允许不同分类。
+
+**同步合并与撤回（0.6.15）**
+
+- `sync_relation_addresses(..., book_name)` 可把「新关联地址 + 发起地址」去重合并进**已有地址库**（label 默认跟随库名），没命中时才新建库；前端 `sync-label-group` 下拉把自建库、人工标签组、新建三合一，命中时默认选中命中组。
+- `ImportBatch`（单槽 `id=1`）+ `_library_row_snapshot()` + `_record_import_batch()` 在 sync / book / import_rows / 解散 / 重新导入五个入口写快照；`undo_last_import()` 删除新插入地址、按快照还原字段、移除本次新建的库。
+
+**预置地址库与解散语义（0.6.16）**
+
+- `app/seed_books/<组名>.txt` 随包分发：一只羊 54、DFV 1、惩罚者 16、DSV 239、埋伏党 38、taoBot 7，共 355 个地址。`app/db.py` 的 `install_seed_books()` 首次启动导入并登记到 `seed_books` 表（幂等，解散后不复活），地址库里已有的地址一律跳过。`main.py` lifespan 调用，`SEED_BOOKS_ENABLED` 可关闭（conftest 关闭以免污染测试）。
+- 解散语义变更：`dissolve_address_book()` 从「只清库名」改为**连库带地址一起删除**，并写撤回快照（`deleted` / `removed_book`），可用「撤回上次导入」恢复。
+- 组内全选：组标题右侧 `[data-group-select]` + 「已选 N」计数，`updateLibrarySelection()` 同步组内全选 / 半选，与顶部「全选」和单条勾选联动。
+
+**重新导入预置库（0.6.17）**
+
+- `install_seed_books(..., force=True)` 无视 `seed_books` 安装记录，只补当前缺失的地址（解散过的组连库带地址重建），返回 `new_addresses` / `created`；`list_seed_files()`、`seed_book_status()` 提供文件概况。
+- 接口：`GET /api/library/seed-books`、`POST /api/library/seed-books/reinstall`；`_record_import_batch` 新增 `created_books` 支持一次记多个新建库，`undo_last_import()` 批量删库。
+- 结果写 `kind="seed"` 快照，summary 带每组 +N；无缺失时不写快照，避免覆盖上一条可撤回记录。
+
+**验证状态（0.6.17）**
+
+- `pytest -q`：**142 passed**（1 条 Starlette/httpx 弃用 warning）。
+- `node --check app/static/app.js` 通过；`使用说明.html` 由 `tools/build_usage_html.py` 重新生成。
+- 真实库实测：解散 DFV → 重新导入补回 1 条并重建库 → 撤回删除 1 条并移除库 → 再导入复原。
+- CDP 界面探针实测：工具栏按钮存在、文案与提示正确、无溢出裁剪。
+- 外发包 39.6 MB / 79 文件（含 6 个 seed_books 文件）。
+
+## 22. 2026-11-05 0.6.18 交接：改分类也是整组操作
+
+- 单条地址不再能改分类（`data-edit-categories` 已从行模板移除），入口统一到标签组标题右侧的「改分类」，与「改名」并列；未命名的分类兜底组不显示该入口。
+- 新方法 `LinkService.update_group_categories(categories, book=|label=)`：按 `book` 或 `label` 定位标签组，整组改 `category` / `categories`；交易所/验证者地址（系统分类或 `exchange_confirmed`/`exchange_rejected`）自动跳过，全组都是这类地址时抛 `InputError`。
+- 改动写 `ImportBatch(kind="category")` 快照（`updated` 里存 `_library_row_snapshot` 旧值），`undo_last_import()` 可整组还原。
+- 新接口 `POST /api/library/group-categories`（`GroupCategoriesInput`：`categories` + `book` / `label`）。单条 `PATCH /api/library/{id}/categories` 保留但界面不再调用。
+- 前端：`state.groupCategory = {kind, name}` 取代 `state.categoryEditorId`；编辑器整行渲染在组标题下（`.group-category-editor`），默认只勾该组主分类（`group.primaryCategory`），避免"其他 + 群友"这种误叠加。

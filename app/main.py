@@ -170,6 +170,14 @@ class CategoriesInput(BaseModel):
     )
 
 
+class GroupCategoriesInput(BaseModel):
+    categories: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(
+        default_factory=list, max_length=10
+    )
+    book: str = Field(default="", max_length=60)
+    label: str = Field(default="", max_length=160)
+
+
 class ExchangeConfirmationInput(BaseModel):
     confirmed: bool = True
     rejected: bool = False
@@ -539,6 +547,23 @@ def rename_address_book(
 
     try:
         return svc.rename_address_book(name, payload.name)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/library/group-categories")
+def update_group_categories(
+    payload: GroupCategoriesInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """整组改分类：把一个自建库或人工标签组里所有地址的分类一起改掉。"""
+
+    if not payload.categories:
+        raise HTTPException(422, "请至少选一个分类")
+    try:
+        return svc.update_group_categories(
+            payload.categories, book=payload.book, label=payload.label
+        )
     except InputError as exc:
         raise HTTPException(422, str(exc)) from exc
 

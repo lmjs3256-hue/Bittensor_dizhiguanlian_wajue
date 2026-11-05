@@ -226,3 +226,141 @@ def test_api_categories_endpoints():
         finally:
             main_module.SERVICE = original
             database.engine.dispose()
+
+
+def test_group_categories_change_whole_label_group():
+    """改分类是整组操作：同一标签组里所有地址一起改，单条不再单独改。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "group-category.db")
+        try:
+            service.create_address_book(
+                name="群组A", seed=SEED, addresses=[NEIGHBORS[0], NEIGHBORS[1]],
+                category="其他", include_seed=True,
+            )
+            result = service.update_group_categories(["大V"], book="群组A")
+
+            assert result["updated"] == 3
+            assert result["skipped"] == 0
+            with database.session() as db:
+                rows = db.query(AddressLibrary).filter_by(book="群组A").all()
+                assert {row.category for row in rows} == {"大V"}
+                assert {row.categories for row in rows} == {'["大V"]'}
+
+            # 人工标签组（没有自建库）也按 label 整组改。
+            service.import_rows(
+                [{"address": NEIGHBORS[2], "label": "散组", "category": "其他"}], "manual"
+            )
+            by_label = service.update_group_categories(["群友"], label="散组")
+
+            assert by_label["updated"] == 1
+            with database.session() as db:
+                assert db.query(AddressLibrary).filter_by(address=NEIGHBORS[2]).one().category == "群友"
+
+            # 改完可以撤回，分类回到旧值。
+            undo = service.undo_last_import()
+
+            assert undo["restored"] == 1
+            with database.session() as db:
+                assert db.query(AddressLibrary).filter_by(address=NEIGHBORS[2]).one().category == "其他"
+        finally:
+            database.engine.dispose()
+
+
+def test_group_categories_skip_exchange_addresses_and_validate_target():
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "group-category-guard.db")
+        try:
+            service.create_address_book(
+                name="混合库", seed=SEED, addresses=[NEIGHBORS[0]], category="其他", include_seed=True
+            )
+            service.import_rows(
+                [{"address": NEIGHBORS[1], "category": "EXCHANGE", "label": "某交易所"}], "manual"
+            )
+            with database.session() as db:
+                row = db.query(AddressLibrary).filter_by(address=NEIGHBORS[1]).one()
+                row.exchange_confirmed = True
+                row.book = "混合库"
+
+            result = service.update_group_categories(["大V"], book="混合库")
+
+            assert result["updated"] == 2
+            assert result["skipped"] == 1
+            with database.session() as db:
+                exchange = db.query(AddressLibrary).filter_by(address=NEIGHBORS[1]).one()
+                assert "EXCHANGE" in (exchange.categories or "")
+                with pytest.raises(InputError):
+                    service.update_group_categories(["大V"], book="不存在的库")
+                with pytest.raises(InputError):
+                    service.update_group_categories(["大V"])
+        finally:
+            database.engine.dispose()
+
+
+def test_group_categories_change_whole_label_group():
+    """改分类是整组操作：同一标签组里所有地址一起改，单条不再单独改。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "group-category.db")
+        try:
+            service.create_address_book(
+                name="群组A", seed=SEED, addresses=[NEIGHBORS[0], NEIGHBORS[1]],
+                category="其他", include_seed=True,
+            )
+            result = service.update_group_categories(["大V"], book="群组A")
+
+            assert result["updated"] == 3
+            assert result["skipped"] == 0
+            with database.session() as db:
+                rows = db.query(AddressLibrary).filter_by(book="群组A").all()
+                assert {row.category for row in rows} == {"大V"}
+                assert {row.categories for row in rows} == {'["大V"]'}
+
+            # 人工标签组（没有自建库）也按 label 整组改。
+            service.import_rows(
+                [{"address": NEIGHBORS[2], "label": "散组", "category": "其他"}], "manual"
+            )
+            by_label = service.update_group_categories(["群友"], label="散组")
+
+            assert by_label["updated"] == 1
+            with database.session() as db:
+                assert db.query(AddressLibrary).filter_by(address=NEIGHBORS[2]).one().category == "群友"
+
+            # 改完可以撤回，分类回到旧值。
+            undo = service.undo_last_import()
+
+            assert undo["restored"] == 1
+            with database.session() as db:
+                assert db.query(AddressLibrary).filter_by(address=NEIGHBORS[2]).one().category == "其他"
+        finally:
+            database.engine.dispose()
+
+
+def test_group_categories_skip_exchange_addresses_and_validate_target():
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "group-category-guard.db")
+        try:
+            service.create_address_book(
+                name="混合库", seed=SEED, addresses=[NEIGHBORS[0]], category="其他", include_seed=True
+            )
+            service.import_rows(
+                [{"address": NEIGHBORS[1], "category": "EXCHANGE", "label": "某交易所"}], "manual"
+            )
+            with database.session() as db:
+                row = db.query(AddressLibrary).filter_by(address=NEIGHBORS[1]).one()
+                row.exchange_confirmed = True
+                row.book = "混合库"
+
+            result = service.update_group_categories(["大V"], book="混合库")
+
+            assert result["updated"] == 2
+            assert result["skipped"] == 1
+            with database.session() as db:
+                exchange = db.query(AddressLibrary).filter_by(address=NEIGHBORS[1]).one()
+                assert "EXCHANGE" in (exchange.categories or "")
+                with pytest.raises(InputError):
+                    service.update_group_categories(["大V"], book="不存在的库")
+                with pytest.raises(InputError):
+                    service.update_group_categories(["大V"])
+        finally:
+            database.engine.dispose()

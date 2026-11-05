@@ -1,4 +1,50 @@
-# 0.1.0 验证交付记录
+# 验证交付记录
+
+## 0.6.13–0.6.16 摘要
+
+- **0.6.13**：关联结果分页（10/20/50/100，默认 10，首页/末页/跳页）落地；路径明细按 `_oriented_path()` 从扫描起始地址定向（`path_from` / `path_to` / `direction`）；确认交易所后其下游噪音关联在刷新后自动剪除。
+- **0.6.14 / 0.6.15**：标签未填默认取地址后四位；取消单条改名，改为整组改名 + 单条只改备注；同步支持合并进已有地址库（未命中才新建）；新增「撤回上次导入」（`ImportBatch` 单槽快照）。当时回归 **134 passed**。
+- **0.6.16**：外发预置地址库（6 组 / 355 地址，随包 `app/seed_books`）；解散改为连库带地址一起删除且可撤回；地址库清单支持整组全选。当时回归 **138 passed**。
+
+## 0.6.18 验证记录（2026-11-05）
+
+- `.venv\Scripts\python.exe -m pytest -q`：**144 passed**（1 条既有 Starlette/httpx 弃用 warning）；`node --check app/static/app.js` 通过。
+- 接口实测：`POST /api/library/group-categories {"categories":["群友"],"book":"惩罚者"}` → `updated 16`；`last-import` 返回 `kind="category"`、`updated 16`；`undo-last-import` → `restored 16`，16 条全部回到「其他」。
+- 界面探针：`[data-edit-categories]` 计数为 **0**（行内入口已移除）；19 个标签组各有 1 个「改分类」按钮；点开后编辑器默认只勾当前主分类；保存后该组 38 条全部换分类并提示「整组分类已改为 …（38 个地址）」，编辑器自动收起。
+- 多选误操作已修正：默认只勾主分类，勾多个时确认框额外提示"这组地址会同时属于这几个分类"。
+
+## 0.6.17 验证记录（2026-11-05）
+
+### 自动化检查
+
+- `.venv\Scripts\python.exe -m pytest -q`：**142 passed**，1 条既有 Starlette/httpx 弃用 warning。
+- `node --check app/static/app.js`：通过。
+- `tools/build_usage_html.py`：重新生成 `使用说明.html`（44 372 bytes）。
+
+### 真实数据库链路（127.0.0.1:8766，data/wallet_link.db）
+
+| 步骤 | 请求 | 结果 |
+| --- | --- | --- |
+| 概况 | `GET /api/library/seed-books` | `{"groups": 6, "addresses": 355}` |
+| 解散预置组 | `DELETE /api/library/books/DFV` | `{"dissolved": true, "deleted": 1}`，库列表剩 5 组 |
+| 重新导入 | `POST /api/library/seed-books/reinstall` | `inserted 1`、`created_books ["DFV"]`，库列表回到 6 组（DFV 1） |
+| 撤回 | `POST /api/library/undo-last-import` | `deleted 1`、`book_removed true`，DFV 从库列表消失 |
+| 再次重新导入 | 同上 | `inserted 1`、`created ["DFV"]`，DFV 复原 |
+| 幂等 | 已补齐后再点 | `inserted 0`，不写新快照（`last-import.created_at` 不变） |
+
+### 界面（Chrome headless CDP 探针）
+
+- `#reinstall-seed-books` 按钮存在、文案“重新导入预置库”、`disabled=false`、提示含“6 组 / 355 个地址”。
+- 确认框文本包含三条影响说明；已补齐时 toast 显示“预置地址库已是最新，没有缺失的地址。”
+- 工具栏 8 个控件一行排开：最大右边界 1331 px，视口 1422 px，`barOverflow=false`，无控件被裁剪。
+
+### 覆盖测试
+
+- `tests/test_seed_books.py` 新增：解散后重新导入补回、人工改动保留且可撤回、两个接口往返、预置库概况统计。
+- `tests/test_address_books.py`：解散改为删除地址后清单不再残留，撤回可连库带地址恢复。
+- `tests/test_version.py`：版本号与更新日志标题同步到 0.6.17。
+
+**外发包**：`Bittensor地址关联挖掘-0.6.17-外发包.zip`，39.6 MB / 79 文件，含 6 个 `app/seed_books/*.txt`。
 
 ## 0.1.5 余额和地址显示验证
 
