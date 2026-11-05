@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.6.17">
+  <link rel="stylesheet" href="/static/styles.css?v=0.6.18">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -108,7 +108,7 @@
               <small>给这次查询起一个库名，把可导入的关联地址和发起地址一起写进去；已人工确认的交易所和验证者地址会自动剔除，规则与“导出地址 TXT”一致。同名库重复导入只补新地址，不改已有记录。</small>
             </div>
           </section>
-          <section class="panel"><div class="section-title"><div><h3>关联地址</h3><span class="tag">金额过滤后</span></div><label class="result-filter">层级筛选<select id="related-depth-filter" aria-label="关联地址层级筛选"><option value="all">全部层级</option><option value="1">只看 1 级</option><option value="2">只看 2 级</option><option value="3">只看 3 级</option></select></label></div><small id="removed-note" class="removed-note hidden"></small><div id="related" class="table-wrap"></div></section>
+          <section class="panel"><div class="section-title"><div><h3>关联地址</h3><span class="tag">金额过滤后</span></div><label class="result-filter">层级筛选<select id="related-depth-filter" aria-label="关联地址层级筛选"><option value="all">全部层级</option><option value="1">只看 1 级</option><option value="2">只看 2 级</option><option value="3">只看 3 级</option></select></label></div><small id="removed-note" class="removed-note hidden"></small><div id="related" class="table-wrap"></div><div id="related-pagination" class="pagination-bar hidden"></div></section>
           <section class="panel notes"><h3>数据范围与限制</h3><ul id="warnings"></ul></section>
         </section>
         <div id="empty" class="empty"><div class="empty-icon">3D</div><h2>输入地址，开始三跳关联</h2><p>默认使用 Taostats 历史索引；也可以关闭上方选项，只查本地采集区间。</p></div>
@@ -159,6 +159,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.6.17"></script>
+  <script src="/static/app.js?v=0.6.18"></script>
 </body>
 </html>

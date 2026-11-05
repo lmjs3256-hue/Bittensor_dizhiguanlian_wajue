@@ -87,6 +87,43 @@ def _is_system(address: str, prefix: str) -> bool:
     return bool(prefix) and address.startswith(prefix)
 
 
+def _oriented_path(seed: str, hops: list[TransferRecord]) -> list[dict[str, object]]:
+    """把 BFS 路径整理成「起始地址 → … → 当前地址」的顺序。
+
+    链上转账记录的 from/to 是真实资金方向，某一跳可能是对方打给当前地址，
+    直接铺开会让路径看起来从别的地址起步。这里按行走顺序给出
+    path_from → path_to，并用 direction 标注这一跳是转出（out）还是转入（in）。
+    """
+
+    steps: list[dict[str, object]] = []
+    current = seed
+    for transfer in hops:
+        if transfer.from_address == current:
+            next_address, direction = transfer.to_address, "out"
+        elif transfer.to_address == current:
+            next_address, direction = transfer.from_address, "in"
+        else:
+            # 路径断开（理论上不会发生）：保留已确认的跳，避免展示错误链路。
+            break
+        steps.append(
+            {
+                "tx_hash": transfer.tx_hash,
+                "block_number": transfer.block_number,
+                "from_address": transfer.from_address,
+                "to_address": transfer.to_address,
+                "amount_tao": str(transfer.amount_tao),
+                "timestamp": transfer.timestamp,
+                "edge_type": transfer.edge_type,
+                "netuid": transfer.netuid,
+                "path_from": current,
+                "path_to": next_address,
+                "direction": direction,
+            }
+        )
+        current = next_address
+    return steps
+
+
 def _role_for_address(
     address: str,
     entry: LibraryEntry | None,
@@ -436,6 +473,7 @@ def discover(
                 by_relation[endpoint].append(edge)
 
     related: list[RelationResult] = []
+    pruned_through_terminal = 0
     for address, edge_rows in by_relation.items():
         total = sum((edge.amount_tao for edge in edge_rows), Decimal("0"))
         if total < policy.min_total_tao:
@@ -444,6 +482,16 @@ def discover(
             continue
         path = paths.get(address)
         if not path:
+            continue
+        # 关联终点（交易所 / 系统分类）不再向下扩展，所以正常不可能出现
+        # 「路径中途经过终点」的地址；万一出现（例如终点是本次查询期间新标记的），
+        # 这种地址只是交易所的下游噪音，直接剪掉，不当作线索展示。
+        if any(
+            hop.from_address in terminal_exchange_addresses
+            or hop.to_address in terminal_exchange_addresses
+            for hop in path[:-1]
+        ):
+            pruned_through_terminal += 1
             continue
         entry = library_map.get(address)
         address_role, role_reason = _role_for_address(
@@ -457,19 +505,9 @@ def discover(
         incoming = [edge for edge in edge_rows if edge.to_address == address]
         outgoing = [edge for edge in edge_rows if edge.from_address == address]
         # 起始地址到该地址的逐笔路径：BFS 走过的每一跳原始转账记录。
-        path_transfers = [
-            {
-                "tx_hash": row.tx_hash,
-                "block_number": row.block_number,
-                "from_address": row.from_address,
-                "to_address": row.to_address,
-                "amount_tao": str(row.amount_tao),
-                "timestamp": row.timestamp,
-                "edge_type": row.edge_type,
-                "netuid": row.netuid,
-            }
-            for row in (paths.get(address) or [])
-        ]
+        # 每一跳额外给出「按起始地址方向」的 path_from → path_to：转账本身可能是
+        # 对方转入，直接照抄 from/to 会让路径看起来从别的地址开始。
+        path_transfers = _oriented_path(seed, path)
         related.append(
             RelationResult(
                 address=address,
@@ -508,6 +546,11 @@ def discover(
         final_warnings.append(
             f"已识别 {len(visible_terminal_exchanges)} 个交易所地址（人工确认，或标签/备注中写明「交易所」）；"
             "这些地址作为关联终点，不再向下扩展其转账。"
+        )
+    if pruned_through_terminal:
+        final_warnings.append(
+            f"已剪除 {pruned_through_terminal} 个只经由交易所/系统地址连通的地址；"
+            "这些地址属于交易所的下游噪音，不作为线索展示。"
         )
     if missing_hash_rows:
         final_warnings.append(

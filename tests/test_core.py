@@ -359,3 +359,95 @@ def test_missing_balance_does_not_automatically_label_exchange():
     report = discover("S", records, max_depth=1)
     row = next(item for item in report.related if item.address == "A")
     assert row.address_role == "交易所判断待核余额"
+
+
+def test_path_transfers_are_oriented_from_scan_seed():
+    """路径明细必须从发起扫描的地址起步：对方转入的那一跳要反向展示。"""
+
+    report = discover(
+        "S",
+        [
+            TransferRecord("0x01", 100, "N1", "S", Decimal("2")),
+            TransferRecord("0x02", 200, "S", "N2", Decimal("3")),
+        ],
+        max_depth=2,
+        policy=LinkPolicy(Decimal("0.1"), Decimal("0.1")),
+    )
+
+    rows = {row.address: row for row in report.related}
+    hop_n1 = rows["N1"].path_transfers[0]
+    assert (hop_n1["from_address"], hop_n1["to_address"]) == ("N1", "S")  # 链上原始方向
+    assert (hop_n1["path_from"], hop_n1["path_to"]) == ("S", "N1")  # 展示方向
+    assert hop_n1["direction"] == "in"
+
+    hop_n2 = rows["N2"].path_transfers[0]
+    assert (hop_n2["path_from"], hop_n2["path_to"]) == ("S", "N2")
+    assert hop_n2["direction"] == "out"
+
+
+def test_confirmed_exchange_prunes_its_downstream_addresses():
+    """公共地址/未录入的交易所人工确认后，刷新应把只经由它连通的下游地址移除。"""
+
+    records = [
+        TransferRecord("0x01", 100, "S", "A", Decimal("2")),
+        TransferRecord("0x02", 110, "S", "EX", Decimal("2")),
+        TransferRecord("0x03", 200, "EX", "X", Decimal("3")),
+        TransferRecord("0x04", 210, "EX", "Y", Decimal("3")),
+    ]
+    library = [
+        LibraryEntry(
+            address="EX",
+            label="人工确认交易所",
+            category="EXCHANGE",
+            note="",
+            source="manual:exchange-confirmation",
+            exchange_confirmed=True,
+            exchange_rejected=False,
+            categories=("EXCHANGE",),
+        )
+    ]
+
+    report = discover(
+        "S",
+        records,
+        max_depth=3,
+        policy=LinkPolicy(Decimal("0.1"), Decimal("0.1")),
+        library=library,
+    )
+
+    assert {row.address for row in report.related} == {"A", "EX"}
+    assert any("交易所地址" in warning and "关联终点" in warning for warning in report.warnings)
+
+
+def test_downstream_kept_when_it_has_another_path():
+    """下游地址若还能通过别的路径连回起始地址，就不算交易所噪音，必须保留。"""
+
+    records = [
+        TransferRecord("0x01", 100, "S", "EX", Decimal("2")),
+        TransferRecord("0x02", 110, "EX", "Z", Decimal("3")),
+        TransferRecord("0x03", 120, "S", "Z", Decimal("2")),
+    ]
+    library = [
+        LibraryEntry(
+            address="EX",
+            label="人工确认交易所",
+            category="EXCHANGE",
+            note="",
+            source="manual",
+            exchange_confirmed=True,
+            exchange_rejected=False,
+            categories=("EXCHANGE",),
+        )
+    ]
+
+    report = discover(
+        "S",
+        records,
+        max_depth=3,
+        policy=LinkPolicy(Decimal("0.1"), Decimal("0.1")),
+        library=library,
+    )
+
+    rows = {row.address: row for row in report.related}
+    assert "Z" in rows
+    assert rows["Z"].path_transfers[-1]["path_to"] == "Z"

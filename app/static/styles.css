@@ -247,3 +247,15 @@ body.license-locked .shell { filter:blur(2px); pointer-events:none; user-select:
 .category-editor-choices input { width:14px; height:14px; padding:0; accent-color:var(--accent); }
 .category-editor-actions { display:flex; gap:7px; margin-top:9px; }
 .filter-choice label { white-space:nowrap; }
+
+/* 关联地址分页控件 */
+.pagination-bar { margin-top:12px; }
+.pagination { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-size:12.5px; color:var(--muted); }
+.pagination-range { white-space:nowrap; }
+.pagination-size { display:flex; align-items:center; gap:6px; white-space:nowrap; }
+.pagination-size select { padding:4px 6px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--ink); font-size:12.5px; }
+.pagination-nav { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+.pagination-input { display:flex; align-items:center; gap:5px; white-space:nowrap; }
+.pagination-input input { width:66px; padding:4px 6px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--ink); font-size:12.5px; text-align:center; }
+.pagination button { padding:5px 10px; }
+.pagination button[disabled] { opacity:.45; cursor:not-allowed; }

@@ -139,7 +139,8 @@ class RelationResult:
     exchange_rejected: bool = False
     stake_transfer_count: int = 0
     # 从起始地址到该关联地址的逐笔转账路径（BFS 最短跳数路径），
-    # 每项含 tx_hash、时间、金额等，供前端「路径明细」展开显示。
+    # 每项含 tx_hash、时间、金额，以及按起始地址方向整理好的
+    # path_from → path_to / direction（out=转出、in=转入），供前端「路径明细」展示。
     path_transfers: list[dict[str, Any]] = field(default_factory=list)
 
 

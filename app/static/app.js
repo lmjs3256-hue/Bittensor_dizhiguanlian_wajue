@@ -14,6 +14,12 @@ const state = {
   // 手动「移除关联」的地址：本次会话内刷新重查时作为 removed_addresses 传给后端，
   // 这些地址及其线索的下游都不会再出现。新查询（非刷新）会清空。
   removedAddresses: new Set(),
+  // 本次会话被「标为交易所」的地址：它们下游只经由该地址连通的关联地址先在
+  // 页面上隐藏（不发回后端，避免误伤还有别的通路的地址）；刷新重查由后端按终点规则处理。
+  exchangePruned: new Set(),
+  // 关联地址分页：每页条数可选 10/20/50/100，默认 10。
+  page: 1,
+  pageSize: 10,
   categoryEditorId: null,
   libraryGroupsOpen: new Set(),
   history: { offset: 0, total: 0, items: [] },
@@ -327,9 +333,12 @@ function relatedTable(rows) {
     const library = row.match
       ? `<span class="tag warn">${esc(libraryName(row.library_label, row.library_category))}</span>`
       : "-";
+    const exchangeConfirmed = row.library_category === "EXCHANGE" && row.exchange_confirmed;
+    // 「标为交易所」对所有关联地址开放：公共地址或未录入系统的交易所地址，
+    // 标记后其下游只经由它连通的地址会在刷新后自动消失。
     const exchangeActions = row.address_role === "疑似交易所（待确认）"
       ? `<div class="exchange-decision"><button class="secondary note-save" data-exchange-decision="confirm" data-address="${esc(row.address)}" type="button">确认交易所</button><button class="ghost note-save" data-exchange-decision="reject" data-address="${esc(row.address)}" type="button">否定</button></div>`
-      : "";
+      : (exchangeConfirmed ? "" : `<div class="exchange-decision"><button class="ghost note-save" data-exchange-decision="confirm" data-address="${esc(row.address)}" title="公共地址或未录入的交易所？标记后刷新，其下游只经由它连通的地址会自动移除" type="button">标为交易所</button></div>`);
     // 2/3 级关联：展示「路径明细」按钮，展开从起始地址到该地址的逐笔转账。
     const pathButton = (row.path_transfers || []).length > 1
       ? `<button class="ghost note-save" data-path-toggle="${esc(row.address)}" type="button" title="从起始地址到该地址的逐笔转账记录">路径明细</button>`
@@ -341,13 +350,26 @@ function relatedTable(rows) {
 
 function pathDetailRowHtml(row) {
   const hops = row.path_transfers || [];
+  const seedAddress = state.lastResult?.seed || "";
   const body = hops.map((hop, index) => {
     const kind = hop.edge_type === "stake_transfer"
       ? `子网 stake 转移${hop.netuid != null ? ` · 子网 ${hop.netuid}` : ""}`
       : "普通转账";
-    return `<tr><td>第 ${index + 1} 跳</td><td class="address"><div class="address-main">${addressLink(hop.from_address, shortAddr(hop.from_address))}<span class="path-arrow">→</span>${addressLink(hop.to_address, shortAddr(hop.to_address))}</div></td><td>${esc(kind)}</td><td class="amount">${esc(formatTao(hop.amount_tao))}</td><td class="mono history-time">${esc(historyTime(hop.timestamp))}</td><td class="mono">${esc(hop.block_number)}</td></tr>`;
+    // 按「起始地址 → 当前地址」的方向展示：原始转账可能是对方转入，
+    // 直接铺 from→to 会让路径看起来从别的地址起步。
+    const from = hop.path_from || hop.from_address;
+    const to = hop.path_to || hop.to_address;
+    const directionTag = hop.direction === "in"
+      ? '<span class="tag">对方转入</span>'
+      : hop.direction === "out"
+        ? '<span class="tag">向外转出</span>'
+        : "";
+    return `<tr><td>第 ${index + 1} 跳</td><td class="address"><div class="address-main">${addressLink(from, shortAddr(from))}<span class="path-arrow">→</span>${addressLink(to, shortAddr(to))}</div></td><td>${esc(kind)}${directionTag}</td><td class="amount">${esc(formatTao(hop.amount_tao))}</td><td class="mono history-time">${esc(historyTime(hop.timestamp))}</td><td class="mono">${esc(hop.block_number)}</td></tr>`;
   }).join("");
-  return `<tr class="path-detail-row" data-path-detail="${esc(row.address)}"><td colspan="8"><div class="path-detail"><div class="path-detail-title">从起始地址到 <code>${esc(shortAddr(row.address))}</code> 的关联路径（共 ${hops.length} 笔转账，按时间先后即路径顺序）</div><table><thead><tr><th>跳数</th><th>方向</th><th>类型</th><th>金额 TAO</th><th>时间</th><th>区块</th></tr></thead><tbody>${body}</tbody></table></div></td></tr>`;
+  const seedLabel = seedAddress
+    ? `从起始地址 <code>${esc(shortAddr(seedAddress))}</code> 到 <code>${esc(shortAddr(row.address))}</code> 的关联路径`
+    : `从起始地址到 <code>${esc(shortAddr(row.address))}</code> 的关联路径`;
+  return `<tr class="path-detail-row" data-path-detail="${esc(row.address)}"><td colspan="8"><div class="path-detail"><div class="path-detail-title">${seedLabel}（共 ${hops.length} 笔转账，按路径顺序）</div><table><thead><tr><th>跳数</th><th>方向（起始地址 → 当前地址）</th><th>类型</th><th>金额 TAO</th><th>时间</th><th>区块</th></tr></thead><tbody>${body}</tbody></table></div></td></tr>`;
 }
 
 function togglePathDetail(address) {
@@ -367,18 +389,45 @@ function togglePathDetail(address) {
   if (button) button.textContent = "收起明细";
 }
 
-function refreshRelatedTable() {
+const PAGE_SIZES = [10, 20, 50, 100];
+
+try {
+  const savedPageSize = Number(window.localStorage.getItem("wb.relatedPageSize"));
+  if (PAGE_SIZES.includes(savedPageSize)) state.pageSize = savedPageSize;
+} catch (error) {
+  /* 隐私模式下 localStorage 不可用时用默认 10 条。 */
+}
+
+function relatedVisibleRows() {
   const allRows = state.lastResult?.related || [];
-  const rows = state.depthFilter === "all"
-    ? allRows
-    : allRows.filter((row) => String(row.depth) === state.depthFilter);
-  const visible = rows.filter((row) => !state.removedAddresses.has(row.address));
+  return allRows.filter((row) => {
+    if (state.depthFilter !== "all" && String(row.depth) !== state.depthFilter) return false;
+    if (state.removedAddresses.has(row.address)) return false;
+    if (state.exchangePruned.has(row.address)) return false;
+    return true;
+  });
+}
+
+function refreshRelatedTable() {
+  const visible = relatedVisibleRows();
   $("#count-related").textContent = number(visible.length);
-  $("#related").innerHTML = relatedTable(visible);
+  const totalPages = Math.max(1, Math.ceil(visible.length / state.pageSize));
+  if (state.page > totalPages) state.page = totalPages;
+  if (state.page < 1) state.page = 1;
+  const start = (state.page - 1) * state.pageSize;
+  $("#related").innerHTML = relatedTable(visible.slice(start, start + state.pageSize));
+  renderRelatedPagination(visible.length, totalPages);
   const removedNote = $("#removed-note");
   if (removedNote) {
+    const notes = [];
     if (state.removedAddresses.size) {
-      removedNote.textContent = `已手动移除 ${state.removedAddresses.size} 个关联地址（点「刷新结果」后，这些地址、与其有转账交集的地址及下游线索都会一并消失）`;
+      notes.push(`已手动移除 ${state.removedAddresses.size} 个关联地址（点「刷新结果」后，这些地址、与其有转账交集的地址及下游线索都会一并消失）`);
+    }
+    if (state.exchangePruned.size) {
+      notes.push(`已按「标为交易所」隐藏 ${state.exchangePruned.size} 个只经由交易所连通的地址（刷新后由后端确认）`);
+    }
+    if (notes.length) {
+      removedNote.textContent = notes.join("；");
       removedNote.classList.remove("hidden");
     } else {
       removedNote.classList.add("hidden");
@@ -386,6 +435,63 @@ function refreshRelatedTable() {
     }
   }
   updateRefreshButton();
+}
+
+function renderRelatedPagination(total, totalPages) {
+  const box = $("#related-pagination");
+  if (!box) return;
+  if (!total) {
+    box.innerHTML = "";
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  const start = (state.page - 1) * state.pageSize + 1;
+  const end = Math.min(total, state.page * state.pageSize);
+  const sizeOptions = PAGE_SIZES.map((size) =>
+    `<option value="${size}"${size === state.pageSize ? " selected" : ""}>${size}</option>`
+  ).join("");
+  box.innerHTML = `<div class="pagination">
+    <div class="pagination-range">第 ${number(start)}–${number(end)} 条，共 ${number(total)} 条</div>
+    <label class="pagination-size">每页<select id="related-page-size" aria-label="每页显示条数">${sizeOptions}</select>条</label>
+    <div class="pagination-nav">
+      <button class="ghost" type="button" data-page-jump="first"${state.page === 1 ? " disabled" : ""}>首页</button>
+      <button class="ghost" type="button" data-page-jump="prev"${state.page === 1 ? " disabled" : ""}>上一页</button>
+      <span class="pagination-input">第<input id="related-page-input" type="number" min="1" max="${totalPages}" value="${state.page}" aria-label="跳转到第几页">/ ${number(totalPages)} 页</span>
+      <button class="ghost" type="button" data-page-jump="next"${state.page === totalPages ? " disabled" : ""}>下一页</button>
+      <button class="ghost" type="button" data-page-jump="last"${state.page === totalPages ? " disabled" : ""}>末页</button>
+    </div>
+  </div>`;
+}
+
+function gotoRelatedPage(target) {
+  const totalPages = Math.max(1, Math.ceil(relatedVisibleRows().length / state.pageSize));
+  let page = target;
+  if (target === "first") page = 1;
+  else if (target === "last") page = totalPages;
+  else if (target === "prev") page = state.page - 1;
+  else if (target === "next") page = state.page + 1;
+  page = Number(page);
+  if (!Number.isFinite(page)) return;
+  page = Math.min(totalPages, Math.max(1, Math.trunc(page)));
+  if (page === state.page) return;
+  state.page = page;
+  refreshRelatedTable();
+  const panel = $("#related");
+  if (panel) panel.scrollIntoView({ block: "nearest" });
+}
+
+function setRelatedPageSize(value) {
+  const size = Number(value);
+  if (!PAGE_SIZES.includes(size)) return;
+  state.pageSize = size;
+  state.page = 1;
+  try {
+    window.localStorage.setItem("wb.relatedPageSize", String(size));
+  } catch (error) {
+    /* 隐私模式下 localStorage 可能不可用，忽略即可。 */
+  }
+  refreshRelatedTable();
 }
 
 function updateRefreshButton() {
@@ -689,7 +795,11 @@ async function runRelations(keepRemovals = false) {
   const button = $("#run-scan");
   button.disabled = true;
   button.textContent = "扫描中…";
-  if (!keepRemovals) state.removedAddresses.clear();
+  if (!keepRemovals) {
+    state.removedAddresses.clear();
+    state.exchangePruned.clear();
+    state.page = 1;
+  }
   try {
     const requestedSource = $("#taostats-source").checked ? "taostats" : "local";
     const payload = scanPayload(seed);
@@ -1256,6 +1366,29 @@ async function copyAddress(address, button) {
   }
 }
 
+function pruneDownstreamOf(address) {
+  // 只把「路径经过该地址」的关联地址在本次会话里隐藏：真正是否移除由刷新后的
+  // 后端终点规则决定（还有别的通路的地址刷新后仍会出现，避免误删）。
+  const rows = state.lastResult?.related || [];
+  let count = 0;
+  rows.forEach((row) => {
+    if (row.address === address) return;
+    const hops = row.path_transfers || [];
+    const onPath = hops.some((hop) => (
+      hop.path_from === address
+      || hop.path_to === address
+      || hop.from_address === address
+      || hop.to_address === address
+    ));
+    if (!onPath) return;
+    if (!state.exchangePruned.has(row.address)) {
+      state.exchangePruned.add(row.address);
+      count += 1;
+    }
+  });
+  return count;
+}
+
 async function decideExchange(address, decision, button) {
   if (!address) return;
   button.disabled = true;
@@ -1283,10 +1416,15 @@ async function decideExchange(address, decision, button) {
         ? "已由用户人工确认并加入交易所过滤库。"
         : "已由用户人工否定，不会进入交易所过滤集合。";
     }
+    const pruned = decision === "confirm" ? pruneDownstreamOf(address) : 0;
     renderResult(state.lastResult);
-    toast(decision === "confirm"
-      ? "已人工确认该地址为交易所地址；下次扫描可按交易所过滤。"
-      : "已人工否定该地址；后续扫描不会再将其列为交易所候选。", false);
+    if (decision === "confirm") {
+      toast(pruned
+        ? `已标为交易所：其下游 ${pruned} 个关联地址已从列表隐藏，点「刷新结果」重查后不会再出现。`
+        : "已标为交易所：该地址作为关联终点，刷新后不再向下扩展。", false);
+    } else {
+      toast("已人工否定该地址；后续扫描不会再将其列为交易所候选。", false);
+    }
   } catch (error) {
     toast(`确认失败：${error.message}`, true);
     button.disabled = false;
@@ -1394,6 +1532,8 @@ async function viewHistoryRecord(id) {
     }
     navigate("scan");
     state.removedAddresses.clear();
+    state.exchangePruned.clear();
+    state.page = 1;
     renderResult(data.result);
     toast(`已载入历史记录 #${id}（${historyTime(data.item.created_at)}）：${(data.result.related || []).length} 个关联地址。`);
     const panel = $("#result");
@@ -1647,6 +1787,8 @@ document.addEventListener("click", (event) => {
   if (copyButton) copyAddress(copyButton.dataset.copyAddress, copyButton);
   const pathToggle = event.target.closest("[data-path-toggle]");
   if (pathToggle) togglePathDetail(pathToggle.dataset.pathToggle);
+  const pageJump = event.target.closest("[data-page-jump]");
+  if (pageJump) gotoRelatedPage(pageJump.dataset.pageJump);
   const removeRelationButton = event.target.closest("[data-remove-relation]");
   if (removeRelationButton) removeRelation(removeRelationButton.dataset.removeRelation);
   const historyView = event.target.closest("[data-history-view]");
@@ -1696,6 +1838,14 @@ document.addEventListener("click", (event) => {
 });
 document.addEventListener("change", (event) => {
   if (event.target.matches("[data-library-select]")) updateLibrarySelection();
+  if (event.target.id === "related-page-size") setRelatedPageSize(event.target.value);
+  if (event.target.id === "related-page-input") gotoRelatedPage(event.target.value);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.target.id !== "related-page-input") return;
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  gotoRelatedPage(event.target.value);
 });
 const selectAllAddresses = $("#select-all-addresses");
 if (selectAllAddresses) selectAllAddresses.addEventListener("change", () => {
