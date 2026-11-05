@@ -324,3 +324,13 @@ Set-Location G:\bittensor-wallet-link-intel
 - `deleteCategory` 补上该分类当前地址数；`clearTaostatsKey` 补上确认框（此前点击即清除）。
 - 已有确认（解散地址库、清空/删除单条查询记录、撤回上次导入、整组改分类）保持不变。
 - 回归：`pytest -q` 全部通过；`node --check app/static/app.js` 通过。`app/templates/index.html` 资源戳升到 `v=0.6.24`，避免浏览器沿用旧 JS。
+
+## 24. 2026-11-05 0.6.20 交接：关联地址「金额筛选」
+
+- 目标：关联地址太多太杂时，除层级筛选外还能按流入/流出 TAO 滤掉金额很小的“轻微关联”。纯前端过滤已有结果，不改后端接口、不重新查询。
+- `state.amountFilter = {mode, min}`（`mode` ∈ `off|either|incoming|outgoing|total|both`），持久化在 `localStorage["wb.relatedAmountFilter"]`；`loadAmountFilter()` / `saveAmountFilter()`。
+- 判定函数 `rowPassesAmountFilter(row)`：`either` 取 `max(in, out) >= min`；`both` 要求两个方向都达标；`total` 用 `total_tao`（缺失时退化为 in+out）；阈值 ≤ 0 或 `mode="off"` 视为不筛。
+- `relatedVisibleRows()` 拆成 `relatedBaseRows()`（层级/手动移除/交易所剪枝）+ 金额过滤，`refreshRelatedTable()` 用两者差值渲染提示 `#related-filter-hint`（隐藏条数 + 显示 X / Y）。
+- 控件：`#related-amount-mode`（下拉）、`#related-amount-min`（数字，250ms 防抖）、`#related-amount-reset`；层级或金额变化都会把页码重置到第 1 页。
+- 导出：「导出地址 TXT」按当前金额筛选过滤并 toast 说明隐藏条数；「导出 JSON」保持全量快照（有意为之，便于回看被筛掉的地址）。
+- 界面探针 `.probe/ui_check_0620.py`：8 条构造数据下 either/incoming/outgoing/total/both 分别 4/4/1/5/1 条，层级叠加（2 级 + either≥10）= 1/3，重置回 8 条，localStorage 记忆正确；`.probe/layout_0620.py`：1422px 下四个控件同一行、ySpread=0、无重叠、右边界 1331 < 面板 1355。

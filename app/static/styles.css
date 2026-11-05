@@ -36,6 +36,15 @@ button.primary,button.secondary,button.ghost { border-radius:9px; border:1px sol
 table input[type="checkbox"] { width:16px; height:16px; padding:0; accent-color:var(--accent); cursor:pointer; }
  .result-filter { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:12px; white-space:nowrap; }
  .result-filter select { width:auto; min-width:126px; padding:7px 9px; }
+ /* 结果区筛选组：层级 + 金额，横向排得下时不换行，窄屏自动折行。 */
+ .result-filters { display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
+ .result-filter.amount-filter { gap:6px; }
+ .result-filter.amount-filter input { width:92px; padding:7px 9px; }
+ /* 三个控件高度对齐，避免数字输入框比下拉框矮 1–2px 造成错位。 */
+ .result-filters select, .result-filters input, .result-filters button { height:34px; }
+ .result-filters button { padding:7px 10px; font-size:12px; }
+ .related-filter-hint { display:block; color:var(--muted); font-size:12px; margin-bottom:9px; }
+ .related-filter-hint.hidden { display:none; }
  .copy-address { padding:4px 7px !important; font-size:11px; }
  .exchange-decision { display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
 

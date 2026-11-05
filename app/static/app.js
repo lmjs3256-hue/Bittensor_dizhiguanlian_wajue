@@ -8,6 +8,8 @@ const state = {
   categories: [],
   bookFilter: "",
   depthFilter: "all",
+  // 金额筛选：按流入/流出 TAO 过滤掉金额很小的“轻微关联”，只影响显示（和地址 TXT 导出），不重新查询。
+  amountFilter: { mode: "off", min: "" },
   taostatsConfigured: null,
   taostatsKeyStorage: "",
   apiKeyBodyOpen: false,
@@ -400,6 +402,87 @@ function togglePathDetail(address) {
   if (button) button.textContent = "收起明细";
 }
 
+// -- 金额筛选：按流入/流出 TAO 过滤掉金额很小的“轻微关联” ------------------
+// 只在前端过滤已有结果，不重新查询、不消耗 API；口径与表格里的金额列一致。
+const AMOUNT_FILTER_KEY = "wb.relatedAmountFilter";
+
+function loadAmountFilter() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(AMOUNT_FILTER_KEY) || "null");
+    if (!saved || typeof saved !== "object") return;
+    const modes = ["off", "either", "incoming", "outgoing", "total", "both"];
+    if (modes.includes(saved.mode)) state.amountFilter.mode = saved.mode;
+    state.amountFilter.min = saved.min === 0 || saved.min ? String(saved.min) : "";
+  } catch (error) {
+    /* 隐私模式下 localStorage 不可用，保持默认“不限”。 */
+  }
+}
+
+function saveAmountFilter() {
+  try {
+    window.localStorage.setItem(AMOUNT_FILTER_KEY, JSON.stringify(state.amountFilter));
+  } catch (error) {
+    /* 存不了就只在本次会话生效。 */
+  }
+}
+
+function amountMinValue() {
+  const value = Number(String(state.amountFilter.min ?? "").replace(/,/g, "").trim());
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function amountFilterActive() {
+  return state.amountFilter.mode !== "off" && amountMinValue() > 0;
+}
+
+const AMOUNT_MODE_LABELS = {
+  either: "流入或流出",
+  incoming: "流入",
+  outgoing: "流出",
+  total: "累计",
+  both: "流入且流出",
+};
+
+function amountModeLabel(mode = state.amountFilter.mode) {
+  return AMOUNT_MODE_LABELS[mode] || "金额";
+}
+
+function rowAmounts(row) {
+  const incoming = Number(row?.incoming_tao) || 0;
+  const outgoing = Number(row?.outgoing_tao) || 0;
+  const rawTotal = Number(row?.total_tao);
+  return { incoming, outgoing, total: Number.isFinite(rawTotal) ? rawTotal : incoming + outgoing };
+}
+
+// 通过筛选 = 该地址的金额达到阈值（“隐藏低于阈值的轻微关联”）。
+function rowPassesAmountFilter(row) {
+  if (!amountFilterActive()) return true;
+  const min = amountMinValue();
+  const { incoming, outgoing, total } = rowAmounts(row);
+  switch (state.amountFilter.mode) {
+    case "incoming":
+      return incoming >= min;
+    case "outgoing":
+      return outgoing >= min;
+    case "total":
+      return total >= min;
+    case "both":
+      return incoming >= min && outgoing >= min;
+    case "either":
+    default:
+      return Math.max(incoming, outgoing) >= min;
+  }
+}
+
+function syncAmountFilterControls() {
+  const mode = $("#related-amount-mode");
+  const min = $("#related-amount-min");
+  if (mode) mode.value = state.amountFilter.mode;
+  if (min) min.value = state.amountFilter.min;
+  const reset = $("#related-amount-reset");
+  if (reset) reset.disabled = !state.amountFilter.mode || state.amountFilter.mode === "off";
+}
+
 const PAGE_SIZES = [10, 20, 50, 100];
 
 try {
@@ -409,7 +492,8 @@ try {
   /* 隐私模式下 localStorage 不可用时用默认 10 条。 */
 }
 
-function relatedVisibleRows() {
+// 层级 / 手动移除 / 交易所剪枝：不涉及金额的基础可见集合。
+function relatedBaseRows() {
   const allRows = state.lastResult?.related || [];
   return allRows.filter((row) => {
     if (state.depthFilter !== "all" && String(row.depth) !== state.depthFilter) return false;
@@ -419,8 +503,31 @@ function relatedVisibleRows() {
   });
 }
 
+function relatedVisibleRows() {
+  return relatedBaseRows().filter(rowPassesAmountFilter);
+}
+
+function renderAmountFilterHint(total, visible) {
+  const hint = $("#related-filter-hint");
+  if (!hint) return;
+  const hidden = total - visible;
+  if (!amountFilterActive()) {
+    hint.classList.add("hidden");
+    hint.textContent = "";
+    return;
+  }
+  const min = amountMinValue();
+  const minText = Number.isInteger(min) ? number(min) : String(min);
+  const parts = [`金额筛选：${amountModeLabel()} ≥ ${minText} TAO`];
+  parts.push(hidden > 0 ? `已隐藏 ${number(hidden)} 条轻微关联（显示 ${number(visible)} / ${number(total)} 条）` : `当前 ${number(visible)} 条都已达标，没有隐藏`);
+  parts.push("只影响表格显示与「导出地址 TXT」，不重新查询");
+  hint.textContent = parts.join("；");
+  hint.classList.remove("hidden");
+}
+
 function refreshRelatedTable() {
-  const visible = relatedVisibleRows();
+  const baseRows = relatedBaseRows();
+  const visible = baseRows.filter(rowPassesAmountFilter);
   $("#count-related").textContent = number(visible.length);
   const totalPages = Math.max(1, Math.ceil(visible.length / state.pageSize));
   if (state.page > totalPages) state.page = totalPages;
@@ -428,6 +535,7 @@ function refreshRelatedTable() {
   const start = (state.page - 1) * state.pageSize;
   $("#related").innerHTML = relatedTable(visible.slice(start, start + state.pageSize));
   renderRelatedPagination(visible.length, totalPages);
+  renderAmountFilterHint(baseRows.length, visible.length);
   const removedNote = $("#removed-note");
   if (removedNote) {
     const notes = [];
@@ -611,6 +719,7 @@ function renderResult(data) {
     ? '<span class="badge warn">服务端历史窗口有限</span>' : "";
   $("#result-badges").innerHTML = `<span class="badge ${data.freshness === "LOCAL_INDEX" || data.freshness === "TAOSTATS_INDEX" ? "" : "warn"}">${esc(freshnessLabel(data.freshness, data))}</span><span class="badge">${esc(coverageLabel(data.coverage))}</span>${paginationBadge}${windowBadge}${data.seed_is_in_library ? '<span class="badge warn">起始地址已命中地址库</span>' : ""}`;
   $("#related-depth-filter").value = state.depthFilter;
+  syncAmountFilterControls();
   $("#cutoff").textContent = data.data_cutoff_block ? number(data.data_cutoff_block) : "-";
   const seedHit = $("#seed-library-hit");
   const seedMatches = data.seed_library_matches || [];
@@ -2159,6 +2268,40 @@ $("#related-depth-filter").addEventListener("change", (event) => {
   state.depthFilter = event.target.value;
   refreshRelatedTable();
 });
+// 金额筛选：改方式或阈值都只重排当前表格（局部刷新，不重新查询）。
+$("#related-amount-mode").addEventListener("change", (event) => {
+  state.amountFilter.mode = event.target.value;
+  // 从「不限」切到具体口径时，把焦点给阈值输入框，省一次点击。
+  if (state.amountFilter.mode !== "off" && amountMinValue() <= 0) $("#related-amount-min")?.focus();
+  saveAmountFilter();
+  syncAmountFilterControls();
+  state.page = 1;
+  refreshRelatedTable();
+});
+let amountInputTimer = 0;
+$("#related-amount-min").addEventListener("input", (event) => {
+  state.amountFilter.min = event.target.value;
+  if (state.amountFilter.mode === "off" && amountMinValue() > 0) {
+    // 只填数字、没选口径时默认按“流入或流出”筛，避免填了却没反应。
+    state.amountFilter.mode = "either";
+    $("#related-amount-mode").value = "either";
+  }
+  saveAmountFilter();
+  syncAmountFilterControls();
+  window.clearTimeout(amountInputTimer);
+  amountInputTimer = window.setTimeout(() => {
+    state.page = 1;
+    refreshRelatedTable();
+  }, 250);
+});
+$("#related-amount-reset").addEventListener("click", () => {
+  state.amountFilter = { mode: "off", min: "" };
+  saveAmountFilter();
+  syncAmountFilterControls();
+  state.page = 1;
+  refreshRelatedTable();
+  toast("已清除金额筛选，显示全部关联地址。");
+});
 $("#scan-latest").addEventListener("click", () => scanBlocks(false));
 $("#scan-advance").addEventListener("click", () => scanBlocks(true));
 $("#add-address").addEventListener("click", addAddress);
@@ -2430,13 +2573,17 @@ function selectExportableAddresses(rows) {
 $("#export-addresses").addEventListener("click", () => {
   if (!state.lastResult) { toast("先完成一次关联扫描。", true); return; }
   const depth = exportDepth();
-  const rows = (state.lastResult.related || []).filter(
+  const depthRows = (state.lastResult.related || []).filter(
     (row) => depth === null || String(row.depth) === String(depth)
   );
+  // 地址 TXT 跟随当前金额筛选：筛掉轻微关联后导出的清单就是干净的待跟进列表。
+  const rows = depthRows.filter(rowPassesAmountFilter);
+  const amountSkipped = depthRows.length - rows.length;
+  const amountNote = amountSkipped > 0 ? `，金额筛选隐藏 ${amountSkipped} 个轻微关联` : "";
   const { addresses, skippedExchange, skippedValidator } = selectExportableAddresses(rows);
   if (!addresses.length) {
     const depthNote = depth === null ? "" : `（${depth} 级关联里）`;
-    toast(`没有可导出的地址${depthNote}；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个。可把导出层级改回「全部层级」。`, true);
+    toast(`没有可导出的地址${depthNote}；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个${amountNote}。可把导出层级改回「全部层级」或调低金额阈值。`, true);
     return;
   }
   const blob = new Blob([addresses.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
@@ -2446,7 +2593,7 @@ $("#export-addresses").addEventListener("click", () => {
   link.click();
   URL.revokeObjectURL(link.href);
   const depthText = depth === null ? "全部层级" : `${depth} 级关联`;
-  toast(`已导出 ${depthText} ${addresses.length} 个地址（每行一个）；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个。`);
+  toast(`已导出 ${depthText} ${addresses.length} 个地址（每行一个）；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个${amountNote}。`);
 });
 $("#seed").addEventListener("keydown", (event) => { if (event.key === "Enter") runRelations(); });
 $("#license-activate").addEventListener("click", activateLicense);
@@ -2462,6 +2609,8 @@ $("#copy-machine").addEventListener("click", async () => {
 });
 
 (async function bootstrap() {
+  loadAmountFilter();
+  syncAmountFilterControls();
   const status = await loadLicenseStatus();
   applyLicenseStatus(status);
   if (!status.licensed) return; // 未激活时只留激活页，不请求业务接口
