@@ -269,3 +269,219 @@ def test_library_export_rejects_unknown_format():
                 service.export_library("txt")
         finally:
             database.engine.dispose()
+
+
+def test_rename_label_group_updates_every_address_in_the_group():
+    """改名是整组动作：同组地址一起改，其他组不动。"""
+
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "rename-group.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            service.import_rows(
+                [
+                    {"address": ADDRESSES[0], "label": "鲸鱼A"},
+                    {"address": ADDRESSES[1], "label": "鲸鱼A"},
+                    {"address": ADDRESSES[2], "label": "别人"},
+                ],
+                "manual",
+            )
+
+            result = service.rename_label_group("鲸鱼A", "鲸鱼B")
+
+            assert result["renamed"] == 2
+            labels = {item["address"]: item["label"] for item in service.library()}
+            assert labels[ADDRESSES[0]] == "鲸鱼B"
+            assert labels[ADDRESSES[1]] == "鲸鱼B"
+            assert labels[ADDRESSES[2]] == "别人"
+            with pytest.raises(InputError):
+                service.rename_label_group("不存在的组", "x")
+        finally:
+            database.engine.dispose()
+
+
+def test_rename_address_book_updates_registry_and_rows():
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "rename-book.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            service.create_address_book(
+                name="旧库名",
+                seed=ADDRESSES[0],
+                addresses=[ADDRESSES[1]],
+                include_seed=True,
+            )
+
+            result = service.rename_address_book("旧库名", "新库名")
+
+            assert result["renamed"] == 2
+            books = [item["name"] for item in service.address_books()]
+            assert books == ["新库名"]
+            rows = {item["address"]: item for item in service.library()}
+            assert rows[ADDRESSES[0]]["book"] == "新库名"
+            assert rows[ADDRESSES[0]]["label"] == "新库名"
+        finally:
+            database.engine.dispose()
+
+
+def test_sync_with_book_name_merges_into_existing_library():
+    """命中已知地址库再同步时，新地址挂到该库，不另起标签组。"""
+
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "merge-book.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            service.create_address_book(
+                name="鲸鱼库",
+                seed=ADDRESSES[0],
+                addresses=[ADDRESSES[1]],
+                include_seed=True,
+            )
+
+            result = service.sync_relation_addresses(
+                seed=ADDRESSES[0],
+                addresses=[ADDRESSES[1], ADDRESSES[2]],
+                book_name="鲸鱼库",
+            )
+
+            assert result["inserted"] == 1
+            assert result["book"] == "鲸鱼库"
+            rows = {item["address"]: item for item in service.library()}
+            assert rows[ADDRESSES[2]]["book"] == "鲸鱼库"
+            assert rows[ADDRESSES[2]]["label"] == "鲸鱼库"
+        finally:
+            database.engine.dispose()
+
+
+def test_undo_last_sync_deletes_new_addresses_and_restores_categories():
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "undo-sync.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            service.import_rows([{"address": ADDRESSES[0], "label": "老地址"}], "manual")
+
+            service.sync_relation_addresses(
+                seed=ADDRESSES[2],
+                addresses=[ADDRESSES[0], ADDRESSES[1]],
+                category="群友",
+            )
+            info = service.last_import_batch()
+            assert info["kind"] == "sync"
+            # 新增：发起地址 ADDRESSES[2] + 新关联 ADDRESSES[1]；改写：ADDRESSES[0] 被归入「群友」。
+            assert info["inserted"] == 2
+            assert info["updated"] == 1
+
+            result = service.undo_last_import()
+
+            assert result["deleted"] == 2
+            assert result["restored"] == 1
+            rows = {item["address"]: item for item in service.library()}
+            assert ADDRESSES[1] not in rows
+            assert ADDRESSES[2] not in rows
+            assert rows[ADDRESSES[0]]["category"] == "其他"
+            assert service.last_import_batch() is None
+        finally:
+            database.engine.dispose()
+
+
+def test_undo_last_book_creation_removes_book_and_new_addresses():
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "undo-book.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            service.create_address_book(
+                name="临时库",
+                seed=ADDRESSES[0],
+                addresses=[ADDRESSES[1]],
+                include_seed=True,
+            )
+
+            result = service.undo_last_import()
+
+            assert result["book_removed"] is True
+            assert service.library() == []
+            assert service.address_books() == []
+        finally:
+            database.engine.dispose()
+
+
+def test_undo_file_import_restores_overwritten_fields():
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "undo-import.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            service.import_rows(
+                [{"address": ADDRESSES[0], "label": "原名", "note": "原备注"}], "manual"
+            )
+            service.import_rows(
+                [{"address": ADDRESSES[0], "label": "新名", "note": "新备注"}], "修正.txt"
+            )
+            assert service.library()[0]["label"] == "新名"
+
+            service.undo_last_import()
+
+            row = service.library()[0]
+            assert row["label"] == "原名"
+            assert row["note"] == "原备注"
+        finally:
+            database.engine.dispose()
+
+
+def test_group_rename_and_undo_endpoints(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "rename-undo-api.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            monkeypatch.setattr(main_module, "SERVICE", service)
+            client = TestClient(main_module.app)
+            service.import_rows(
+                [
+                    {"address": ADDRESSES[0], "label": "组A"},
+                    {"address": ADDRESSES[1], "label": "组A"},
+                ],
+                "manual",
+            )
+
+            renamed = client.post(
+                "/api/library/rename-label",
+                json={"old_label": "组A", "new_label": "组B"},
+            )
+            assert renamed.status_code == 200
+            assert renamed.json()["renamed"] == 2
+
+            info = client.get("/api/library/last-import").json()["item"]
+            assert info["inserted"] == 2
+
+            undone = client.post("/api/library/undo-last-import")
+            assert undone.status_code == 200
+            assert undone.json()["deleted"] == 2
+            assert client.get("/api/library/last-import").json()["item"] is None
+        finally:
+            database.engine.dispose()
+
+
+def test_sync_rejects_unknown_target_book():
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "merge-unknown.db")
+        try:
+            database.initialize()
+            service = LinkService(database, "wss://example.invalid")
+            with pytest.raises(InputError, match="地址库不存在"):
+                service.sync_relation_addresses(
+                    seed=ADDRESSES[0],
+                    addresses=[ADDRESSES[1]],
+                    book_name="并不存在的库",
+                )
+        finally:
+            database.engine.dispose()

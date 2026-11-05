@@ -145,6 +145,15 @@ class LabelInput(BaseModel):
     label: str = Field(default="", max_length=160)
 
 
+class RenameLabelInput(BaseModel):
+    old_label: str = Field(min_length=1, max_length=160)
+    new_label: str = Field(min_length=1, max_length=160)
+
+
+class RenameBookInput(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
 class CategoriesInput(BaseModel):
     categories: list[Annotated[str, Field(min_length=1, max_length=32)]] = Field(
         default_factory=list, max_length=10
@@ -204,6 +213,8 @@ class RelationSyncInput(BaseModel):
     include_seed: bool = True
     category: str = Field(default="其他", max_length=32)
     label: str = Field(default="", max_length=160)
+    # 合并导入到自建地址库：新地址直接挂上库名，不另起标签组。
+    book: str = Field(default="", max_length=60)
     note: str = Field(default="", max_length=2000)
     # 只同步「已经命中地址库的关联地址 + 发起地址」，用于把发起地址补进库。
     only_library_matched: bool = False
@@ -459,6 +470,50 @@ def update_address_label(
         return svc.update_library_label(row_id, payload.label)
     except InputError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/library/rename-label")
+def rename_label_group(
+    payload: RenameLabelInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """整组改名：把该标签组下的地址一起改名。"""
+
+    try:
+        return svc.rename_label_group(payload.old_label, payload.new_label)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/api/library/last-import")
+def last_import_batch(svc: Annotated[LinkService, Depends(service)]):
+    """最近一次批量导入（同步 / 建库 / 文件导入）的摘要。"""
+
+    return {"item": svc.last_import_batch()}
+
+
+@app.post("/api/library/undo-last-import")
+def undo_last_import(svc: Annotated[LinkService, Depends(service)]):
+    """撤回上一次批量导入，防止无效关联地址被错误导入。"""
+
+    try:
+        return svc.undo_last_import()
+    except InputError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/library/books/{name}/rename")
+def rename_address_book(
+    name: str,
+    payload: RenameBookInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """自建地址库改名（库名 + 库内地址的标签）。"""
+
+    try:
+        return svc.rename_address_book(name, payload.name)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.patch("/api/library/{row_id}/categories")
@@ -738,6 +793,7 @@ def sync_relation_library(
             category=payload.category,
             label=payload.label,
             note=payload.note,
+            book_name=payload.book,
             only_library_matched=payload.only_library_matched,
         )
     except InputError as exc:

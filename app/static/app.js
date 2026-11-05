@@ -20,8 +20,14 @@ const state = {
   // 关联地址分页：每页条数可选 10/20/50/100，默认 10。
   page: 1,
   pageSize: 10,
+  // 同步目标标签组的默认值只在换了一个扫描地址时重算，避免刷新结果时覆盖手动选择。
+  syncTargetSeed: "",
+  syncTargetTouched: false,
+  // 最近一次批量导入摘要：null 表示没有可撤回的导入。
+  lastImport: null,
   categoryEditorId: null,
-  labelEditorId: null,
+  // 整组改名：{kind: "book"|"label", name: "组名"}，null 表示没有在改名。
+  groupRename: null,
   libraryGroupsOpen: new Set(),
   history: { offset: 0, total: 0, items: [] },
 };
@@ -613,8 +619,16 @@ function renderResult(data) {
   }
   refreshRelatedTable();
   const libraryHitCount = (data.library_matches || []).length;
-  $("#sync-hint").textContent = `本次 ${(data.related || []).length} 个关联地址 + 发起地址；其中命中已知地址库 ${libraryHitCount} 个。`;
   $("#sync-matched").disabled = libraryHitCount === 0;
+  // 同步目标默认跟随「命中的标签组」；地址库还没加载时先拉一次再定默认值。
+  if (state.library.length) {
+    fillSyncGroupSelect();
+    applyDefaultSyncGroup();
+  } else {
+    loadLibrary()
+      .then(() => { fillSyncGroupSelect(); applyDefaultSyncGroup(true); })
+      .catch(() => {});
+  }
   updateBookHint();
   $("#warnings").innerHTML = [...data.warnings, ...data.limitations].map((text) => `<li>${esc(text)}</li>`).join("");
   document.querySelectorAll("[data-use-address]").forEach((button) => button.addEventListener("click", () => {
@@ -955,17 +969,15 @@ function libraryRowsTable(rows) {
     const chips = displayCategories.map((name) =>
       `<span class="lib-category" data-category="${esc(name)}">${esc(categoryLabel(name))}</span>`
     ).join("");
-    const labelEditing = state.labelEditorId === row.id;
-    const labelCell = `<div class="label-main"><span class="label-text${row.label_custom ? "" : " is-default"}" title="${row.label_custom ? "人工命名" : `未命名，默认显示地址后四位（${esc(row.label)}），可点「改名」自定义`}">${esc(row.label || "-")}</span><button class="ghost note-save label-edit" data-edit-label="${row.id}" type="button">改名</button></div>`;
+    // 标签是「组」的属性：单条地址只维护备注，改名在组标题上做。
+    const labelCell = `<span class="label-text${row.label_custom ? "" : " is-default"}" title="${row.label_custom ? "组名（整组共用）" : `未命名，默认显示地址后四位（${esc(row.label)}）`}">${esc(row.label || "-")}</span>`;
     const editing = state.categoryEditorId === row.id;
-    // 分类 / 标签编辑器单独占一行（colspan），避免把所在列撑宽把其他列挤出表格。
+    // 分类编辑器单独占一行（colspan），避免把所在列撑宽把其他列挤出表格。
     let editorRow = "";
     if (editing) {
       editorRow = `<tr class="category-editor-row" data-editor-for="${row.id}"><td colspan="8"><div class="category-editor"><div class="category-editor-title">选择分类（可多选，第一个为主分类）</div><div class="category-editor-choices">${categoryNames.map((name) =>
           `<label><input type="checkbox" data-category-choice value="${esc(name)}"${categories.includes(name) ? " checked" : ""}>${esc(categoryLabel(name))}</label>`
         ).join("")}</div><div class="category-editor-actions"><button class="secondary note-save" data-save-categories="${row.id}" type="button">保存分类</button><button class="ghost note-save" data-cancel-categories type="button">取消</button></div></div></td></tr>`;
-    } else if (labelEditing) {
-      editorRow = `<tr class="category-editor-row" data-label-editor-for="${row.id}"><td colspan="8"><div class="category-editor label-editor"><div class="category-editor-title">修改标签（留空保存则恢复默认：地址后四位）</div><div class="label-editor-line"><input class="label-input" data-label-input="${row.id}" maxlength="160" value="${esc(row.label_custom ? row.label : "")}" placeholder="留空则用地址后四位" autocomplete="off"><button class="secondary note-save" data-save-label="${row.id}" type="button">保存</button><button class="ghost note-save" data-cancel-label type="button">取消</button></div></div></td></tr>`;
     }
     return `<tr>
       <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td>
@@ -993,25 +1005,45 @@ function libraryTable(rows) {
     // 避免地址库清单被拆成上百个单条分组。
     const customLabel = Boolean(row.label_custom);
     const label = (customLabel ? row.label : `${categoryLabel(row.category)} · 未命名`).trim();
-    // 自建地址库优先按库名归组，其余仍按「分类 + 名称」。
-    const key = row.book ? `book\u0000${row.book}` : `${row.category}\u0000${customLabel ? label : ""}`;
+    // 标签组按「组名」归并：同一组的地址分类可以不同（分类是地址属性，不是组属性）。
+    const key = row.book
+      ? `book\u0000${row.book}`
+      : customLabel
+        ? `label\u0000${label}`
+        : `category\u0000${row.category}`;
     if (!groups.has(key)) {
       groups.set(key, {
         label: row.book || label,
-        category: row.book ? "" : row.category,
         book: row.book || "",
+        categories: new Set(),
+        // 只有「自建库」和人工命名的标签组可以整组改名；未命名分类组不动。
+        canRename: Boolean(row.book || customLabel),
         rows: [],
       });
     }
+    groups.get(key).categories.add(row.category);
     groups.get(key).rows.push(row);
   });
   return `<div class="library-groups">${[...groups.values()].map((group, index) => {
     const groupId = `library-group-${index}`;
     const expanded = state.libraryGroupsOpen.has(groupId);
-    const categoryTag = group.category
-      ? `<span class="lib-category" data-category="${esc(group.category)}">${esc(categoryLabel(group.category))}</span>`
-      : '<span class="lib-category book-tag">自建库</span>';
-    return `<section class="library-group"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
+    const groupCategories = [...group.categories];
+    const categoryTag = group.book
+      ? '<span class="lib-category book-tag">自建库</span>'
+      : groupCategories.length === 1
+        ? `<span class="lib-category" data-category="${esc(groupCategories[0])}">${esc(categoryLabel(groupCategories[0]))}</span>`
+        : '<span class="lib-category">多分类</span>';
+    const kind = group.book ? "book" : "label";
+    const renaming = Boolean(state.groupRename)
+      && state.groupRename.kind === kind
+      && state.groupRename.name === group.label;
+    let renameControl = "";
+    if (renaming) {
+      renameControl = `<div class="group-rename-editor"><input data-group-rename-input maxlength="160" value="${esc(group.label)}" autocomplete="off" aria-label="新的组名"><button class="secondary note-save" data-save-group-rename data-group-kind="${kind}" data-group-name="${esc(group.label)}" type="button">保存</button><button class="ghost note-save" data-cancel-group-rename type="button">取消</button></div>`;
+    } else if (group.canRename) {
+      renameControl = `<button class="ghost note-save group-rename" data-rename-group data-group-kind="${kind}" data-group-name="${esc(group.label)}" title="整组改名：这一组的所有地址一起更新" type="button">改名</button>`;
+    }
+    return `<section class="library-group"><div class="library-group-head"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button>${renameControl}</div><div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${libraryRowsTable(group.rows)}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -1226,16 +1258,20 @@ async function addCategoryFromPanel() {
 async function loadLibrary() {
   try {
     if (!state.categories.length) await loadCategories();
-    const [data, bookData] = await Promise.all([
+    const [data, bookData, batch] = await Promise.all([
       api("/api/library"),
       api("/api/library/books").catch(() => ({ items: [] })),
+      api("/api/library/last-import").catch(() => ({ item: null })),
     ]);
     state.library = data.items;
     state.books = bookData.items || [];
+    state.lastImport = batch.item;
     renderBooks();
     renderBookFilter();
     renderLibraryList();
+    fillSyncGroupSelect();
     updateLibrarySelection();
+    updateUndoButton();
   } catch (error) { toast(error.message, true); }
 }
 
@@ -1266,36 +1302,78 @@ async function saveLibraryNote(rowId, button) {
   finally { button.disabled = false; }
 }
 
-function startLabelEdit(rowId) {
-  state.labelEditorId = Number(rowId);
+function startGroupRename(kind, name) {
+  state.groupRename = { kind, name };
   state.categoryEditorId = null;
   renderLibraryList();
-  const input = document.querySelector(`[data-label-input="${rowId}"]`);
+  const input = document.querySelector("[data-group-rename-input]");
   if (input) {
     input.focus();
     input.select();
   }
 }
 
-async function saveLibraryLabel(rowId, button) {
-  const row = button.closest("tr");
-  const input = row?.querySelector(`[data-label-input="${rowId}"]`);
-  if (!input) return;
+async function saveGroupRename(button) {
+  const kind = button.dataset.groupKind;
+  const oldName = button.dataset.groupName;
+  const input = document.querySelector("[data-group-rename-input]");
+  const value = (input?.value || "").trim();
+  if (!value) { toast("组名不能为空；不想改名就点「取消」。", true); return; }
+  if (value === oldName) { state.groupRename = null; renderLibraryList(); return; }
   button.disabled = true;
   try {
-    const result = await api(`/api/library/${rowId}/label`, {
-      method: "PATCH",
-      body: JSON.stringify({ label: input.value }),
-    });
-    state.labelEditorId = null;
+    if (kind === "book") {
+      await api(`/api/library/books/${encodeURIComponent(oldName)}/rename`, {
+        method: "POST",
+        body: JSON.stringify({ name: value }),
+      });
+    } else {
+      await api("/api/library/rename-label", {
+        method: "POST",
+        body: JSON.stringify({ old_label: oldName, new_label: value }),
+      });
+    }
+    state.groupRename = null;
     await loadLibrary();
-    const item = result.item || {};
-    toast(item.label_custom
-      ? `标签已改为「${item.label}」。`
-      : "已清空标签，恢复为地址后四位。");
+    toast(kind === "book"
+      ? `地址库已改名为「${value}」。`
+      : `标签组已改名为「${value}」，整组地址一起更新。`);
   } catch (error) {
-    toast(`标签保存失败：${error.message}`, true);
+    toast(`改名失败：${error.message}`, true);
     button.disabled = false;
+  }
+}
+
+function updateUndoButton() {
+  const button = $("#undo-last-import");
+  if (!button) return;
+  const item = state.lastImport;
+  button.disabled = !item;
+  button.title = item
+    ? `撤回：${item.summary}（删除新导入 ${item.inserted} 条，还原 ${item.updated} 条）`
+    : "没有可撤回的批量导入记录";
+}
+
+async function undoLastImport(button) {
+  button.disabled = true;
+  let finished = false;
+  try {
+    const info = await api("/api/library/last-import");
+    const item = info.item;
+    if (!item) { toast("没有可撤回的批量导入记录。", true); return; }
+    const parts = [`「${item.summary}」`];
+    if (item.inserted) parts.push(`删除新导入 ${item.inserted} 条`);
+    if (item.updated) parts.push(`还原被改写 ${item.updated} 条`);
+    if (item.book) parts.push(`移除地址库「${item.book}」`);
+    if (!window.confirm(`撤回上一次导入 ${parts.join("，")}？\n\n撤回只做一次，删除的地址无法恢复。`)) return;
+    const result = await api("/api/library/undo-last-import", { method: "POST" });
+    await loadLibrary();
+    finished = true;
+    toast(`已撤回：删除 ${result.deleted} 条，还原 ${result.restored} 条${result.book_removed ? `，并移除地址库「${item.book}」` : ""}。`);
+  } catch (error) {
+    toast(`撤回失败：${error.message}`, true);
+  } finally {
+    if (!finished) button.disabled = false;
   }
 }
 
@@ -1638,7 +1716,7 @@ async function clearHistory() {
 }
 
 // -- 关联地址同步进地址库 -------------------------------------------------
-async function syncAddresses({ seed, related, mode = "all", category = "其他", label = "" }) {
+async function syncAddresses({ seed, related, mode = "all", category = "其他", label = "", book = "" }) {
   const addresses = (related || []).map((row) => row.address).filter(Boolean);
   return api("/api/relations/sync-library", {
     method: "POST",
@@ -1648,9 +1726,134 @@ async function syncAddresses({ seed, related, mode = "all", category = "其他",
       include_seed: true,
       category,
       label,
+      book,
       only_library_matched: mode === "matched",
     }),
   });
+}
+
+/* 同步目标：自建库名 + 人工命名的标签组，去重后作为下拉选项。 */
+function libraryGroupChoices() {
+  const books = [];
+  const labels = [];
+  (state.library || []).forEach((row) => {
+    if (row.book) {
+      if (!books.includes(row.book)) books.push(row.book);
+    } else if (row.label_custom && !labels.includes(row.label)) {
+      labels.push(row.label);
+    }
+  });
+  books.sort((a, b) => a.localeCompare(b, "zh"));
+  labels.sort((a, b) => a.localeCompare(b, "zh"));
+  return [
+    ...books.map((name) => ({ value: `book:${name}`, text: `${name} · 自建地址库` })),
+    ...labels.map((name) => ({ value: `label:${name}`, text: `${name} · 标签组` })),
+  ];
+}
+
+function fillSyncGroupSelect() {
+  const choices = libraryGroupChoices();
+  ["#sync-label-group", "#history-sync-group"].forEach((selector) => {
+    const select = $(selector);
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = '<option value="__new__">＋ 新建标签组（默认用起始地址后四位）</option>'
+      + choices.map((item) => `<option value="${esc(item.value)}">${esc(item.text)}</option>`).join("");
+    if (previous && [...select.options].some((option) => option.value === previous)) {
+      select.value = previous;
+    } else if (previous === "__new__") {
+      select.value = "__new__";
+    }
+  });
+  updateSyncNewLabelRow();
+}
+
+function updateSyncNewLabelRow() {
+  const select = $("#sync-label-group");
+  const row = $("#sync-new-label-row");
+  if (!select || !row) return;
+  row.classList.toggle("hidden", select.value !== "__new__");
+}
+
+function groupValueForAddress(address) {
+  const row = (state.library || []).find((item) => item.address === address);
+  if (!row) return "";
+  if (row.book) return `book:${row.book}`;
+  if (row.label_custom) return `label:${row.label}`;
+  return "";
+}
+
+function defaultSyncGroupValue() {
+  const data = state.lastResult;
+  if (!data) return "__new__";
+  const addresses = [data.seed, ...(data.library_matches || []).map((item) => item.address)];
+  for (const address of addresses) {
+    const value = groupValueForAddress(address);
+    if (value) return value;
+  }
+  return "__new__";
+}
+
+function updateSyncHint() {
+  const hint = $("#sync-hint");
+  const select = $("#sync-label-group");
+  if (!hint || !select || !state.lastResult) return;
+  const data = state.lastResult;
+  const libraryHitCount = (data.library_matches || []).length;
+  const target = select.value;
+  const targetText = target === "__new__"
+    ? "将新建一个标签组"
+    : `将合并进「${target.replace(/^(book|label):/, "")}」，不另起新组`;
+  hint.textContent = `本次 ${(data.related || []).length} 个关联地址 + 发起地址；命中已知地址库 ${libraryHitCount} 个，${targetText}。`;
+}
+
+function applyDefaultSyncGroup(force = false) {
+  const select = $("#sync-label-group");
+  if (!select) return;
+  const seed = state.lastResult?.seed || "";
+  const seedChanged = state.syncTargetSeed !== seed;
+  if (force || seedChanged || !state.syncTargetTouched) {
+    if (seedChanged) state.syncTargetTouched = false;
+    state.syncTargetSeed = seed;
+    const value = defaultSyncGroupValue();
+    select.value = [...select.options].some((option) => option.value === value) ? value : "__new__";
+    if (select.value === "__new__") $("#sync-label").value = "";
+  }
+  updateSyncNewLabelRow();
+  updateSyncHint();
+  syncCategoryForTarget();
+}
+
+function syncCategoryForTarget() {
+  const select = $("#sync-label-group");
+  const categorySelect = $("#sync-category");
+  if (!select || !categorySelect) return;
+  const target = select.value;
+  if (target === "__new__") return;
+  const name = target.replace(/^(book|label):/, "");
+  const rows = (state.library || []).filter((row) => (
+    target.startsWith("book:")
+      ? row.book === name
+      : !row.book && row.label_custom && row.label === name
+  ));
+  const categories = [...new Set(rows.map((row) => row.category))];
+  // 交易所 / 验证者 / 系统 是过滤用的系统分类，同步时不能选，保持用户自选分类。
+  const systemCategories = ["EXCHANGE", "VALIDATOR", "系统"];
+  if (categories.length !== 1 || systemCategories.includes(categories[0])) return;
+  if ([...categorySelect.options].some((option) => option.value === categories[0])) {
+    categorySelect.value = categories[0];
+  }
+}
+
+function syncTargetPayload(target, newLabel = "") {
+  if (!target || target === "__new__") {
+    return { label: String(newLabel || "").trim(), book: "" };
+  }
+  if (target.startsWith("book:")) {
+    const name = target.slice(5);
+    return { label: name, book: name };
+  }
+  return { label: target.slice(6), book: "" };
 }
 
 function syncSummary(result) {
@@ -1728,17 +1931,28 @@ async function createBookFromResult() {
 
 async function syncCurrentResult(mode) {
   if (!state.lastResult) { toast("先完成一次关联查询。", true); return; }
+  if (!state.library.length) {
+    await loadLibrary().catch(() => {});
+    fillSyncGroupSelect();
+    state.syncTargetTouched = false;
+    applyDefaultSyncGroup(true);
+  }
   const button = mode === "matched" ? $("#sync-matched") : $("#sync-all");
   button.disabled = true;
   try {
+    const target = $("#sync-label-group").value;
+    const { label, book } = syncTargetPayload(target, $("#sync-label").value);
     const result = await syncAddresses({
       seed: state.lastResult.seed,
       related: state.lastResult.related,
       mode,
       category: $("#sync-category").value,
-      label: $("#sync-label").value.trim(),
+      label,
+      book,
     });
-    toast(`地址库同步完成：${syncSummary(result)}。`);
+    const groupName = result.book || result.label || label;
+    toast(`已合并进「${groupName}」：${syncSummary(result)}。`);
+    await loadLibrary();
   } catch (error) {
     toast(`同步失败：${error.message}`, true);
   } finally {
@@ -1751,15 +1965,18 @@ async function syncHistoryRecord(id) {
     const data = await api(`/api/relations/history/${id}`);
     if (!data.result) { toast("这条记录没有可同步的地址。", true); return; }
     const category = $("#history-sync-category")?.value || "其他";
-    const label = $("#history-sync-label")?.value.trim() || "";
+    const { label, book } = syncTargetPayload($("#history-sync-group")?.value || "__new__", "");
     const result = await syncAddresses({
       seed: data.result.seed,
       related: data.result.related,
       category,
       label,
+      book,
     });
-    toast(`历史记录 #${id} 已按「${category}」同步到地址库：${syncSummary(result)}。`);
+    const groupName = result.book || result.label || label;
+    toast(`历史记录 #${id} 已合并进「${groupName}」：${syncSummary(result)}。`);
     await loadHistory(state.history.offset);
+    await loadLibrary();
   } catch (error) {
     toast(`同步失败：${error.message}`, true);
   }
@@ -1860,16 +2077,21 @@ document.addEventListener("click", (event) => {
   const editCategoriesButton = event.target.closest("[data-edit-categories]");
   if (editCategoriesButton) {
     state.categoryEditorId = Number(editCategoriesButton.dataset.editCategories);
-    state.labelEditorId = null;
+    state.groupRename = null;
     renderLibraryList();
   }
-  const editLabelButton = event.target.closest("[data-edit-label]");
-  if (editLabelButton) startLabelEdit(editLabelButton.dataset.editLabel);
-  const saveLabelButton = event.target.closest("[data-save-label]");
-  if (saveLabelButton) saveLibraryLabel(saveLabelButton.dataset.saveLabel, saveLabelButton);
-  const cancelLabelButton = event.target.closest("[data-cancel-label]");
-  if (cancelLabelButton) {
-    state.labelEditorId = null;
+  const renameGroupButton = event.target.closest("[data-rename-group]");
+  if (renameGroupButton) {
+    startGroupRename(
+      renameGroupButton.dataset.groupKind,
+      renameGroupButton.dataset.groupName,
+    );
+  }
+  const saveGroupRenameButton = event.target.closest("[data-save-group-rename]");
+  if (saveGroupRenameButton) saveGroupRename(saveGroupRenameButton);
+  const cancelGroupRenameButton = event.target.closest("[data-cancel-group-rename]");
+  if (cancelGroupRenameButton) {
+    state.groupRename = null;
     renderLibraryList();
   }
   const cancelCategoriesButton = event.target.closest("[data-cancel-categories]");
@@ -1894,15 +2116,14 @@ document.addEventListener("change", (event) => {
   if (event.target.id === "related-page-input") gotoRelatedPage(event.target.value);
 });
 document.addEventListener("keydown", (event) => {
-  if (event.target.matches("[data-label-input]")) {
+  if (event.target.matches("[data-group-rename-input]")) {
     if (event.key === "Enter") {
       event.preventDefault();
-      const id = event.target.dataset.labelInput;
-      const save = event.target.closest("tr")?.querySelector(`[data-save-label="${id}"]`);
-      if (save) saveLibraryLabel(id, save);
+      const save = document.querySelector("[data-save-group-rename]");
+      if (save) saveGroupRename(save);
     } else if (event.key === "Escape") {
       event.preventDefault();
-      state.labelEditorId = null;
+      state.groupRename = null;
       renderLibraryList();
     }
     return;
@@ -1920,6 +2141,14 @@ if (selectAllAddresses) selectAllAddresses.addEventListener("change", () => {
   updateLibrarySelection();
 });
 $("#sync-all").addEventListener("click", () => syncCurrentResult("all"));
+$("#sync-label-group").addEventListener("change", () => {
+  state.syncTargetTouched = true;
+  updateSyncNewLabelRow();
+  updateSyncHint();
+  syncCategoryForTarget();
+});
+const undoImportButton = $("#undo-last-import");
+if (undoImportButton) undoImportButton.addEventListener("click", () => undoLastImport(undoImportButton));
 $("#sync-matched").addEventListener("click", () => syncCurrentResult("matched"));
 $("#create-book").addEventListener("click", createBookFromResult);
 $("#book-include-seed").addEventListener("change", updateBookHint);

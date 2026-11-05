@@ -21,6 +21,7 @@ from .db import (
     AddressLibrary,
     ChainCursor,
     Database,
+    ImportBatch,
     RelationArchive,
     ScanJob,
     ScanLock,
@@ -219,6 +220,46 @@ def default_address_label(address: str) -> str:
     return value[-4:] if len(value) > 4 else value
 
 
+def _library_row_snapshot(row: AddressLibrary) -> dict[str, Any]:
+    """记录一条地址在批量导入前的字段，撤回时按原样还原。"""
+
+    return {
+        "label": row.label or "",
+        "category": row.category or "",
+        "categories": row.categories or "",
+        "note": row.note or "",
+        "book": getattr(row, "book", "") or "",
+        "source": row.source or "",
+        "exchange_confirmed": bool(row.exchange_confirmed),
+        "exchange_rejected": bool(row.exchange_rejected),
+    }
+
+
+def _record_import_batch(
+    db: Any,
+    *,
+    kind: str,
+    summary: str,
+    inserted: Iterable[str],
+    updated: Iterable[dict[str, Any]],
+    created_book: str | None = None,
+) -> None:
+    """写入“撤回上次导入”的快照；只保留最新一条，空操作不覆盖上一条。"""
+
+    payload = json.dumps(
+        {
+            "inserted": list(inserted),
+            "updated": list(updated),
+            "created_book": created_book or "",
+        },
+        ensure_ascii=False,
+    )
+    for stale in db.scalars(select(ImportBatch)).all():
+        db.delete(stale)
+    db.flush()
+    db.add(ImportBatch(id=1, kind=kind, summary=summary[:255], payload=payload))
+
+
 def address_dict(row: AddressLibrary) -> dict[str, Any]:
     label = row.label.strip()
     return {
@@ -374,6 +415,8 @@ class LinkService:
 
     def import_rows(self, rows: list[dict[str, Any]], source: str) -> dict[str, int]:
         inserted = updated = skipped = 0
+        inserted_addresses: list[str] = []
+        updated_snapshots: list[dict[str, Any]] = []
         with self.database.session() as db:
             for position, row in enumerate(rows, start=1):
                 address = str(row["address"]).strip()
@@ -414,7 +457,9 @@ class LinkService:
                         )
                     )
                     inserted += 1
+                    inserted_addresses.append(address)
                     continue
+                snapshot = _library_row_snapshot(current)
                 changed = False
                 incoming_book = str(row.get("book") or "").strip()
                 if incoming_book and not current.book:
@@ -452,8 +497,21 @@ class LinkService:
                         changed = True
                 if changed:
                     updated += 1
+                    updated_snapshots.append({"address": address, "snapshot": snapshot})
                 else:
                     skipped += 1
+            if inserted or updated:
+                if source == "manual":
+                    summary = f"手动添加地址 · 新增 {inserted} 个、更新 {updated} 个"
+                else:
+                    summary = f"导入「{Path(source).stem}」· 新增 {inserted} 个、更新 {updated} 个"
+                _record_import_batch(
+                    db,
+                    kind="import",
+                    summary=summary,
+                    inserted=inserted_addresses,
+                    updated=updated_snapshots,
+                )
         return {"inserted": inserted, "updated": updated, "skipped": skipped}
 
     def import_upload(self, filename: str, text: str) -> dict[str, int]:
@@ -519,6 +577,120 @@ class LinkService:
                 raise InputError("address not found")
             current.label = value
             return {"saved": True, "item": address_dict(current)}
+
+    def rename_label_group(self, old_label: str, new_label: str) -> dict[str, Any]:
+        """整组改名：把同一个标签组下的地址一起改成新名字。"""
+
+        old = " ".join(str(old_label or "").split())
+        new = " ".join(str(new_label or "").split())
+        if not old:
+            raise InputError("原标签组名不能为空")
+        if not new:
+            raise InputError("新标签组名不能为空")
+        if len(new) > 160:
+            raise InputError("标签组名不能超过 160 个字符")
+        with self.database.session() as db:
+            rows = db.scalars(
+                select(AddressLibrary).where(AddressLibrary.label == old)
+            ).all()
+            if not rows:
+                raise InputError("没有找到这个标签组")
+            for row in rows:
+                row.label = new
+            return {"renamed": len(rows), "label": new}
+
+    def rename_address_book(self, old_name: str, new_name: str) -> dict[str, Any]:
+        """自建地址库改名：库名、库内地址的 book 与同名标签一起更新。"""
+
+        old = self._clean_book_name(old_name)
+        new = self._clean_book_name(new_name)
+        if old == new:
+            return {"renamed": 0, "name": new}
+        with self.database.session() as db:
+            registry = db.scalar(select(AddressBook).where(AddressBook.name == old))
+            if registry is None:
+                raise InputError("地址库不存在")
+            if db.scalar(select(AddressBook).where(AddressBook.name == new)) is not None:
+                raise InputError("已有同名地址库")
+            rows = db.scalars(
+                select(AddressLibrary).where(AddressLibrary.book == old)
+            ).all()
+            registry.name = new
+            for row in rows:
+                row.book = new
+                if row.label == old:
+                    row.label = new
+            return {"renamed": len(rows), "name": new}
+
+    def last_import_batch(self) -> dict[str, Any] | None:
+        """最近一次批量导入的摘要，供前端确认撤回内容。"""
+
+        with self.database.session() as db:
+            batch = db.get(ImportBatch, 1)
+            if batch is None:
+                return None
+            data = json.loads(batch.payload or "{}")
+            return {
+                "kind": batch.kind,
+                "summary": batch.summary,
+                "created_at": batch.created_at.isoformat() if batch.created_at else None,
+                "inserted": len(data.get("inserted") or []),
+                "updated": len(data.get("updated") or []),
+                "book": data.get("created_book") or "",
+            }
+
+    def undo_last_import(self) -> dict[str, Any]:
+        """撤回上一次批量导入：删掉新导入的地址，并把被改写的记录还原。"""
+
+        with self.database.session() as db:
+            batch = db.get(ImportBatch, 1)
+            if batch is None:
+                raise InputError("没有可撤回的导入记录")
+            summary = batch.summary
+            data = json.loads(batch.payload or "{}")
+            inserted = [value for value in (data.get("inserted") or []) if value]
+            deleted = 0
+            for index in range(0, len(inserted), 400):
+                chunk = inserted[index : index + 400]
+                for row in db.scalars(
+                    select(AddressLibrary).where(AddressLibrary.address.in_(chunk))
+                ).all():
+                    db.delete(row)
+                    deleted += 1
+            restored = 0
+            for item in data.get("updated") or []:
+                address = str(item.get("address") or "")
+                snapshot = item.get("snapshot") or {}
+                if not address:
+                    continue
+                row = db.scalar(
+                    select(AddressLibrary).where(AddressLibrary.address == address)
+                )
+                if row is None:
+                    continue
+                row.label = snapshot.get("label", row.label) or ""
+                row.category = snapshot.get("category", row.category) or DEFAULT_CATEGORY
+                row.categories = snapshot.get("categories", row.categories) or ""
+                row.note = snapshot.get("note", row.note) or ""
+                row.book = snapshot.get("book", row.book) or ""
+                row.source = snapshot.get("source", row.source) or ""
+                row.exchange_confirmed = bool(snapshot.get("exchange_confirmed", False))
+                row.exchange_rejected = bool(snapshot.get("exchange_rejected", False))
+                restored += 1
+            book_name = (data.get("created_book") or "").strip()
+            book_removed = False
+            if book_name:
+                registry = db.scalar(select(AddressBook).where(AddressBook.name == book_name))
+                if registry is not None:
+                    db.delete(registry)
+                    book_removed = True
+            db.delete(batch)
+            return {
+                "summary": summary,
+                "deleted": deleted,
+                "restored": restored,
+                "book_removed": book_removed,
+            }
 
     def update_library_categories(
         self, row_id: int, categories: Iterable[str]
@@ -949,6 +1121,8 @@ class LinkService:
             inserted = attached = already = other_book = 0
             skipped_exchange = skipped_validator = skipped_system = 0
             added: list[str] = []
+            inserted_addresses: list[str] = []
+            updated_snapshots: list[dict[str, Any]] = []
             for address in candidates:
                 row = existing.get(address)
                 if row is not None:
@@ -966,6 +1140,9 @@ class LinkService:
                         skipped_system += 1
                         continue
                     if not row.book:
+                        updated_snapshots.append(
+                            {"address": address, "snapshot": _library_row_snapshot(row)}
+                        )
                         row.book = book_name
                         # 原本还没归类的地址（分类是默认的“其他”）按这次选的
                         # 分类走；已经人工分好类的保持不动。
@@ -992,6 +1169,7 @@ class LinkService:
                     )
                 )
                 inserted += 1
+                inserted_addresses.append(address)
                 if len(added) < 200:
                     added.append(address)
 
@@ -1008,6 +1186,7 @@ class LinkService:
                 raise InputError(f"没有可导入的地址{detail}，地址库未创建")
 
             registry = db.scalar(select(AddressBook).where(AddressBook.name == book_name))
+            created_registry = registry is None
             if registry is None:
                 registry = AddressBook(name=book_name, note=note_text, seed=seed)
                 db.add(registry)
@@ -1017,6 +1196,16 @@ class LinkService:
                 if note_text:
                     registry.note = note_text
             db.flush()
+            if inserted or attached:
+                _record_import_batch(
+                    db,
+                    kind="book",
+                    summary=f"新建地址库「{book_name}」· 新增 {inserted} 个、归入 {attached} 个",
+                    inserted=inserted_addresses,
+                    updated=updated_snapshots,
+                    created_book=book_name if created_registry else None,
+                )
+                db.flush()
             result = {
                 "book": self._book_dict(
                     registry,
@@ -1300,12 +1489,14 @@ class LinkService:
         category: str = DEFAULT_CATEGORY,
         label: str = "",
         note: str = "",
+        book_name: str = "",
         only_library_matched: bool = False,
     ) -> dict[str, Any]:
         """把关联地址和发起地址去重写入地址库。
 
         已存在的地址一律跳过，不覆盖原有分类、标签和备注；这样反复同步同一批
-        地址也不会把人工维护过的记录改掉。
+        地址也不会把人工维护过的记录改掉。``book_name`` 指定时新地址直接归入
+        该自建地址库（合并导入），不再另起一个标签组。
         """
 
         seed = (seed or "").strip()
@@ -1367,10 +1558,19 @@ class LinkService:
                     "invalid": invalid,
                     "category": category,
                     "label": label,
+                    "book": (book_name or "").strip(),
                     "recategorized": 0,
                     "added": [],
                 }
 
+            # 合并导入已有地址库时，标签与库名保持一致，新地址才会落进同一个组。
+            book_value = (book_name or "").strip()[:BOOK_NAME_MAX_LENGTH]
+            if book_value and db.scalar(
+                select(AddressBook).where(AddressBook.name == book_value)
+            ) is None:
+                raise InputError("目标地址库不存在；要新建地址库请用「新建地址库并导入」")
+            if book_value and not label.strip():
+                label = book_value
             # 没填标签时用发起地址后四位，同一批扫描同步进来的地址天然归成一组。
             default_label = label.strip() or default_address_label(seed)
             note_text = note.strip() or (
@@ -1380,6 +1580,8 @@ class LinkService:
             added: list[dict[str, Any]] = []
             inserted = 0
             recategorized = 0
+            inserted_addresses: list[str] = []
+            updated_snapshots: list[dict[str, Any]] = []
             for address in candidates:
                 if address in existing:
                     row = existing_rows[address]
@@ -1389,6 +1591,9 @@ class LinkService:
                         row.category == DEFAULT_CATEGORY
                         and category != DEFAULT_CATEGORY
                     ):
+                        updated_snapshots.append(
+                            {"address": address, "snapshot": _library_row_snapshot(row)}
+                        )
                         row.category = category
                         recategorized += 1
                     continue
@@ -1399,13 +1604,24 @@ class LinkService:
                         category=category,
                         note=note_text,
                         source=source,
+                        book=book_value,
                         exchange_confirmed=category == "EXCHANGE",
                         exchange_rejected=False,
                     )
                 )
                 inserted += 1
+                inserted_addresses.append(address)
                 if len(added) < 20:
                     added.append({"address": address, "category": category})
+            if inserted or recategorized:
+                target = book_value or default_label
+                _record_import_batch(
+                    db,
+                    kind="sync",
+                    summary=f"同步到「{target}」· 新增 {inserted} 个地址",
+                    inserted=inserted_addresses,
+                    updated=updated_snapshots,
+                )
             return {
                 "total": len(candidates),
                 "inserted": inserted,
@@ -1415,6 +1631,7 @@ class LinkService:
                 "invalid": invalid,
                 "category": category,
                 "label": default_label,
+                "book": book_value,
                 "recategorized": recategorized,
                 "added": added,
             }

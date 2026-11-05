@@ -93,6 +93,21 @@ class AddressLibrary(Base):
     )
 
 
+class ImportBatch(Base):
+    """最近一次批量导入（同步 / 新建地址库 / 文件导入）的撤销快照。
+
+    只保留最新一条：每次批量导入都会覆盖上一条；“撤回上次导入”消费后删除。
+    payload 里记录本次新插入的地址、被改写记录的原始字段快照和新建的库名。
+    """
+
+    __tablename__ = "import_batch"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), default="import")
+    summary: Mapped[str] = mapped_column(String(255), default="")
+    payload: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class RelationArchive(Base):
     """一次关联查询的完整快照。
 
