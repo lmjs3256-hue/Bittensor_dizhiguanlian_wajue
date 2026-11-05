@@ -35,6 +35,8 @@ const state = {
   groupRename: null,
   // 组内「手动添加地址」：{kind, name}，null 表示没有打开输入框。
   groupAdd: null,
+  // 合并群组面板：picked 存 `${kind}\u0000${name}`，mode 为 new / inherit。
+  merge: { open: false, picked: new Set(), mode: "new" },
   libraryGroupsOpen: new Set(),
   history: { offset: 0, total: 0, items: [] },
 };
@@ -1239,7 +1241,136 @@ function renderLibraryList() {
     ? `${rows.length} / ${total} 条`
     : `${total} 条`;
   $("#library-table").innerHTML = libraryTable(rows);
+  renderMergePanel();
   updateLibrarySelection();
+}
+
+// -- 合并群组 --------------------------------------------------------------
+// 扫描同一个种子时，同一批地址可能被分到几个库里（交叉命中），其实是一伙人。
+// 合并后统一挂到一个库下，分类/备注/交易所结论都保留，可撤回。
+function mergeableGroups() {
+  const map = new Map();
+  state.library.forEach((row) => {
+    // 未命名的分类兜底组没有稳定组名，不参与合并，避免误并。
+    if (!row.book && !row.label_custom) return;
+    const kind = row.book ? "book" : "label";
+    const name = row.book || row.label;
+    const key = `${kind}\u0000${name}`;
+    if (!map.has(key)) map.set(key, { kind, name, count: 0, categories: new Set() });
+    const group = map.get(key);
+    group.count += 1;
+    group.categories.add(row.category);
+  });
+  return [...map.values()].sort((a, b) => b.count - a.count);
+}
+
+function mergeKey(kind, name) {
+  // 不能拿 \u0000 当分隔符：它写进 HTML 属性会被浏览器替换掉，勾选状态就对不上了。
+  return `${kind}:${name}`;
+}
+
+function mergePickedGroups() {
+  return mergeableGroups().filter((group) => state.merge.picked.has(mergeKey(group.kind, group.name)));
+}
+
+function renderMergePanel() {
+  const panel = $("#merge-panel");
+  if (!panel) return;
+  if (!state.merge.open) {
+    panel.classList.add("hidden");
+    panel.innerHTML = "";
+    return;
+  }
+  panel.classList.remove("hidden");
+  const groups = mergeableGroups();
+  // 已经不存在（被删/被并）的勾选要清掉，避免提交时找不到组。
+  state.merge.picked = new Set(
+    [...state.merge.picked].filter((key) => groups.some((item) => mergeKey(item.kind, item.name) === key))
+  );
+  const picked = mergePickedGroups();
+  const total = picked.reduce((sum, item) => sum + item.count, 0);
+  const inheritName = state.merge.inheritName || "";
+  panel.innerHTML = `<div class="merge-head"><div><b>合并群组</b><small>勾选两个以上的地址库 / 标签组，合并成一个库；分类、备注、交易所人工结论都保留，合并后可「撤回上次导入」还原。</small></div><button class="ghost" data-merge-cancel type="button">收起</button></div>
+    <div class="merge-groups">${groups.map((group) => `<label class="merge-group"><input type="checkbox" data-merge-pick="${esc(mergeKey(group.kind, group.name))}"${state.merge.picked.has(mergeKey(group.kind, group.name)) ? " checked" : ""}><span class="merge-group-name">${esc(group.name)}</span><span class="merge-group-kind">${group.kind === "book" ? "自建库" : "标签组"}</span><span class="merge-group-count">${group.count} 个地址</span></label>`).join("") || '<div class="placeholder">还没有可合并的地址库或标签组。</div>'}</div>
+    <div class="merge-name-row">
+      <label class="merge-mode"><input type="radio" name="merge-mode" value="new"${state.merge.mode === "new" ? " checked" : ""}> 起个新名字</label>
+      <input data-merge-name maxlength="60" autocomplete="off" placeholder="合并后的组名" value="${esc(state.merge.target || "")}"${state.merge.mode === "inherit" ? " disabled" : ""}>
+      <label class="merge-mode"><input type="radio" name="merge-mode" value="inherit"${state.merge.mode === "inherit" ? " checked" : ""}> 沿用已有组名</label>
+      <select data-merge-inherit aria-label="沿用哪个组名"${state.merge.mode === "inherit" && picked.length ? "" : " disabled"}>${picked.map((group) => `<option value="${esc(group.name)}"${group.name === inheritName ? " selected" : ""}>${esc(group.name)}</option>`).join("") || '<option value="">先勾选组</option>'}</select>
+    </div>
+    <div class="merge-actions"><button class="secondary note-save" data-merge-apply type="button"${picked.length < 2 ? " disabled" : ""}>合并${picked.length >= 2 ? `（${picked.length} 组 / ${total} 个地址）` : ""}</button><small data-merge-summary>${picked.length < 2 ? "至少勾选两个组" : `已选 ${picked.length} 组，共 ${total} 个地址`}</small></div>`;
+}
+
+function refreshMergePanelState() {
+  // 勾选只刷新计数/按钮/下拉选项，不重建整块：输入框内容和滚动位置都不该被勾选打断。
+  const panel = $("#merge-panel");
+  if (!panel) return;
+  const picked = mergePickedGroups();
+  const total = picked.reduce((sum, item) => sum + item.count, 0);
+  const apply = panel.querySelector("[data-merge-apply]");
+  if (apply) {
+    apply.disabled = picked.length < 2;
+    apply.textContent = picked.length >= 2 ? `合并（${picked.length} 组 / ${total} 个地址）` : "合并";
+  }
+  const summary = panel.querySelector("[data-merge-summary]");
+  if (summary) {
+    summary.textContent = picked.length < 2 ? "至少勾选两个组" : `已选 ${picked.length} 组，共 ${total} 个地址`;
+  }
+  const select = panel.querySelector("[data-merge-inherit]");
+  if (select) {
+    const current = select.value;
+    select.disabled = picked.length === 0;
+    select.innerHTML = picked.map((item) => `<option value="${esc(item.name)}">${esc(item.name)}</option>`).join("")
+      || '<option value="">先勾选组</option>';
+    if (picked.some((item) => item.name === current)) select.value = current;
+  }
+}
+
+function toggleMergePanel() {
+  state.merge.open = !state.merge.open;
+  if (state.merge.open) {
+    state.merge.picked = new Set();
+    state.merge.mode = "new";
+    state.merge.target = "";
+    state.merge.inheritName = "";
+  }
+  renderMergePanel();
+  if (state.merge.open) $("[data-merge-name]")?.focus();
+}
+
+async function applyMerge(button) {
+  const picked = mergePickedGroups();
+  if (picked.length < 2) {
+    toast("至少勾选两个组才能合并。", true);
+    return;
+  }
+  const mode = state.merge.mode === "inherit" ? "inherit" : "new";
+  const target = mode === "inherit"
+    ? String($("[data-merge-inherit]")?.value || "").trim()
+    : String($("[data-merge-name]")?.value || "").trim();
+  if (!target) {
+    toast("给合并后的组起个名字，或改成“沿用已有组名”。", true);
+    return;
+  }
+  const total = picked.reduce((sum, item) => sum + item.count, 0);
+  const names = picked.map((item) => `「${item.name}」`).join("、");
+  if (!window.confirm(`合并 ${picked.length} 个组到「${target}」？\n\n来源：${names}\n合计 ${total} 个地址，合并后统一归到「${target}」这个库下。\n分类、备注、交易所人工结论都保留；合并后可用「撤回上次导入」还原。`)) return;
+  button.disabled = true;
+  try {
+    const result = await api("/api/library/merge-groups", {
+      method: "POST",
+      body: JSON.stringify({
+        sources: picked.map((item) => ({ kind: item.kind, name: item.name })),
+        target,
+      }),
+    });
+    state.merge = { open: false, picked: new Set(), mode: "new" };
+    await loadLibrary();
+    toast(`已把 ${result.groups} 个组合并成「${result.name}」，共 ${result.merged} 个地址。`);
+  } catch (error) {
+    toast(`合并失败：${error.message}`, true);
+    button.disabled = false;
+  }
 }
 
 function bookCard(book) {
@@ -2501,6 +2632,13 @@ document.addEventListener("click", (event) => {
   }
   const saveGroupAddButton = event.target.closest("[data-save-group-add]");
   if (saveGroupAddButton) saveGroupAdd(saveGroupAddButton);
+  const mergeCancelButton = event.target.closest("[data-merge-cancel]");
+  if (mergeCancelButton) {
+    state.merge.open = false;
+    renderMergePanel();
+  }
+  const mergeApplyButton = event.target.closest("[data-merge-apply]");
+  if (mergeApplyButton) applyMerge(mergeApplyButton);
   const deleteAddressButton = event.target.closest("[data-delete-address]");
   if (deleteAddressButton) deleteLibraryAddress(deleteAddressButton.dataset.deleteAddress);
   const libraryNoteButton = event.target.closest("[data-save-library-note]");
@@ -2523,8 +2661,32 @@ document.addEventListener("change", (event) => {
     }
     updateLibrarySelection();
   }
+  if (event.target.matches("[data-merge-pick]")) {
+    // 勾选变化只刷新汇总与“沿用组名”候选，不重建面板（避免输入框失焦）。
+    const key = event.target.dataset.mergePick;
+    if (event.target.checked) state.merge.picked.add(key);
+    else state.merge.picked.delete(key);
+    refreshMergePanelState();
+  }
+  if (event.target.matches('input[name="merge-mode"]')) {
+    state.merge.mode = event.target.value;
+    const nameInput = document.querySelector("[data-merge-name]");
+    const inheritSelect = document.querySelector("[data-merge-inherit]");
+    if (nameInput) nameInput.disabled = state.merge.mode === "inherit";
+    if (inheritSelect) inheritSelect.disabled = state.merge.mode !== "inherit" || mergePickedGroups().length === 0;
+    refreshMergePanelState();
+  }
+  if (event.target.matches("[data-merge-inherit]")) {
+    state.merge.inheritName = event.target.value;
+  }
   if (event.target.id === "related-page-size") setRelatedPageSize(event.target.value);
   if (event.target.id === "related-page-input") gotoRelatedPage(event.target.value);
+});
+document.addEventListener("input", (event) => {
+  // 合并面板重渲染会重建 DOM，名字先记在 state 里，勾选组时不会丢。
+  if (event.target.matches("[data-merge-name]")) {
+    state.merge.target = event.target.value;
+  }
 });
 document.addEventListener("keydown", (event) => {
   if (event.target.matches("[data-group-rename-input]")) {
@@ -2562,6 +2724,8 @@ const undoImportButton = $("#undo-last-import");
 if (undoImportButton) undoImportButton.addEventListener("click", () => undoLastImport(undoImportButton));
 const reinstallSeedButton = $("#reinstall-seed-books");
 if (reinstallSeedButton) reinstallSeedButton.addEventListener("click", () => reinstallSeedBooks(reinstallSeedButton));
+const mergeGroupsButton = $("#merge-groups");
+if (mergeGroupsButton) mergeGroupsButton.addEventListener("click", toggleMergePanel);
 $("#sync-matched").addEventListener("click", () => syncCurrentResult("matched"));
 $("#create-book").addEventListener("click", createBookFromResult);
 $("#book-include-seed").addEventListener("change", updateBookHint);

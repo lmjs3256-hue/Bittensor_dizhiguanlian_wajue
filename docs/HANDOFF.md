@@ -359,3 +359,20 @@ Set-Location G:\bittensor-wallet-link-intel
 - 数据修复（已执行，非代码）：把 `5EiXej3AwjKqb9mjQAf29JG5HJf9Dwtt8CjvDqA8biprWTiN`、`5DunDrFV6BPbzsgLZUtMQtCq7w9fcUEbM59BUwx5E7N9Bn5E` 用 `move_existing=true` 从 `rrik` 转入「人工确认交易所」组，`book` 清空、`label=人工确认交易所`、`category=EXCHANGE`、`exchange_confirmed=1`。rrik 由 199 → 197，确认组 3 → 5。
 - 测试：`tests/test_group_add_and_exchange.py` 增 2 例（冲突→转入→撤回还原；结论组同步标志、普通组不写标志），全量 **152 passed**。
 - 探针：`.probe/ui_check_0623.py` 用 rrik 的一条普通地址走「不勾→提示在 rrik→勾选→转入 1 个→组内 6 条」，两次 undo 还原，实测 toast 文案两版对比（第一版含错误前提，已修）。截图 `.probe/69_group_move.png`。
+
+## 27. 2026-11-05 0.6.23 交接：合并群组
+
+- 需求：同一个种子扫出来的地址分散在几个库里交叉命中，希望把几个组并成一个，可起新名字或继承其中一个原组名。
+- 后端 `LinkService.merge_address_groups(sources, target_name)`（`app/service.py`）：
+  - `sources` 为 `[{kind: "book"|"label", name}]`，去重后必须 ≥2；`book` 按 `AddressLibrary.book` 取，`label` 按 `label == name AND book == ""` 取（不会把自建库里的同名标签算进来）。
+  - 目标名走 `_clean_book_name`（≤60 字）；若目标名已被**不在来源里**的库占用 → `InputError`，避免吞并别人的库；若目标名就是某个来源库名 → 视为继承，不新建库。
+  - 合并只改 `book` / `label` 为 `target`，**分类、备注、交易所结论不动**；每条写 `updated` 快照。
+  - 库表：目标库不存在则新建（`note="由群组合并创建"`，记 `created_book`）；来源里的其他库删除并记入 `removed_books`。
+  - 快照 `kind="merge"`，summary 形如「合并 2 个组到「X」· 甲、乙」。
+- `_record_import_batch` 新增 `removed_books` 参数（payload 同名字段）；`undo_last_import` 会把这些库名重建（原来只支持单个 `removed_book`），`last_import_batch` 也返回 `removed_books`。
+- 接口 `POST /api/library/merge-groups`（`MergeGroupsInput{sources, target}`）。
+- 前端（`app/static/app.js`）：`state.merge = {open, picked:Set, mode, target, inheritName}`；`mergeableGroups()` 按 `libraryTable` 口径归组（跳过未命名分类组）；`renderMergePanel()` 渲染面板，`refreshMergePanelState()` 只刷新计数/按钮/下拉（**勾选不重建 DOM**，否则输入框失焦、滚动丢失）；`applyMerge()` 带确认框。
+  - 坑：`mergeKey` 最初用 `\u0000` 分隔 kind 和 name，写进 HTML 属性会被浏览器替换成 U+FFFD，勾选状态永远对不上（表现为“已选 0 组”）。改成 `kind:name`。
+  - 模板：工具栏 `#merge-groups` 按钮 + `<div id="merge-panel" class="merge-panel hidden">`；样式 `.merge-panel` 系列（组列表 `auto-fill minmax(230px,1fr)`，最高 230px 可滚动）。
+- 测试：`tests/test_merge_groups.py` 6 例（新名字合并保留分类/备注/交易所结论并删旧库、继承组名、自建库+标签组混合、撤回还原库名、四类拒绝、接口层）。全量 **158 passed**。
+- 探针：`.probe/ui_check_0624.py`（新名字合并 3 个地址 → 新组出现/旧组消失/面板收起 → 撤回 → 沿用组名合并到「合并测乙」）；`.probe/layout_0624.py`（1422px：工具栏 8 个控件仍单行、面板宽 1025 无右溢出、组列表首行同排、命名行单行）。截图 `.probe/70_merge_panel.png`。探针数据已清理（总地址 672、库表 7 个不变）。

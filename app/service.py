@@ -248,13 +248,15 @@ def _record_import_batch(
     created_book: str | None = None,
     deleted: Iterable[dict[str, Any]] | None = None,
     removed_book: str | None = None,
+    removed_books: Iterable[str] | None = None,
     created_books: Iterable[str] | None = None,
 ) -> None:
     """写入“撤回上次导入”的快照；只保留最新一条，空操作不覆盖上一条。
 
     ``deleted`` 是解散地址库时被整批删掉的地址快照，撤回时按它重建记录；
-    ``removed_book`` 对应被删掉的库名；``created_books`` 是本次新建的多个库
-    （重新导入预置库会一次建出好几个），撤回时一并删掉。
+    ``removed_book`` 对应被删掉的库名；``removed_books`` 是合并群组时被并掉
+    的多个库名；``created_books`` 是本次新建的多个库（重新导入预置库会一次
+    建出好几个），撤回时一并删掉。
     """
 
     payload = json.dumps(
@@ -265,6 +267,7 @@ def _record_import_batch(
             "created_book": created_book or "",
             "created_books": list(created_books or []),
             "removed_book": removed_book or "",
+            "removed_books": list(removed_books or []),
         },
         ensure_ascii=False,
     )
@@ -818,6 +821,125 @@ class LinkService:
                     row.label = new
             return {"renamed": len(rows), "name": new}
 
+    def merge_address_groups(
+        self,
+        sources: list[dict[str, str]],
+        target_name: str,
+    ) -> dict[str, Any]:
+        """把几个地址库/标签组合并成一个库。
+
+        使用场景：同一个种子扫出来的地址分散在几个库里，交叉重复命中，
+        其实是一伙人。合并后统一挂在 ``target_name`` 名下（自建库），
+        每条地址的分类、备注、交易所人工结论都原样保留，可撤回。
+
+        ``sources`` 形如 ``[{"kind": "book"|"label", "name": "..."}]``；
+        ``target_name`` 可以是一个新名字，也可以是所选组之一的名字（继承）。
+        """
+
+        if not sources or len(sources) < 2:
+            raise InputError("至少要选两个组才能合并")
+        target = self._clean_book_name(target_name)
+        picked: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in sources:
+            kind = str((item or {}).get("kind") or "").strip()
+            name = " ".join(str((item or {}).get("name") or "").split())
+            if kind not in {"book", "label"} or not name:
+                raise InputError("合并来源只能是地址库或标签组")
+            key = (kind, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            picked.append(key)
+        if len(picked) < 2:
+            raise InputError("至少要选两个不同的组")
+
+        snapshots: list[dict[str, Any]] = []
+        source_books: list[str] = []
+        addresses: list[str] = []
+        with self.database.session() as db:
+            for kind, name in picked:
+                if kind == "book":
+                    rows = db.scalars(
+                        select(AddressLibrary).where(AddressLibrary.book == name)
+                    ).all()
+                    # 库存在但为空也允许（合并成一个空库没意义，这里按空组报错）
+                    registry = db.scalar(select(AddressBook).where(AddressBook.name == name))
+                    if registry is None and not rows:
+                        raise InputError(f"地址库「{name}」不存在")
+                    source_books.append(name)
+                else:
+                    rows = db.scalars(
+                        select(AddressLibrary).where(
+                            AddressLibrary.label == name, AddressLibrary.book == ""
+                        )
+                    ).all()
+                    if not rows:
+                        raise InputError(f"标签组「{name}」没有地址")
+                if not rows:
+                    raise InputError(f"组「{name}」没有地址，无法合并")
+                for row in rows:
+                    snapshots.append(
+                        {
+                            "address": row.address,
+                            "snapshot": {
+                                "label": row.label or "",
+                                "category": row.category,
+                                "categories": getattr(row, "categories", "") or "",
+                                "note": row.note or "",
+                                "book": getattr(row, "book", "") or "",
+                                "source": row.source or "",
+                                "exchange_confirmed": bool(row.exchange_confirmed),
+                                "exchange_rejected": bool(row.exchange_rejected),
+                            },
+                        }
+                    )
+                    addresses.append(row.address)
+
+            # 目标名已被别的库占用（且不在这次合并的来源里）就拒绝，避免吞掉别的库。
+            existing = db.scalar(select(AddressBook).where(AddressBook.name == target))
+            target_in_sources = target in source_books
+            created_book = ""
+            if existing is not None and not target_in_sources:
+                raise InputError(f"已有同名地址库「{target}」，请换一个名字")
+            if existing is None:
+                db.add(AddressBook(name=target, note="由群组合并创建"))
+                created_book = target
+
+            removed_books: list[str] = []
+            for name in source_books:
+                if name == target:
+                    continue
+                registry = db.scalar(select(AddressBook).where(AddressBook.name == name))
+                if registry is not None:
+                    db.delete(registry)
+                removed_books.append(name)
+
+            for row in db.scalars(
+                select(AddressLibrary).where(AddressLibrary.address.in_(addresses))
+            ).all():
+                row.book = target
+                row.label = target
+
+            _record_import_batch(
+                db,
+                kind="merge",
+                summary=(
+                    f"合并 {len(picked)} 个组到「{target}」· "
+                    + "、".join(name for _, name in picked)
+                ),
+                inserted=[],
+                updated=snapshots,
+                created_book=created_book or None,
+                removed_books=removed_books,
+            )
+        return {
+            "merged": len(snapshots),
+            "groups": len(picked),
+            "name": target,
+            "created_book": bool(created_book),
+        }
+
     def last_import_batch(self) -> dict[str, Any] | None:
         """最近一次批量导入的摘要，供前端确认撤回内容。"""
 
@@ -836,6 +958,7 @@ class LinkService:
                 "book": data.get("created_book") or "",
                 "books": list(data.get("created_books") or []),
                 "removed_book": data.get("removed_book") or "",
+                "removed_books": list(data.get("removed_books") or []),
             }
 
     def undo_last_import(self) -> dict[str, Any]:
@@ -923,6 +1046,14 @@ class LinkService:
             ) is None:
                 db.add(AddressBook(name=removed_book))
                 book_restored = True
+            # 合并群组时被并掉的库：撤回要把库名一起恢复，否则地址回来了却没有库。
+            for name in data.get("removed_books") or []:
+                name = str(name or "").strip()
+                if not name:
+                    continue
+                if db.scalar(select(AddressBook).where(AddressBook.name == name)) is None:
+                    db.add(AddressBook(name=name))
+                    book_restored = True
             db.delete(batch)
             return {
                 "summary": summary,

@@ -301,3 +301,24 @@ body.license-locked .shell { filter:blur(2px); pointer-events:none; user-select:
 .group-add-move { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:12px; cursor:pointer; }
 .group-add-move input { width:14px; height:14px; max-width:none; margin:0; flex:0 0 auto; }
 .group-add-editor small { color:var(--muted); font-size:11.5px; }
+
+/* 合并群组面板 */
+.merge-panel { display:flex; flex-direction:column; gap:10px; padding:12px 14px; margin:0 0 10px; border:1px solid var(--line); border-radius:10px; background:var(--bg); }
+.merge-panel.hidden { display:none; }
+.merge-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.merge-head b { font-size:13px; }
+.merge-head small { display:block; margin-top:3px; color:var(--muted); font-size:11.5px; line-height:1.55; }
+.merge-groups { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:6px; max-height:230px; overflow:auto; }
+.merge-group { display:flex; align-items:center; gap:8px; padding:6px 9px; border:1px solid var(--line); border-radius:7px; font-size:12.5px; cursor:pointer; }
+.merge-group:hover { border-color:var(--accent,var(--line)); }
+.merge-group input { width:14px; height:14px; margin:0; flex:0 0 auto; }
+.merge-group-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.merge-group-kind { flex:0 0 auto; color:var(--muted); font-size:11px; }
+.merge-group-count { flex:0 0 auto; color:var(--muted); font-size:11px; }
+.merge-name-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.merge-name-row input[data-merge-name] { width:210px; padding:7px 9px; border:1px solid var(--line); border-radius:7px; background:var(--surface,var(--bg)); color:var(--ink); font-size:12.5px; }
+.merge-name-row select[data-merge-inherit] { width:auto; min-width:150px; padding:7px 9px; }
+.merge-name-row input[type="radio"] { width:auto; margin:0 4px 0 0; }
+.merge-mode { display:flex; align-items:center; gap:4px; color:var(--muted); font-size:12px; cursor:pointer; }
+.merge-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.merge-actions small { color:var(--muted); font-size:11.5px; }

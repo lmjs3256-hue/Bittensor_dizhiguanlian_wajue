@@ -203,6 +203,13 @@ class GroupAddressInput(BaseModel):
     move_existing: bool = False
 
 
+class MergeGroupsInput(BaseModel):
+    """把几个地址库 / 标签组合并成一个库。"""
+
+    sources: list[dict[str, str]] = Field(min_length=2, max_length=50)
+    target: str = Field(min_length=1, max_length=60)
+
+
 class AddressNoteInput(BaseModel):
     address: str = Field(min_length=1, max_length=64)
     note: str = Field(default="", max_length=2000)
@@ -637,6 +644,19 @@ def add_group_addresses(
             note=payload.note,
             move_existing=payload.move_existing,
         )
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/library/merge-groups")
+def merge_groups(
+    payload: MergeGroupsInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """合并群组：把几个地址库/标签组归到一个库里，可撤回。"""
+
+    try:
+        return svc.merge_address_groups(payload.sources, payload.target)
     except InputError as exc:
         raise HTTPException(422, str(exc)) from exc
 
