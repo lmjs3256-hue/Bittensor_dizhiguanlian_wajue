@@ -312,3 +312,23 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 - 探针 `.probe/ui_check_0626.py`（1440×1200）：面板在地址库页顶部；组下拉首项 `6NCK（103 条）`；切到「和另一个地址比」时组字段隐藏、地址 B 字段显示；检索后统计条「命中地址 1 / 转账明细 1 / 请求 0，缓存命中 1 次 / 已查完当前范围 / 对比地址 102」，汇总表 6 列 1 行、明细表 7 列 1 行，面板内右侧余量 -24px（无横向溢出）。
 - 截图：`.probe/74_interlink_panel.png`（面板）、`75_interlink_page.png`（整页位置）。
 - 回归：`node --check app/static/app.js`、`git diff --check` 通过。
+
+## 2026-11-05 0.6.26 启动脚本冲突标记拦截验收
+
+- 复现场景：`git pull` 后 `start.ps1` 残留 `<<<<<<< HEAD`，双击 `启动.cmd` 报
+  `The '<' operator is reserved for future use`（行 31 char 5）与 `Missing file specification after redirection operator`（char 6/7）。
+- 仓库侧确认干净：`git grep -n "^<<<<<<<\|^>>>>>>>" HEAD -- '*.ps1' '*.cmd'` 无命中；`git diff --stat HEAD -- start.ps1` 无差异。
+- `findstr` 行为实测（直接调用 `findstr.exe`，避开 Git Bash 代码页影响）：
+
+  | 场景 | 命令 | exit | 结论 |
+  | --- | --- | --- | --- |
+  | 文件含 `<<<<<<< HEAD` | `/m /c:"<<<<"` | 0 | 命中，拦截 |
+  | 文件含 `<<<<<<< HEAD` | `/m /c:"<<<<<<<"` | 1 | 7 个字符匹配不稳定，弃用 |
+  | 正常 `param([int]$Port = 8766)` | `/m /c:"<<<<"` | 1 | 放行 |
+
+- 分支走向（`cmd //c 启动.cmd`，临时目录内构造）：有冲突标记 → 打印「脚本里残留了 Git 冲突标记」并 `exit /b 1`；
+  无标记 → 继续执行到 `.venv` 检查（「还没有安装运行环境」）。`安装.cmd` 同样在冲突时停下，不再调用 `setup.ps1`。
+- 换行校验：两个 `.cmd` 均为纯 CRLF（`启动.cmd` 41 行、`安装.cmd` 25 行，裸 LF 计数 0）。
+- 记录一个测试环境陷阱：从 Git Bash 用管道执行 `.cmd` 时，代码页差异会把中文行拆断并产生
+  `'xx' is not recognized` 的假错误；用 `git show HEAD:启动.cmd` 的原版对照同样复现，确认与本次改动无关。
+- 回归：全量 pytest 通过；`git diff --check` 通过；服务启动后 `/api/version` 返回 `0.6.26`。

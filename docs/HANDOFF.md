@@ -407,3 +407,29 @@ Set-Location G:\bittensor-wallet-link-intel
 - 测试：`tests/test_interlink.py` 9 例（组模式 Taostats 交集、本地索引兜底、双向直连、1 跳桥、2 跳链、min_tao 过滤、非法输入、限速优雅降级、接口层）。全量 **167 passed**。
 - 实测（真实 Taostats，1 页）：A `5HTL…RTif7` 与「6NCK」标签组（103 条，排除 A 后 102 个对比地址）命中 1 个地址 `5CPF…L5ex`，1 笔流入 5 TAO，2026-04-10 00:06:12，区块 7934019，tx `0x988f9abb14…`；地址模式查同一对，双向各 1 次请求也命中同一笔。
 - 探针 `.probe/ui_check_0626.py`：面板存在、组下拉 `6NCK（103 条）`、模式切换字段互换、检索后两张表（6 列 / 7 列）各 1 行、无横向溢出。截图 `.probe/74_interlink_panel.png`、`75_interlink_page.png`。
+
+## 30. 2026-11-05 0.6.26 交接：启动脚本拦截 Git 冲突标记
+
+- 现场：用户把仓库 `git pull` 到另一台电脑（`G:\bittensor-wallet-link-intel`），双击 `启动.cmd` 后窗口报
+  `The '<' operator is reserved for future use` / `Missing file specification after redirection operator`，
+  定位到 `start.ps1` 第 31 行附近有 `<<<<<<< HEAD` —— `git pull` 时 `start.ps1` 有本地改动、合并冲突没解决。
+- 关键判断：`git grep -n "^<<<<<<<\|^>>>>>>>" HEAD -- '*.ps1' '*.cmd'` 在仓库侧**无命中**，工作区 `start.ps1` 与 HEAD 一致（132 行），
+  说明不是仓库带脏数据，而是那台电脑本地的工作区状态。
+- 报错为何难懂：PowerShell 解析 `<` 为重定向/保留运算符，报的错跟「冲突」毫无关系；日志里 `logs/wallet-link.stderr.log`
+  还留着上次成功启动的 `Application startup complete`，更容易误判成服务问题。
+- 修复：`启动.cmd`、`安装.cmd` 在调用 `.ps1` 前先 `findstr /m /c:"<<<<" "%~dp0*.ps1" >nul 2>&1`，
+  `if errorlevel 1 goto scripts_ok` 走正常流程，否则打印原因 + 修复命令（`git checkout origin/main -- start.ps1 launch_desktop.ps1`）后 `exit /b 1`。
+- 两个坑：
+  1. **`rem` 注释里不能写 `<`**：cmd 在 `rem` 行同样解析重定向，`rem ... <<<<<<< ...` 会把后半行当命令执行，
+     出现「'不懂的语法错误…' is not recognized」这类诡异输出。注释改成「一排小于号加 HEAD」。
+  2. **`findstr /c:"<<<<<<<"`（7 个）匹配不稳定**，实测同一文件 `/c:"<<<<"` 稳定命中 0、7 个却返回 1；
+     统一用 4 个作为特征——自然代码里不可能出现连续 4 个 `<`，不会误报。
+- 编码/换行：`.gitattributes` 已声明 `*.cmd text eol=crlf`，但用 Python 改写 `.cmd` 时 `newline=""` 会把 CRLF 压成 LF，
+  批量脚本在 LF 下可能只认半行，改完必须 `raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")` 补回。
+- 验证（PowerShell 直接调 `findstr`，绕开 Git Bash 的编码干扰）：
+  - 含 `<<<<<<< HEAD` 的文件 → `exit=0`（命中，拦截）；`param([int]$Port = 8766)` 正常脚本 → `exit=1`（放行）。
+  - 用 `cmd //c 启动.cmd` 跑分支：有冲突标记时输出「冲突标记」并停下；无标记时继续走到「还没有安装运行环境」。
+  - 注意：从 Git Bash 用管道跑 `.cmd` 会因代码页差异把中文拆断（原版 HEAD 脚本同样表现），这是测试环境假象，不是脚本回归。
+- 文档：`使用说明.md` 第十章新增「用 GitHub 同步到另一台电脑」（`.venv`/`data`/`logs` 不在仓库、拉完先跑 `安装.cmd`、授权码换机器要重签），
+  常见问题补一条对应的 Q；`tools/build_usage_html.py` 重建 `使用说明.html`。
+- 纯启动脚本改动，接口/查询逻辑/数据未动；静态资源戳升至 `v=0.6.31`。

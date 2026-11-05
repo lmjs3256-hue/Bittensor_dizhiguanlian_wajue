@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.6.26 · 启动脚本检测 Git 冲突标记 · 2026-11-05
+
+- 修一个很迷惑的启动失败：从 GitHub `git pull` 到另一台电脑时，如果 `start.ps1` 有本地改动产生合并冲突、冲突标记没清干净，PowerShell 会把 `<<<<<<<` 当成保留运算符，报 `The '<' operator is reserved for future use` / `Missing file specification after redirection operator`——报错跟真正原因完全无关，几乎无法自查。
+- `启动.cmd` / `安装.cmd` 在调用脚本前先扫一遍同目录的 `*.ps1`：发现连续四个以上小于号（Git 冲突标记特征）就停下，直接说明原因，并给出修复命令 `git checkout origin/main -- start.ps1 launch_desktop.ps1`，而不是让 PowerShell 去报语法错误。
+- 检测用 `findstr /c:"<<<<"`（7 个组成 JS 风格的长标记在 findstr 里匹配不稳定，4 个即可稳定命中；PowerShell 代码里不可能出现连续 4 个小于号，不会误报）。
+- 两个 `.cmd` 保持 CRLF 换行（`.gitattributes` 已声明 `*.cmd text eol=crlf`），避免在 Windows 下出现只认半行的怪问题。
+- `使用说明.md` 第十章新增「用 GitHub 同步到另一台电脑」：说明 `.venv/` `data/` `logs/` 不在仓库里、拉完必须先跑 `安装.cmd`、授权码换机器要重新激活，以及冲突时怎么恢复；常见问题同步补一条。
+- 纯启动脚本改动，接口、查询逻辑与数据不动。
+
 ## 0.6.25 · 地址关联明细检索 · 2026-11-05
 
 - 地址库页面新增 **「地址关联明细检索」** 面板：一个地址 vs 一整个地址库 / 标签组，直接列出它和库里哪些地址真的发生过转账，每笔带时间、方向、金额、区块、交易哈希和来源。
