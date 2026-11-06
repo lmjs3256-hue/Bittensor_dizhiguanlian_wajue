@@ -654,28 +654,42 @@ function relatedTable(rows) {
   }).join("")}</tbody></table>`;
 }
 
+// 路径明细里的地址比主表多显示几位：主表 9 列要抢宽度只能用头4尾4，
+// 但明细表的「路径」列有 600px 以上，头6尾6 更容易人工比对是不是同一个地址。
+function pathAddr(value) {
+  const text = String(value || "");
+  return text.length > 14 ? `${text.slice(0, 6)}…${text.slice(-6)}` : text;
+}
+
 function pathDetailRowHtml(row) {
   const hops = row.path_transfers || [];
   const seedAddress = state.lastResult?.seed || "";
+  // 每跳压成一行：跳号徽标 / 路径（地址 → 地址）/ 流向+类型 / 金额 / 时间 / 区块。
+  // 原来「第 N 跳」「子网 stake 转移 · 子网 14」「对方转入」这类长中文把行撑到两行高，
+  // 六列加起来又抢不过浏览器的自动列宽，导致「跳数」空占半个表格、地址却被压到换行。
   const body = hops.map((hop, index) => {
-    const kind = hop.edge_type === "stake_transfer"
-      ? `子网 stake 转移${hop.netuid != null ? ` · 子网 ${hop.netuid}` : ""}`
-      : "普通转账";
+    const isStake = hop.edge_type === "stake_transfer";
+    const kind = isStake ? "stake" : "转账";
+    const netuid = isStake && hop.netuid != null ? `<b>#${esc(hop.netuid)}</b>` : "";
     // 按「起始地址 → 当前地址」的方向展示：原始转账可能是对方转入，
     // 直接铺 from→to 会让路径看起来从别的地址起步。
     const from = hop.path_from || hop.from_address;
     const to = hop.path_to || hop.to_address;
-    const directionTag = hop.direction === "in"
-      ? '<span class="tag">对方转入</span>'
-      : hop.direction === "out"
-        ? '<span class="tag">向外转出</span>'
-        : "";
-    return `<tr><td>第 ${index + 1} 跳</td><td class="address"><div class="address-main">${addressLink(from, shortAddr(from))}<span class="path-arrow">→</span>${addressLink(to, shortAddr(to))}</div></td><td>${esc(kind)}${directionTag}</td><td class="amount">${esc(formatTao(hop.amount_tao))}</td><td class="mono history-time">${esc(historyTime(hop.timestamp))}</td><td class="mono">${esc(hop.block_number)}</td></tr>`;
+    const flow = hop.direction === "in" ? "转入" : hop.direction === "out" ? "转出" : "";
+    const flowTag = flow
+      ? `<span class="path-flow ${hop.direction === "in" ? "is-in" : "is-out"}" title="${hop.direction === "in" ? "这笔转账是对方转入中间地址（资金流向与路径方向相反）" : "这笔转账是从中间地址向外转出（资金流向与路径方向一致）"}">${flow}</span>`
+      : '<span class="path-flow is-none">—</span>';
+    return `<tr><td class="path-hop"><span>${index + 1}</span></td><td class="path-way"><div class="path-way-inner">${addressLink(from, pathAddr(from))}<span class="path-arrow">→</span>${addressLink(to, pathAddr(to))}</div></td><td class="path-kind-cell">${flowTag}<span class="path-kind${isStake ? " is-stake" : ""}">${kind}${netuid}</span></td><td class="amount">${esc(formatTao(hop.amount_tao))}</td><td class="mono path-time">${esc(historyTime(hop.timestamp))}</td><td class="mono path-block">${esc(hop.block_number)}</td></tr>`;
   }).join("");
   const seedLabel = seedAddress
-    ? `从起始地址 <code>${esc(shortAddr(seedAddress))}</code> 到 <code>${esc(shortAddr(row.address))}</code> 的关联路径`
-    : `从起始地址到 <code>${esc(shortAddr(row.address))}</code> 的关联路径`;
-  return `<tr class="path-detail-row" data-path-detail="${esc(row.address)}"><td colspan="9"><div class="path-detail"><div class="path-detail-title">${seedLabel}（共 ${hops.length} 笔转账，按路径顺序）</div><table><thead><tr><th>跳数</th><th>方向（起始地址 → 当前地址）</th><th>类型</th><th>金额 TAO</th><th>时间（北京）</th><th>区块</th></tr></thead><tbody>${body}</tbody></table></div></td></tr>`;
+    ? `<code>${esc(shortAddr(seedAddress))}</code><span class="path-arrow">→</span><code>${esc(shortAddr(row.address))}</code>`
+    : `<code>${esc(shortAddr(row.address))}</code>`;
+  // 收起入口给两处：头部右侧一个（一直可见），明细超过 3 跳时底部再补一个——
+  // 长路径要滚到底才能回头关掉，底部没有按钮就得滚回顶部。
+  const footButton = hops.length > 3
+    ? `<div class="path-detail-foot"><button class="ghost path-collapse" data-path-toggle="${esc(row.address)}" type="button" title="收起这条路径明细，回到关联地址列表">收起明细</button></div>`
+    : "";
+  return `<tr class="path-detail-row" data-path-detail="${esc(row.address)}"><td colspan="9"><div class="path-detail"><div class="path-detail-head"><span class="path-detail-title">${seedLabel}<span class="path-detail-count">${hops.length} 笔</span></span><button class="ghost path-collapse" data-path-toggle="${esc(row.address)}" type="button" title="收起这条路径明细，回到关联地址列表">收起明细</button></div><div class="path-scroll"><table class="path-table"><thead><tr><th class="c-hop">跳</th><th class="c-way">路径（起始地址 → 当前地址）</th><th class="c-kind">流向 / 类型</th><th class="c-amount">金额 TAO</th><th class="c-time">时间（北京）</th><th class="c-block">区块</th></tr></thead><tbody>${body}</tbody></table></div>${footButton}</div></td></tr>`;
 }
 
 function togglePathDetail(address) {
@@ -684,15 +698,27 @@ function togglePathDetail(address) {
   const existing = target.nextElementSibling;
   if (existing && existing.classList.contains("path-detail-row")) {
     existing.remove();
+    // 收起后清掉展开态：按钮回到「路径明细」的中性外观，行也不再高亮。
     const button = target.querySelector("[data-path-toggle]");
-    if (button) button.textContent = "路径明细";
+    if (button) {
+      button.textContent = "路径明细";
+      button.classList.remove("is-open");
+      button.setAttribute("aria-expanded", "false");
+    }
+    target.classList.remove("path-open");
     return;
   }
   const row = (state.lastResult?.related || []).find((item) => item.address === address);
   if (!row || !(row.path_transfers || []).length) return;
   target.insertAdjacentHTML("afterend", pathDetailRowHtml(row));
+  // 展开态用强调色标记：一眼能看出哪一行展开了，按钮也从描边变成实心。
   const button = target.querySelector("[data-path-toggle]");
-  if (button) button.textContent = "收起明细";
+  if (button) {
+    button.textContent = "收起明细";
+    button.classList.add("is-open");
+    button.setAttribute("aria-expanded", "true");
+  }
+  target.classList.add("path-open");
 }
 
 // -- 金额筛选：按流入/流出 TAO 过滤掉金额很小的“轻微关联” ------------------

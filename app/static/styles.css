@@ -1,7 +1,7 @@
-:root { --bg:#f5f6f8; --panel:#fff; --ink:#1c2532; --muted:#6f7c8d; --line:#e7eaf0; --accent:#096f64; --accent-soft:#e3f4f0; --warn:#a14f00; --warn-soft:#fff2e2; --danger:#b42318; --mono:"Cascadia Mono","SFMono-Regular",Consolas,monospace; --radius:16px; }
-@media (prefers-color-scheme: dark) { :root { --bg:#11171f; --panel:#19222d; --ink:#eff5f8; --muted:#9aaab8; --line:#2b3948; --accent:#63d5c2; --accent-soft:#183b38; --warn:#ffca87; --warn-soft:#3d2d1b; --danger:#ff9b91; } }
-:root[data-theme="eye"] { --bg:#f3f0e6; --panel:#faf8f0; --ink:#36392f; --muted:#707264; --line:#ddd9c9; --accent:#52664d; --accent-soft:#e6eadc; --warn:#805b2d; --warn-soft:#f2ead8; --danger:#92554d; color-scheme:light; }
-:root[data-theme="darkgray"] { --bg:#292b2f; --panel:#33363b; --ink:#e2e2de; --muted:#a9aaab; --line:#494c51; --accent:#a9b5a6; --accent-soft:#3d433e; --warn:#dfc28c; --warn-soft:#474136; --danger:#df9a91; color-scheme:dark; }
+:root { --bg:#f5f6f8; --panel:#fff; --ink:#1c2532; --muted:#6f7c8d; --line:#e7eaf0; --accent:#096f64; --accent-soft:#e3f4f0; --warn:#a14f00; --warn-soft:#fff2e2; --danger:#b42318; --on-accent:#fff; --mono:"Cascadia Mono","SFMono-Regular",Consolas,monospace; --radius:16px; }
+@media (prefers-color-scheme: dark) { :root { --bg:#11171f; --panel:#19222d; --ink:#eff5f8; --muted:#9aaab8; --line:#2b3948; --accent:#63d5c2; --accent-soft:#183b38; --warn:#ffca87; --warn-soft:#3d2d1b; --danger:#ff9b91; --on-accent:#0d1418; } }
+:root[data-theme="eye"] { --bg:#f3f0e6; --panel:#faf8f0; --ink:#36392f; --muted:#707264; --line:#ddd9c9; --accent:#52664d; --accent-soft:#e6eadc; --warn:#805b2d; --warn-soft:#f2ead8; --danger:#92554d; --on-accent:#fff; color-scheme:light; }
+:root[data-theme="darkgray"] { --bg:#292b2f; --panel:#33363b; --ink:#e2e2de; --muted:#a9aaab; --line:#494c51; --accent:#a9b5a6; --accent-soft:#3d433e; --warn:#dfc28c; --warn-soft:#474136; --danger:#df9a91; --on-accent:#151815; color-scheme:dark; }
 :root[data-theme="darkgray"] .badge.bad { background:#493836; color:#e5a39a; }
 * { box-sizing:border-box; } html { color-scheme:light dark; } body { margin:0; font-family:"Segoe UI","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--ink); } button,input,select { font:inherit; } button { cursor:pointer; }
 .shell { min-height:100vh; display:grid; grid-template-columns:238px minmax(0,1fr); align-items:start; } .sidebar { position:sticky; top:0; height:100vh; overflow-y:auto; padding:24px 16px; background:var(--panel); border-right:1px solid var(--line); display:flex; flex-direction:column; gap:30px; } .brand { display:flex; align-items:center; gap:11px; } .brand b,.brand span { display:block; } .brand span { color:var(--muted); font-size:12px; margin-top:3px; } .mark { border-radius:12px; background:var(--accent); color:#fff; padding:10px; font-weight:800; } nav { display:grid; gap:6px; } .nav { padding:12px 14px; text-align:left; border:0; border-radius:10px; background:transparent; color:var(--muted); font-size:13.5px; transition:background .15s,color .15s; } .nav:hover { background:var(--bg); color:var(--ink); } .nav.active { background:var(--accent-soft); color:var(--accent); font-weight:700; box-shadow:inset 3px 0 0 var(--accent); } .aside-status { margin-top:auto; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); line-height:1.5; padding-top:12px; border-top:1px solid var(--line); }
@@ -227,15 +227,86 @@ button.refresh-result-btn.is-armed:not(:disabled)::after { content:""; position:
 .round-options .round-limit-choice small { color:var(--muted); font-weight:400; font-size:11.5px; }
 
 /* 关联路径明细：在关联地址行下方展开逐笔转账（起始地址 → 当前地址） */
-.path-detail-row td { background:var(--bg); padding:12px 14px; }
-.path-detail-title { color:var(--muted); font-size:12px; font-weight:650; margin-bottom:8px; }
-.path-detail-title code { color:var(--ink); }
-.path-detail table { font-size:12px; }
-.path-detail thead th { background:var(--panel); }
-.path-arrow { color:var(--muted); padding:0 3px; }
-.path-detail .address-main code { font-size:11.5px; }
+/* 布局要点：明细表用 colgroup 固定窄列宽，把剩余宽度全给「路径」列。
+   原来的写法六列平分，浏览器把「第 N 跳」这种短内容也分了 582px（内容区一半），
+   地址列只剩 174px，两个 48 位地址被迫换行，每跳行高 62px。 */
+/* 明细行的外层单元格去掉内边距，让明细卡片自己控制留白。
+   必须写成 .table-wrap 前缀：基础表格规则 .table-wrap tbody td 在后面且同权重会盖掉。 */
+.table-wrap tbody tr.path-detail-row > td { background:var(--bg); padding:0; border-bottom:2px solid var(--line); }
+.path-detail { padding:12px 14px 14px; }
+
+/* 明细头部：左侧路径摘要，右侧「收起明细」。收起按钮必须比正文更抓眼，
+   否则展开后满屏都是地址，用户找不到怎么关。 */
+.path-detail-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:9px; flex-wrap:wrap; }
+.path-detail-title { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; font-weight:600; }
+.path-detail-title code { color:var(--ink); font-size:12px; font-weight:700; }
+.path-detail-title .path-arrow { padding:0 2px; }
+.path-detail-count { margin-left:4px; padding:2px 7px; border-radius:20px; background:var(--accent-soft); color:var(--accent); font-size:11px; font-weight:700; }
+
+/* 「收起明细」：实心强调色按钮，和表格里的灰色小按钮明显区分。
+   展开后整屏都是地址，如果收起入口还是描边灰字，用户要花时间找。 */
+button.path-collapse { padding:6px 14px !important; font-size:12px; font-weight:750; color:var(--on-accent) !important; background:var(--accent) !important; border-color:var(--accent) !important; white-space:nowrap; flex:0 0 auto; box-shadow:0 1px 2px rgba(0,0,0,.12); }
+button.path-collapse:hover { filter:brightness(1.08); }
+button.path-collapse:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+/* 明细超过 3 跳时底部再给一个收起入口，不用滚回顶部 */
+.path-detail-foot { display:flex; justify-content:flex-end; padding-top:9px; margin-top:9px; border-top:1px solid var(--line); }
+.path-detail-foot button.path-collapse { padding:5px 12px !important; font-size:11.5px; font-weight:700; box-shadow:none; }
+
+/* 关联行里的「路径明细」按钮：常态就是强调色实心软底（在 9 列表格里偏小，
+   灰字很难被注意到），展开后变成实心强调色，行本身也加左侧竖条，
+   这样在长列表里一眼能定位到「哪一行展开了」。 */
 .depth-cell { display:flex; align-items:center; gap:7px; }
-.depth-cell [data-path-toggle] { padding:3px 8px; font-size:11px; }
+.depth-cell [data-path-toggle] { padding:3px 9px; font-size:11px; color:var(--accent); border-color:var(--accent-soft); background:var(--accent-soft); font-weight:700; }
+.depth-cell [data-path-toggle]:hover { border-color:var(--accent); }
+.depth-cell [data-path-toggle].is-open { background:var(--accent); border-color:var(--accent); color:var(--on-accent); font-weight:750; }
+.table-wrap tbody tr.path-open > td { background:var(--accent-soft); }
+.table-wrap tbody tr.path-open > td:first-child { box-shadow:inset 3px 0 0 var(--accent); }
+
+/* 明细表：列宽固定，只让「路径」列伸缩。
+   宽度写在 thead th 上而不是 colgroup —— 实测 table-layout:fixed 下 <col> 的
+   width 会被浏览器的自动分配忽略（六列仍被平均成 84/169/226/200/288/169）。
+   选择器都带 .path-detail 前缀提权：明细表嵌在 .table-wrap 里，
+   基础表格规则（.table-wrap thead th / tbody td）写在文件后面，同权重会盖掉这里的写法。 */
+.table-wrap .path-detail table { font-size:12px; table-layout:fixed; width:100%; border-collapse:collapse; }
+.table-wrap .path-detail thead th.c-hop { width:44px; }
+.table-wrap .path-detail thead th.c-kind { width:118px; }
+.table-wrap .path-detail thead th.c-amount { width:104px; }
+.table-wrap .path-detail thead th.c-time { width:150px; }
+.table-wrap .path-detail thead th.c-block { width:88px; }
+.table-wrap .path-detail thead th { background:var(--panel); padding:7px 10px; font-size:11px; font-weight:650; }
+.table-wrap .path-detail thead th:nth-child(n+4) { text-align:right; }
+.table-wrap .path-detail tbody td { padding:7px 10px; vertical-align:middle; border-bottom:1px solid var(--line); font-size:12px; }
+.table-wrap .path-detail tbody tr:last-child td { border-bottom:0; }
+.table-wrap .path-detail tbody tr:hover { background:var(--panel); }
+
+/* 跳号：圆形数字徽标，不再写成「第 1 跳」占宽度 */
+.table-wrap .path-detail td.path-hop { text-align:center; }
+.table-wrap .path-detail td.path-hop span { display:inline-grid; place-items:center; width:20px; height:20px; border-radius:50%; background:var(--panel); border:1px solid var(--line); color:var(--muted); font-size:11px; font-weight:700; font-family:var(--mono); }
+
+/* 路径列：地址不换行、超宽才省略（悬停有完整地址），箭头贴在一起读成一跳 */
+.table-wrap .path-detail td.path-way { min-width:0; }
+.path-way-inner { display:flex; align-items:center; white-space:nowrap; overflow:hidden; }
+.table-wrap .path-detail .path-way-inner .addr-link { font-family:var(--mono); font-size:11.5px; border-bottom:0; overflow:hidden; text-overflow:ellipsis; }
+.table-wrap .path-detail .path-way-inner .addr-link:hover { border-bottom:1px dashed var(--accent); }
+.path-arrow { color:var(--muted); padding:0 5px; flex:0 0 auto; font-size:11px; }
+
+/* 流向 + 类型合并成一格：「转出」用强调色、「转入」用警示色，stake 单独标色 */
+.path-flow { display:inline-block; min-width:28px; margin-right:6px; padding:1px 5px; border-radius:5px; font-size:10.5px; font-weight:700; text-align:center; }
+.path-flow.is-out { background:var(--accent-soft); color:var(--accent); }
+.path-flow.is-in { background:var(--warn-soft); color:var(--warn); }
+.path-flow.is-none { color:var(--muted); background:transparent; }
+.path-kind { color:var(--muted); font-size:11.5px; }
+.path-kind.is-stake { color:var(--ink); font-weight:650; }
+.path-kind b { font-family:var(--mono); font-weight:700; }
+.table-wrap .path-detail td.path-time, .table-wrap .path-detail td.path-block { color:var(--muted); font-size:11px; text-align:right; white-space:nowrap; }
+
+/* 窄屏：明细表保留横向滚动，不把地址压成两行 */
+.path-scroll { overflow-x:auto; }
+@media (max-width:760px) {
+  .path-detail { padding:10px; }
+  .path-detail table { min-width:640px; }
+  .path-detail-head { gap:8px; }
+}
 
 /* 移除关联：确认非同一人的地址可手动移出，再刷新重查整条线索 */
 .address-main [data-remove-relation] { padding:4px 8px; font-size:11px; color:var(--danger); border-color:var(--line); }
@@ -538,16 +609,19 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 #related > table thead th, #related > table tbody td { padding-left:10px; padding-right:10px; }
 /* 关联结果：地址列给足宽度，备注列只保留够用的宽度 */
 #related > table { min-width:1044px; }
-#related > table th:nth-child(1) { width:auto; min-width:220px; text-align:left; }
-#related > table th:nth-child(2) { width:88px; }
-#related > table th:nth-child(3) { width:92px; }
-#related > table th:nth-child(4) { width:68px; }
-#related > table th:nth-child(5),
-#related > table th:nth-child(6) { width:88px; }
-#related > table th:nth-child(7) { width:96px; }
-#related > table th:nth-child(8) { width:128px; }
-#related > table th:nth-child(9) { width:150px; text-align:left; }
-#related > table td:nth-child(9) { text-align:left; }
+/* 列宽只作用于外层关联表的表头：展开的「路径明细」是嵌在这张表里的第二张表，
+   写成后代选择器（#related > table th）会连内层表头一起按 9 列宽度分配，
+   把「跳」列撑到 700px、地址列压到 88px。 */
+#related > table > thead > tr > th:nth-child(1) { width:auto; min-width:220px; text-align:left; }
+#related > table > thead > tr > th:nth-child(2) { width:88px; }
+#related > table > thead > tr > th:nth-child(3) { width:92px; }
+#related > table > thead > tr > th:nth-child(4) { width:68px; }
+#related > table > thead > tr > th:nth-child(5),
+#related > table > thead > tr > th:nth-child(6) { width:88px; }
+#related > table > thead > tr > th:nth-child(7) { width:96px; }
+#related > table > thead > tr > th:nth-child(8) { width:128px; }
+#related > table > thead > tr > th:nth-child(9) { width:150px; text-align:left; }
+#related > table > tbody > tr > td:nth-child(9) { text-align:left; }
 #related .related-address-cell { min-width:0; }
 #related .note-editor { max-width:100%; }
 #related .note-editor textarea { max-width:118px; min-width:0; }

@@ -721,3 +721,19 @@ Set-Location G:\bittensor-wallet-link-intel
   - Chrome 的 `--user-data-dir` **必须给绝对路径**。给相对路径（`.probe/xxx`）在 Git Bash 下会静默失败，`/json/list` 拿不到 `type=page`，报 `scheme isn't ws or wss`。另外机器上常驻的用户 Chrome 会抢 profile，`--disable-extensions` 也建议带上，否则列表里第一个是扩展的 background_page。
 - **验收**：**264 passed**（新增 `tests/test_seed_profile_endpoint.py` 8 条 + `tests/test_seed_profile.py` 5 条）。真实端到端：`5CQBKc…MQ4` 画像 9,468 次 / 42.27 次/天 / 余额 37.45（可用 16.51 + 质押 20.94）；随后带 `prefetched_requests=2` 扫描 → `api_requests=3`、15 个关联、无 429。排版 1440/1180/1080 三档 `fitsSidebar=true`、右边缘统一 207px；窄屏 950/900/760/560/480 `inSlot=true`、≤760px 降两列、零溢出。
 - **给下一任**：改动画像相关的任何请求路径，都先想清楚「这次请求会不会和本轮 5 次额度打架」。画像跑在扫描之前，是唯一一个**在用户按下按钮后、关联开始前**就消耗额度的东西，`prefetched_requests` 这条链路断了就会稳定出现 429。
+
+## 46. 2026-11-07 0.8.2 交接：路径明细重排 + 两个 CSS 作用域坑
+
+- **用户报的问题**：路径明细排版不合理、不美观，能排一行就排一行；「收起明细」字体颜色不够突出，展开后不好找。
+- **改前实测数据（下次改这块拿这个对比）**：1440 宽 / 内容区 1164px，六列宽分别是 `跳数 582 / 方向 174 / 类型 92 / 金额 69 / 时间 159 / 区块 88`。每跳行高 **62px**（地址折成两行）。
+- **改后**：`跳 44 / 路径 632 / 流向类型 118 / 金额 104 / 时间 150 / 区块 88`，行高 **34–35px**，2 跳与 6 跳都 `allOneLine=true`、`wayTruncated=0`。
+- **三个必须记住的坑**：
+  1. **`#related > table th:nth-child(n)` 会打到内层表格**。路径明细是嵌在外层关联表 `<td colspan=9>` 里的**第二张表**，后代选择器把 9 列宽度套到 6 列上，「跳」列被撑到 712px。收窄成 `#related > table > thead > tr > th` 才对。改任何 `#related` 表格样式都要先想「这会不会命中内层 path-table」。
+  2. **`table-layout:fixed` 下 `<colgroup><col style="width">` 会被忽略**。第一次就是写 colgroup，`getComputedStyle(col)` 读到 84/169/226/200/288/169 原样不动。宽度必须写在 `thead th` 上（本次给 th 加了 `c-hop/c-way/c-kind/c-amount/c-time/c-block` 类）。
+  3. **深灰主题的 `--accent` 是浅色**（#a9b5a6），实心按钮用 `color:#fff` 对比度只有 2.13，肉眼几乎看不见字。新增 `--on-accent` 变量：默认/护眼 `#fff`，系统暗色 `#0d1418`，深灰 `#151815`。以后凡是「--accent 底 + 文字」的按钮都用它，不要再写死 `#fff`。四个主题实测对比度 6.05 / 8.39。
+- **明细行的 HTML 结构**：`.path-detail-row > td > .path-detail > (.path-detail-head + .path-scroll > table.path-table + .path-detail-foot)`。外层 `td` 必须 `padding:0`（写成 `.table-wrap tbody tr.path-detail-row > td` 提权，否则被后面同权重的基础表格规则盖掉），留白交给 `.path-detail` 的 padding。
+- **收起入口给了两个**：头部右侧常驻 + `hops.length > 3` 时底部再一个。两个按钮都带 `data-path-toggle`，事件用 `closest()` 委托，所以点哪个都能收；收起时只回填行内那个按钮（明细整块被 remove 掉，不需要复位）。
+- **顺带修的时区口径**：日均频次天数原来是 `utcnow().date()`，在北京时间 00:00–08:00 之间比实际少一天。`tests/test_seed_profile.py::test_profile_combines_account_and_transfer_total` 就是凌晨跑才失败的（用 `date.today()` 对照）。已改 `to_beijing(utcnow()).date()`。
+- **CHANGELOG 标题别用两个 `·`**：`version_info.ENTRY_PATTERN` 是 `^##\s+(version)\s+·\s+(title)\s+·\s+(date)$`，标题里再出现 `·` 会解析失败、`entries[0]["version"]` 变成上一个版本，`test_version` 直接红。用「、」分隔。
+- **验收**：全量 **268 passed**（新增 `tests/test_path_detail_layout.py` 4 条，锁列宽写法与 `--on-accent`）。探针 `.probe/chk_path_082.py`（真实历史结果展开/收起/再展开）、`.probe/chk_path_long_082.py`（注入 6 跳测单行与底部按钮）、`.probe/chk_path_theme_082.py`（亮/深灰主题对比度 + 外层表未受影响）。
+- **Chrome 探针仍然要注意**：`--user-data-dir` 必须绝对路径 + `--disable-extensions`，且每次换端口/换 profile 目录，否则前一次的残留进程会占住目录导致拿不到 `type=page`。

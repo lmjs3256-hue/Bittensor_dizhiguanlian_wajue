@@ -502,6 +502,13 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </tr>
 </tbody>
 </table>
+<p><strong>路径明细怎么看</strong>：点层级里的「路径明细」就在该行下面展开这条线索的逐笔转账，<strong>每跳一行</strong>，从左到右是：跳号 → 路径（付款地址 → 收款地址）→ 流向/类型 → 金额 → 时间（北京）→ 区块。</p>
+<ul>
+<li>「流向」是相对<strong>路径方向</strong>说的：<code>转出</code> 表示资金顺着路径往下走，<code>转入</code> 表示这一跳是对方转过来的（资金反向），所以看路径时不用自己反推。</li>
+<li>「类型」里 <code>转账</code> 是普通 TAO 转账，<code>stake#14</code> 表示子网 14 的 stake 转移。</li>
+<li>地址显示为头 6 + 尾 6（比主表多两位，方便人工比对），<strong>悬停可看完整地址，点击在 Taostats 打开</strong>。</li>
+<li>收起来有两个入口：明细右上角的绿色「收起明细」按钮，以及<strong>超过 3 跳时明细底部的同款按钮</strong>（长路径不用滚回顶部）。收起后层级里的按钮会变回浅色「路径明细」。</li>
+</ul>
 <p><strong>排序规则</strong>：交易所地址永远排最前（官方名单和人工确认的都算），<strong>公共地址</strong>排第二，其余按「关联强度」从强到弱排；同强度内层级浅的在前，再按累计金额。</p>
 <p><strong>强度是怎么算的</strong>（全部可解释，鼠标悬停能看到具体依据）：</p>
 <table>

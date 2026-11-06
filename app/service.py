@@ -2798,10 +2798,13 @@ class LinkService:
         # 日均频次：注册日到今天的自然天数（当天的按 1 天算）。
         # 只有真实的质押事件次数才算频次；本地转账笔数的口径不同，
         # 拿来除会得出一个「看着像质押频次、实际不是」的数字。
+        # 日期基准用北京时间：界面、导出文件名、注册日的展示口径都是北京日，
+        # 这里若用 utcnow().date()，在北京时间 00:00–08:00 之间会少算一天。
         if count is not None and scope == "taostats" and profile["registered_on"]:
             try:
                 registered = date.fromisoformat(str(profile["registered_on"]))
-                days = max((utcnow().date() - registered).days, 1)
+                today = to_beijing(utcnow()).date()
+                days = max((today - registered).days, 1)
                 profile["active_days"] = days
                 profile["daily_frequency"] = round(count / days, 2)
             except ValueError:
