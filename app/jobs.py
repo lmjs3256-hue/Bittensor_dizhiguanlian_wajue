@@ -254,6 +254,9 @@ class RelationJobManager:
             job.status = "failed"
             job.error = f"{type(exc).__name__}: {exc}"
             job.finished_at = time.time()
+            # 失败也写一条查询记录：否则用户在“查询记录”里找不到这次查询，
+            # 会以为记录漏了、跟实际操作对不上。
+            self._archive_failed(job)
             return
         job.rounds_done += 1
         job.total_requests += spent
@@ -284,6 +287,44 @@ class RelationJobManager:
             job.empty_rounds = 0
         job.status = "waiting"
         job.next_round_at = time.time() + job.round_interval
+
+    def _archive_failed(self, job: RelationJob) -> None:
+        """失败作业补一条查询记录（不含结果），保证记录条数与实际操作一致。"""
+
+        if job.finalized:
+            return
+        job.finalized = True
+        job.next_round_at = 0.0
+        notes = list(job.state.warnings)
+        notes.append(f"查询失败：{job.error}")
+        job.result = {
+            "seed": job.context.seed,
+            "related": [],
+            "edges": [],
+            "library_matches": [],
+            "seed_library_matches": [],
+            "warnings": notes,
+            "data_source": "taostats",
+            "max_depth": job.context.depth,
+            "job": {
+                "id": job.id,
+                "rounds": job.rounds_done,
+                "requests": job.total_requests,
+                "stopped": False,
+            },
+        }
+        try:
+            job.archive_id = job.service.archive_relation(
+                job.result,
+                job_id=job.id,
+                kind="job",
+                status="failed",
+                rounds=job.rounds_done,
+                requests=job.total_requests,
+            )
+            job.result["archive_id"] = job.archive_id
+        except Exception:  # noqa: BLE001 - 归档失败不该再抛错盖掉原始错误
+            pass
 
     def _finish(
         self, job: RelationJob, *, cap_note: str = "", status: str = "complete"

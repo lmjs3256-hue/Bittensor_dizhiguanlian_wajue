@@ -29,7 +29,9 @@ from .db import (
     SYSTEM_CLASSIFICATION,
     Transfer,
     install_seed_books,
+    iso_utc,
     seed_book_status,
+    to_beijing,
     to_relation_records,
     utcnow,
 )
@@ -242,8 +244,8 @@ def job_dict(job: ScanJob) -> dict[str, Any]:
         "transfer_count": job.transfer_count,
         "status": job.status,
         "error": job.error,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "started_at": iso_utc(job.started_at),
+        "finished_at": iso_utc(job.finished_at),
     }
 
 
@@ -345,8 +347,8 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
         # 官方名单同步来的交易所：判定固定，界面不给改判入口，接口也会拒绝。
         "exchange_locked": official,
         "exchange_source": "official" if official else "",
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "created_at": iso_utc(row.created_at),
+        "updated_at": iso_utc(row.updated_at),
     }
 
 
@@ -1016,7 +1018,7 @@ class LinkService:
             return {
                 "kind": batch.kind,
                 "summary": batch.summary,
-                "created_at": batch.created_at.isoformat() if batch.created_at else None,
+                "created_at": iso_utc(batch.created_at),
                 "inserted": len(data.get("inserted") or []),
                 "updated": len(data.get("updated") or []),
                 "deleted": len(data.get("deleted") or []),
@@ -1811,12 +1813,8 @@ class LinkService:
             "seed": row.seed if row is not None else "",
             "count": count,
             "categories": categories,
-            "created_at": (
-                row.created_at.isoformat() if row is not None and row.created_at else None
-            ),
-            "updated_at": (
-                row.updated_at.isoformat() if row is not None and row.updated_at else None
-            ),
+            "created_at": iso_utc(row.created_at if row is not None else None),
+            "updated_at": iso_utc(row.updated_at if row is not None else None),
         }
 
     def address_books(self) -> list[dict[str, Any]]:
@@ -2184,8 +2182,8 @@ class LinkService:
             "requests": row.requests,
             "related_count": row.related_count,
             "library_hit_count": row.library_hit_count,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "created_at": iso_utc(row.created_at),
+            "finished_at": iso_utc(row.finished_at),
         }
 
     def relation_history(self, *, limit: int = 30, offset: int = 0) -> dict[str, Any]:
@@ -2285,7 +2283,9 @@ class LinkService:
         selection = select_exportable_addresses(
             payload.get("related") or [], depth=depth
         )
-        date = (row.finished_at or row.created_at).strftime("%Y%m%d")
+        # 文件名里的日期按北京时间取，否则零点到早 8 点之间的记录会写成前一天。
+        stamp = to_beijing(row.finished_at or row.created_at) or utcnow()
+        date = stamp.strftime("%Y%m%d")
         licensed_to = license_mod.watermark()
         header = f"# Wallet Link · 授权给 {licensed_to}\n" if licensed_to else ""
         return (

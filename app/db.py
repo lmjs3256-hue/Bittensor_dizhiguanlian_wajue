@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
@@ -28,6 +28,34 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def iso_utc(value: datetime | None) -> str | None:
+    """把库里读回的 naive datetime 明确标注成 UTC。
+
+    SQLite 不保留时区，存进去的 UTC 时间读出来是 naive 的；如果直接
+    ``isoformat()`` 出去就没有 ``+00:00`` 尾巴，浏览器会按“本地时间”解析，
+    导致查询记录里的时间比北京时间早 8 小时，看着像记录对不上。
+    """
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+BEIJING_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+def to_beijing(value: datetime | None) -> datetime | None:
+    """把库里的 UTC 时间换成北京时间，供导出文件名等“按天”口径使用。"""
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(BEIJING_TZ)
 
 
 # 新建库时预置的分类；用户可以再加自己的。

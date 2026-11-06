@@ -433,7 +433,7 @@ function pathDetailRowHtml(row) {
   const seedLabel = seedAddress
     ? `从起始地址 <code>${esc(shortAddr(seedAddress))}</code> 到 <code>${esc(shortAddr(row.address))}</code> 的关联路径`
     : `从起始地址到 <code>${esc(shortAddr(row.address))}</code> 的关联路径`;
-  return `<tr class="path-detail-row" data-path-detail="${esc(row.address)}"><td colspan="8"><div class="path-detail"><div class="path-detail-title">${seedLabel}（共 ${hops.length} 笔转账，按路径顺序）</div><table><thead><tr><th>跳数</th><th>方向（起始地址 → 当前地址）</th><th>类型</th><th>金额 TAO</th><th>时间</th><th>区块</th></tr></thead><tbody>${body}</tbody></table></div></td></tr>`;
+  return `<tr class="path-detail-row" data-path-detail="${esc(row.address)}"><td colspan="8"><div class="path-detail"><div class="path-detail-title">${seedLabel}（共 ${hops.length} 笔转账，按路径顺序）</div><table><thead><tr><th>跳数</th><th>方向（起始地址 → 当前地址）</th><th>类型</th><th>金额 TAO</th><th>时间（北京）</th><th>区块</th></tr></thead><tbody>${body}</tbody></table></div></td></tr>`;
 }
 
 function togglePathDetail(address) {
@@ -1325,12 +1325,48 @@ function syncInterlinkMode() {
   $("#interlink-target-field")?.classList.toggle("hidden", mode !== "address");
 }
 
-function interlinkTime(value) {
-  const text = String(value || "");
+// 所有时间统一按北京时间（东八区）显示：
+// 库里和接口里的时间可能是“没有时区尾巴”的 UTC 字符串，new Date() 会把它当本地
+// 时间解析，导致显示早 8 小时、记录看着对不上。这里先补 Z 再固定按 Asia/Shanghai 格式化。
+function formatBeijing(date) {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const pick = (type) => (parts.find((part) => part.type === type) || {}).value || "";
+  return `${pick("year")}/${pick("month")}/${pick("day")} ${pick("hour")}:${pick("minute")}:${pick("second")}`;
+}
+
+function bjTime(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const text = String(value).trim();
   if (!text) return "-";
-  const date = new Date(text);
+  // 纯数字：秒或毫秒时间戳
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    const num = Number(text);
+    if (!Number.isFinite(num)) return text;
+    const date = new Date(num < 1e12 ? num * 1000 : num);
+    return Number.isNaN(date.getTime()) ? text : formatBeijing(date);
+  }
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text);
+  const normalized = hasZone ? text : `${text.replace(" ", "T")}Z`;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return text;
-  return date.toLocaleString("zh-CN", { hour12: false });
+  return formatBeijing(date);
+}
+
+function interlinkTime(value) {
+  return bjTime(value);
+}
+
+function historyTime(value) {
+  return bjTime(value);
 }
 
 function interlinkAmount(value) {
@@ -1378,7 +1414,7 @@ function interlinkTxTable(rows) {
       </tr>`;
     })
     .join("");
-  return `<table class="interlink-table"><thead><tr><th>时间</th><th>方向</th><th>对手地址</th><th>金额 TAO</th><th>区块</th><th>交易哈希</th><th>来源</th></tr></thead><tbody>${body}</tbody></table>`;
+  return `<table class="interlink-table"><thead><tr><th>时间（北京）</th><th>方向</th><th>对手地址</th><th>金额 TAO</th><th>区块</th><th>交易哈希</th><th>来源</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
 function interlinkPathCard(path) {
@@ -2359,7 +2395,7 @@ async function refreshExchangeSyncStatus() {
     if (label) {
       const when = data.synced_at ? historyTime(data.synced_at) : "尚未同步";
       const err = data.error ? ` · 上次失败：${data.error}` : "";
-      label.textContent = `官方交易所：${data.official_total || 0} 个 · 最近同步 ${when}${err}`;
+      label.textContent = `官方交易所：${data.official_total || 0} 个 · 最近同步 ${when}（北京时间）${err}`;
     }
     return data;
   } catch (_) {
@@ -2389,13 +2425,6 @@ async function checkExchangeSyncNotice() {
 // -- 查询记录（历史结果） -------------------------------------------------
 const HISTORY_PAGE_SIZE = 20;
 
-function historyTime(value) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString("zh-CN", { hour12: false });
-}
-
 function historyStatus(value) {
   return ({
     complete: ["已完成", ""],
@@ -2408,7 +2437,7 @@ function historyTable(items) {
   if (!items.length) {
     return '<div class="placeholder">还没有查询记录。完成一次关联查询（分轮或单轮）后会自动保存在这里。</div>';
   }
-  return `<table><thead><tr><th>时间</th><th>发起地址</th><th>状态</th><th>关联地址</th><th>地址库命中</th><th>轮次 / 请求</th><th>操作</th></tr></thead><tbody>${items.map((item) => {
+  return `<table><thead><tr><th>完成时间（北京）</th><th>发起地址</th><th>状态</th><th>关联地址</th><th>地址库命中</th><th>轮次 / 请求</th><th>操作</th></tr></thead><tbody>${items.map((item) => {
     const [statusText, statusTone] = historyStatus(item.status);
     const kindText = item.kind === "job" ? "分轮" : "单轮";
     const hit = item.library_hit_count
@@ -2442,12 +2471,19 @@ async function viewHistoryRecord(id) {
       toast("这条记录没有可展示的结果。", true);
       return;
     }
+    const relatedCount = (data.result.related || []).length;
+    // 失败的记录也留档：没有关联地址时直接把失败原因说出来，别让人以为记录是空的。
+    if (data.item.status === "failed" && !relatedCount) {
+      const reasons = data.result.warnings || [];
+      toast(`这条记录是失败的查询（${historyTime(data.item.created_at)}）：${reasons[reasons.length - 1] || "没有取到数据。"}`, true);
+      return;
+    }
     navigate("scan");
     state.removedAddresses.clear();
     state.exchangePruned.clear();
     state.page = 1;
     renderResult(data.result);
-    toast(`已载入历史记录 #${id}（${historyTime(data.item.created_at)}）：${(data.result.related || []).length} 个关联地址。`);
+    toast(`已载入历史记录 #${id}（${historyTime(data.item.created_at)}，北京时间）：${relatedCount} 个关联地址。`);
     const panel = $("#result");
     if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
