@@ -660,3 +660,21 @@ Set-Location G:\bittensor-wallet-link-intel
   - **勾选状态迁移到 `state.librarySelection`（Set，存字符串 ID）**：原来靠 DOM 查询，分页后翻页就丢；全选、导出选中、批量删除三处都已改成读这个集合。加新的选中相关功能时不要再去查 `[data-library-select]:checked`。
 - **结果地址单行的坑**：不能给 `.address-main` 整体 `flex-wrap:nowrap`。试过，表格被撑宽 137px（1181 vs 1044，横向滚动条出现）。正确做法是只给 `.related-address-cell .addr-link` 加 `white-space:nowrap; word-break:normal`，让「复制 / 移除 / 角色标签」自己换到下一行。验证方法：量 `.addr-link` 的高度是否小于 `line-height`（17 < 18 即单行）。
 - **验收**：`pytest -q` = 234 passed（新增 4 条）；GET/POST 均 200、未知子路径 404；预置验证者 1194 条 24 页、末页 44、翻页保持展开；结果表 1440/1180/1024 三档地址零折行。
+
+## 42. 2026-11-06 0.7.8 交接：升级不重启的根因、启动自动重启、环境自检
+
+- **0.7.7 的两个修复都是对的，远端就是没跑到。** 用户报「同步 0.7.7 下来，还是没有预置验证者、同步还是老报错」，本地怎么测都是 234 passed、GET/POST 全 200，说明问题在部署侧。真正的根因是 `start.ps1`：探到同目录已有服务在跑时，第 51 行附近直接 `Service is already running` + `exit 0`。`git pull` 之后用户双击的正是这个脚本，于是**旧进程一直活着**，新代码一行没执行。
+- **为什么这个坑极难自查**：`/api/version` 走 `read_version_info()`，读的是**磁盘上的 `VERSION` 文件**，跟运行中的进程毫无关系。`git pull` 改完文件，页脚立刻显示 `当前版本：0.7.7`，用户以为升级成功了，只是「功能没生效」——实际上跑的还是 0.7.6。以后凡是「版本号对但行为不对」，第一反应必须是**确认进程重启过**。
+- **修法一：`start.ps1` 自动重启。** 服务已在同目录运行时不再无脑退出，改为比对 `health.version`（进程启动时读的 `VERSION_INFO`，见 `app/main.py` 顶部）与磁盘 `VERSION` 文件：
+  - 不一致 → 打印 `检测到代码已更新：运行中 X → 磁盘 Y` / `正在重启服务以加载新版本…`，停旧进程，等端口释放，再走正常启动流程；
+  - 一致 → 保持原来的 `exit 0`。
+  - **坑：不要 `& stop.ps1`。** 那个脚本里到处是 `exit 0`，被调用时会把当前启动会话一起结束（实测直接退到 `Test-PortFree` 之外）。停止逻辑必须就地写：pid 文件优先、`Get-NetTCPConnection` 按端口兜底、只处理 `python*` 进程，然后轮询 `Test-PortFree` 最多 20 秒。
+- **修法二：把「磁盘版本 vs 进程版本」暴露到接口。** `/api/version` 新增 `running_version`、`stale` 两个字段；前端 `renderReleaseNotes()` 在 `stale` 时把页脚改成 `运行中版本：0.7.7（磁盘已是 0.7.8，需重启）` 并加 `.version-stale` 类，同时在更新日志页顶部显示 `#version-stale-banner` 横幅（带「重启后再自检」按钮）。**不要再让页脚只显示磁盘版本**，那是这次误判的根源。
+- **新增 `app/diagnostics.py`**：一次算清五件事——版本（磁盘/进程）、预置名单文件（存在/条数/mtime）、落库情况（验证者分类数、预置标签数、内置来源数）、本次启动写入条数、API key。每项返回 `是 / pass / warn / fail + detail + hint`，`hint` 必须写成可执行动作（「双击停止.cmd 再启动.cmd」），不能是「请检查配置」。
+  - 三个入口共用同一个 `build_report()`：`GET /api/diagnose`（界面，`cache_ttl=5.0`）、`python run.py --doctor`（命令行，实时、失败退出码 1）、测试。
+  - `library_status()` 按数据库路径做短 TTL 缓存，避免界面反复点造成上千行 count。
+- **落库判定口径的坑**：初版写的是 `source LIKE 'builtin:%'` 计数，结果本机只有 6 条——因为 1194 个验证者早已通过 Taostats 同步入过库，`ensure_builtin_addresses` 按规则**不覆盖官方来源**（保留 `taostats:`），只补分类和标签。必须改成 `max(验证者分类数, 预置标签数)` 对文件条数算覆盖率，<90% 才判 fail，否则老用户一律误报。
+- **启动日志加了一行**：`[builtin] 版本 0.7.8 预置验证者 1196 条；本次启动新增 N 条、补标记 M 条`（打到 stderr，即 `logs\wallet-link.stderr.log`）。远端排查时这一行是「新版本真的跑起来了」的最直接证据。
+- **实测**：进程 0.7.7 + 磁盘 0.7.8 时运行 `start.ps1` 正确触发重启，重启后 `/api/health` 为 0.7.8 且带 `validator_snapshot:1196`；`/api/diagnose` 五项全 pass；失败态（模拟旧进程 + 空库）横幅/页脚/三条建议均正确，1440 与 1080 两档零横向溢出；深灰主题下 fail 卡片 `rgb(73,56,54)` + 浅字可读。
+- **验收**：`pytest -q` = **246 passed**（新增 `tests/test_diagnostics.py` 12 条）；`使用说明.html` 已重新生成（77,806 bytes）。
+- **给下一任的话**：这个项目已经连续三次栽在「看起来升级了其实没生效」上（0.7.6 以为 SSL、0.7.7 以为 405、0.7.8 才发现是没重启）。以后收到「XX 修复没起作用」，**先让用户跑 `run.py --doctor` 或看环境自检截图**，别急着改代码。

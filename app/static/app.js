@@ -290,7 +290,11 @@ function navigate(view, updateHash = true) {
     loadWatchStatus();
   }
   if (view === "history") loadHistory();
-  if (view === "release") loadVersionInfo();
+  if (view === "release") {
+    loadVersionInfo();
+    // 进这一页就顺手跑一次自检：升级后第一眼就能看到预置名单有没有生效。
+    runDiagnose();
+  }
 }
 
 async function loadOverview() {
@@ -329,7 +333,28 @@ async function loadOverview() {
 
 function renderReleaseNotes(data) {
   const currentVersion = String(data.version || "").trim();
-  $("#app-version").textContent = currentVersion ? `当前版本：${currentVersion}` : "当前版本：未知";
+  const running = String(data.running_version || currentVersion).trim();
+  // 只 git pull 不重启时，磁盘上的 VERSION 已经是新的，进程还是旧的。
+  // 这种情况必须显眼提示，否则会误以为升级成功、只是功能没生效。
+  const stale = Boolean(data.stale) && running !== currentVersion;
+  const footer = $("#app-version");
+  if (footer) {
+    footer.textContent = stale
+      ? `运行中版本：${running}（磁盘已是 ${currentVersion}，需重启）`
+      : currentVersion
+        ? `当前版本：${currentVersion}`
+        : "当前版本：未知";
+    footer.classList.toggle("version-stale", stale);
+  }
+  const banner = $("#version-stale-banner");
+  if (banner) {
+    banner.classList.toggle("hidden", !stale);
+    if (stale) {
+      banner.innerHTML = `<b>代码已更新到 ${esc(currentVersion)}，但服务还在跑 ${esc(running)}</b><span>双击「停止.cmd」关掉旧进程，再双击「启动.cmd」重新启动；只刷新浏览器不会加载新代码。重启后预置验证者名单会自动写进地址库。</span><button class="ghost" id="rerun-diagnose" type="button">重启后再自检</button>`;
+      const again = $("#rerun-diagnose");
+      if (again) again.addEventListener("click", runDiagnose);
+    }
+  }
   const entries = Array.isArray(data.entries) ? data.entries : [];
   if (!entries.length) {
     $("#release-list").innerHTML = '<div class="placeholder">暂无更新日志。</div>';
@@ -350,6 +375,56 @@ async function loadVersionInfo() {
   } catch (error) {
     $("#app-version").textContent = "当前版本：读取失败";
     $("#release-list").innerHTML = `<div class="placeholder">更新日志加载失败：${esc(error.message)}</div>`;
+  }
+}
+
+/* -- 环境自检：版本 / 预置名单文件 / 落库情况 / API key -------------------
+   「同步还是失败」「地址库里没有预置地址」这两类问题在旧版界面表现一样，
+   只能靠猜。这里把判断依据直接摊开：失败项给出这一步该做什么。 */
+const DIAGNOSE_MARK = {
+  pass: { text: "正常", cls: "ok" },
+  warn: { text: "提醒", cls: "warn" },
+  fail: { text: "未通过", cls: "bad" },
+};
+
+function renderDiagnose(report) {
+  const list = $("#diagnose-list");
+  const summary = $("#diagnose-summary");
+  if (!list) return;
+  const checks = Array.isArray(report.checks) ? report.checks : [];
+  const overall = DIAGNOSE_MARK[report.status] || DIAGNOSE_MARK.warn;
+  if (summary) {
+    summary.className = `diagnose-summary ${overall.cls}`;
+    summary.textContent = report.ok
+      ? `全部通过 · 版本 ${report.version} · 预置验证者 ${report.snapshot?.count ?? 0} 条（pid ${report.pid}）`
+      : `${report.failed} 项未通过 · 版本 ${report.version} · pid ${report.pid}`;
+  }
+  list.innerHTML = checks
+    .map((item) => {
+      const mark = DIAGNOSE_MARK[item.status] || DIAGNOSE_MARK.warn;
+      const hint = item.hint && item.status !== "pass"
+        ? `<div class="diagnose-hint">处理建议：${esc(item.hint)}</div>`
+        : "";
+      return `<div class="diagnose-item ${mark.cls}"><div class="diagnose-head"><span class="diagnose-mark">${mark.text}</span><b>${esc(item.title)}</b></div><div class="diagnose-detail">${esc(item.detail)}</div>${hint}</div>`;
+    })
+    .join("");
+}
+
+async function runDiagnose() {
+  const button = $("#run-diagnose");
+  if (!button) return;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "检查中…";
+  try {
+    const report = await api("/api/diagnose");
+    renderDiagnose(report);
+    if (!report.ok) toast("自检发现未通过项，按提示处理后重新启动服务。", true);
+  } catch (error) {
+    toast(`环境自检失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
   }
 }
 
@@ -3366,6 +3441,7 @@ $("#taostats-api-key").addEventListener("keydown", (event) => {
   if (event.key === "Enter") saveTaostatsKey();
 });
 $("#run-scan").addEventListener("click", () => runRelations(false));
+$("#run-diagnose").addEventListener("click", runDiagnose);
 $("#refresh-result").addEventListener("click", () => {
   if (!state.lastResult) {
     toast("还没有查询结果；先输入起始地址点「扫描关联」。", true);

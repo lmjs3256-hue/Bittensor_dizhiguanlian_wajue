@@ -7,7 +7,7 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import diagnostics
 from . import license as license_mod
 from . import settings_store
 from .config import ROOT_DIR, database_path, settings
@@ -45,6 +46,8 @@ SEED_BOOKS_ENABLED = True
 AUTO_EXCHANGE_SYNC_ENABLED = True
 # 内置固定名单（人工确认的交易所/验证者/公共地址）：每次启动幂等写入地址库。
 BUILTIN_ADDRESSES_ENABLED = True
+# 本次启动内置名单的写入结果，供 /api/diagnose 显示「新版本真的跑起来了吗」。
+BUILTIN_STARTUP_RESULT: dict[str, Any] | None = None
 # 地址库巡检：调度器每 30 秒推进一个地址（≈每地址 1~2 次请求，卡在 5 次/分钟以内）。
 WATCH_TICK_SECONDS = 30
 # 本地索引定期自动扫描：默认每 5 分钟扫 16 个新块，不消耗 API 额度。
@@ -64,6 +67,7 @@ async def _auto_sync_exchanges() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    global BUILTIN_STARTUP_RESULT
     DATABASE.initialize()
     # 外发包自带的预置地址库（app/seed_books/*.txt，文件名即标签组名）：
     # 第一次启动时装进已知地址库，装过就记在 seed_books 表里不再重复导入。
@@ -76,7 +80,15 @@ async def lifespan(_app: FastAPI):
     # 地址库，升级后新增的地址自动生效，不依赖 Taostats 是否配置了 key。
     try:
         if BUILTIN_ADDRESSES_ENABLED:
-            SERVICE.ensure_builtin_addresses()
+            BUILTIN_STARTUP_RESULT = SERVICE.ensure_builtin_addresses()
+            # 启动时打一行到控制台：远端只改了代码没重启时，这行不会出现。
+            snapshot_count = diagnostics.snapshot_status()["count"]
+            print(
+                f"[builtin] 版本 {VERSION_INFO['version']} 预置验证者 {snapshot_count} 条；"
+                f"本次启动新增 {BUILTIN_STARTUP_RESULT['inserted']} 条、补标记 "
+                f"{BUILTIN_STARTUP_RESULT['updated']} 条",
+                file=sys.stderr,
+            )
     except Exception as exc:  # noqa: BLE001 - 内置名单写入失败不应拦住服务启动
         print(f"[builtin] 内置固定名单写入失败：{exc}", file=sys.stderr)
     # 上次保存过 Taostats key 就自动装回内存，避免每次重启都要重填。
@@ -430,6 +442,9 @@ def home():
 @app.get("/api/health")
 def health(svc: Annotated[LinkService, Depends(service)]):
     status = license_mod.status()
+    # 预置名单是判断「新版本是否真的生效」的最快依据：
+    # 远端只 pull 代码没重启时，这里会一直显示 0 条。
+    snapshot = diagnostics.snapshot_status()
     return {
         "ok": True,
         "service": "bittensor-wallet-link-intel",
@@ -441,7 +456,28 @@ def health(svc: Annotated[LinkService, Depends(service)]):
         # 把整个文件夹拷到别的磁盘再启动时，端口若被原副本占用，启动脚本据此提示换端口。
         "pid": os.getpid(),
         "root": str(ROOT_DIR),
+        "started_at": diagnostics.STARTED_AT.isoformat(timespec="seconds"),
+        "validator_snapshot": snapshot["count"],
+        "validator_snapshot_mtime": snapshot["mtime"],
     }
+
+
+@app.get("/api/diagnose")
+def diagnose(svc: Annotated[LinkService, Depends(service)]):
+    """环境自检：版本 / 预置名单文件 / 落库情况 / API key，一屏定位问题。"""
+
+    return diagnostics.build_report(
+        DATABASE,
+        # 磁盘上的版本 vs 进程内的版本：不一致说明代码更新了但没重启。
+        version=read_version_info()["version"],
+        running_version=VERSION_INFO["version"],
+        root=ROOT_DIR,
+        db_path=DATABASE.path,
+        taostats_configured=taostats_is_configured(),
+        startup_builtin=BUILTIN_STARTUP_RESULT,
+        # 界面上会重复点，给 5 秒缓存；管理端改了地址库也能很快看到。
+        cache_ttl=5.0,
+    )
 
 
 @app.get("/api/license")
@@ -462,9 +498,19 @@ def license_activate(payload: LicenseActivateInput):
 
 @app.get("/api/version")
 def version_info():
-    """Return the version and structured release notes shown in the UI."""
+    """Return the version and structured release notes shown in the UI.
 
-    return read_version_info()
+    ``version`` 是**磁盘上** VERSION 文件的内容，``running_version`` 是**当前进程**
+    开始运行时的版本。只 git pull 不重启服务时两者会不一样——这种情况以前
+    完全看不出来：页面照旧显示新版本号，功能却还是旧的，于是「升级了但预置
+    名单还是没出现」。这里把差异明确回报给前端。
+    """
+
+    disk = read_version_info()
+    running = VERSION_INFO["version"]
+    disk["running_version"] = running
+    disk["stale"] = str(disk["version"]) != str(running)
+    return disk
 
 
 @app.get("/api/overview")

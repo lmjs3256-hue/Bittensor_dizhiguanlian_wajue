@@ -42,6 +42,7 @@ if (-not (Test-Path -LiteralPath $Python)) {
 
 $portOwner = $null
 $serviceHere = $false
+$restartNeeded = $false
 try {
     $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
     if ($health.service -eq 'bittensor-wallet-link-intel') {
@@ -49,13 +50,67 @@ try {
         $runningRoot = ''
         if ($null -ne $health.root) { $runningRoot = ([string]$health.root).TrimEnd('\') }
         if ($runningRoot -ieq $Root.TrimEnd('\')) {
-            "Service is already running at http://127.0.0.1:$Port"
-            exit 0
+            # 同一个目录已经在跑：不能简单当成"已启动"直接退出。git pull 更新代码后
+            # 用户双击的正是这个脚本，旧进程还在跑，新代码永远不生效——页面上的版本号
+            # 读的是磁盘 VERSION 文件，于是显示新版本、功能却还是旧的，极难排查。
+            # 这里比对进程版本和磁盘版本，不一致就先停掉再启动。
+            $diskVersion = ''
+            $versionFile = Join-Path $Root 'VERSION'
+            if (Test-Path -LiteralPath $versionFile) {
+                $diskVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+            }
+            $runningVersion = ''
+            if ($null -ne $health.version) { $runningVersion = ([string]$health.version).Trim() }
+            if ($diskVersion -and $runningVersion -and ($diskVersion -ne $runningVersion)) {
+                Write-Host "检测到代码已更新：运行中 $runningVersion → 磁盘 $diskVersion"
+                Write-Host "正在重启服务以加载新版本…"
+                $restartNeeded = $true
+            } else {
+                "Service is already running at http://127.0.0.1:$Port"
+                exit 0
+            }
+        } elseif ($runningRoot) {
+            $portOwner = $runningRoot
+        } else {
+            $portOwner = '另一个副本（旧版本，没有目录信息）'
         }
-        if ($runningRoot) { $portOwner = $runningRoot } else { $portOwner = '另一个副本（旧版本，没有目录信息）' }
     }
 } catch {
     # Not running yet.
+}
+
+if ($restartNeeded) {
+    # 注意：不能 `& stop.ps1`——那个脚本里用了 exit，被调用时会把当前会话一起结束。
+    # 这里就地停：先按 pid 文件（最准），再按端口兜底，只处理 python 进程。
+    $stopped = $false
+    if (Test-Path -LiteralPath $PidFile) {
+        $rawPid = (Get-Content -LiteralPath $PidFile -Raw -ErrorAction SilentlyContinue)
+        $oldPid = 0
+        if ($null -ne $rawPid -and [int]::TryParse($rawPid.Trim(), [ref]$oldPid)) {
+            $old = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+            if ($old -and $old.ProcessName -like 'python*') {
+                Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
+                $stopped = $true
+            }
+        }
+        Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $stopped) {
+        $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($conn) {
+            $owner = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+            if ($owner -and $owner.ProcessName -like 'python*') {
+                Stop-Process -Id $owner.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    # 等端口真正释放：Windows 上进程退出到端口可绑之间有短暂延迟。
+    $releaseDeadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $releaseDeadline) {
+        if (Test-PortFree $Port) { break }
+        Start-Sleep -Milliseconds 300
+    }
+    $serviceHere = $false
 }
 
 if (-not $serviceHere -and -not (Test-PortFree $Port)) {
