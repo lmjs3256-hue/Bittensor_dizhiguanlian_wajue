@@ -40,6 +40,17 @@ DATABASE = Database(database_path())
 VERSION_INFO = read_version_info()
 # 预置地址库只在真实启动时导入；测试里换成临时库后关掉，避免污染用例数据。
 SEED_BOOKS_ENABLED = True
+# 官方交易所名单默认导入：每次启动在后台静默同步一次（有 key 才发请求）。
+AUTO_EXCHANGE_SYNC_ENABLED = True
+
+
+async def _auto_sync_exchanges() -> None:
+    """启动后台同步官方交易所名单，失败只记状态，不打扰启动。"""
+
+    try:
+        await asyncio.to_thread(SERVICE.auto_sync_exchange_addresses)
+    except Exception as exc:  # noqa: BLE001 - 后台同步失败不影响服务
+        print(f"[exchange-sync] 官方交易所名单同步失败：{exc}", file=sys.stderr)
 
 
 @asynccontextmanager
@@ -58,14 +69,22 @@ async def lifespan(_app: FastAPI):
         if saved_key:
             configure_taostats_api_key(saved_key)
     scheduler = asyncio.create_task(_job_scheduler())
+    exchange_sync = (
+        asyncio.create_task(_auto_sync_exchanges()) if AUTO_EXCHANGE_SYNC_ENABLED else None
+    )
     try:
         yield
     finally:
         scheduler.cancel()
-        try:
-            await scheduler
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 关闭时不再关心
-            pass
+        if exchange_sync is not None:
+            exchange_sync.cancel()
+        for task in (scheduler, exchange_sync):
+            if task is None:
+                continue
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 关闭时不再关心
+                pass
 
 
 app = FastAPI(
@@ -759,6 +778,20 @@ def import_exchange_addresses(svc: Annotated[LinkService, Depends(service)]):
         raise HTTPException(429, str(exc)) from exc
     except TaostatsUnavailableError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/library/exchange-sync")
+def exchange_sync_status(svc: Annotated[LinkService, Depends(service)]):
+    """官方交易所名单同步状态：官方条数、最近同步时间、待提示的新增地址。"""
+
+    return svc.exchange_sync_status()
+
+
+@app.post("/api/library/exchange-sync/ack")
+def exchange_sync_ack(svc: Annotated[LinkService, Depends(service)]):
+    """前端已提示过新增地址，清掉待提示列表，避免每次刷新都弹。"""
+
+    return svc.acknowledge_exchange_notice()
 
 
 @app.post("/api/notes")

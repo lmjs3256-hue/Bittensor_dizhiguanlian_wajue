@@ -201,3 +201,25 @@ def clear_api_key() -> None:
         return
     data.pop(_SECRET_FIELD, None)
     _write(data)
+
+
+# -- 官方交易所名单同步状态 ------------------------------------------------
+_EXCHANGE_SYNC_FIELD = "exchange_sync"
+
+
+def load_exchange_sync_state() -> dict[str, Any]:
+    """读取官方交易所名单的最近同步状态（时间、新增地址、待提示列表）。
+
+    这不是机密信息，和 key 放在同一个 settings.json 里，随文件一起搬到
+    别的电脑也能看出上次同步到哪一步。
+    """
+
+    state = _read().get(_EXCHANGE_SYNC_FIELD)
+    return dict(state) if isinstance(state, dict) else {}
+
+
+def save_exchange_sync_state(state: dict[str, Any]) -> bool:
+    data = _read()
+    data["version"] = 1
+    data[_EXCHANGE_SYNC_FIELD] = dict(state or {})
+    return _write(data)

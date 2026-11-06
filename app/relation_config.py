@@ -137,6 +137,8 @@ class RelationResult:
     role_reason: str = ""
     exchange_confirmed: bool = False
     exchange_rejected: bool = False
+    # 官方交易所名单同步来的地址：判定固定，前端不给改判入口。
+    exchange_locked: bool = False
     stake_transfer_count: int = 0
     # 从起始地址到该关联地址的逐笔转账路径（BFS 最短跳数路径），
     # 每项含 tx_hash、时间、金额，以及按起始地址方向整理好的

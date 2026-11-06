@@ -342,11 +342,39 @@ async function clearTaostatsKey() {
 }
 
 // 交易所人工结论：确认 / 否定 / 重置三态都能改，判错了随时可以改回来。
+// 官方交易所名单（系统同步）来的地址判定固定，只显示锁定标记，不给改判入口。
+function isOfficialExchangeRow(row) {
+  if (row && row.exchange_locked) return true;
+  const source = String((row && (row.library_source || row.source)) || "");
+  return source.startsWith("taostats:");
+}
+
+// 交易所身份可能追加在多分类里（例如「大V + EXCHANGE」），不只看主分类。
+function isLibraryExchangeRow(row) {
+  const names = [row.category, ...(row.categories || [])]
+    .map((value) => String(value || "").toUpperCase());
+  return names.includes("EXCHANGE");
+}
+
+function librarySourceCell(row) {
+  if (row.exchange_locked) {
+    return `<span class="tag" title="来源：${esc(row.source || "")}">官方交易所名单</span>`;
+  }
+  return esc(row.source || "-");
+}
+
 function exchangeDecisionControl(row) {
-  const tracked = String(row.library_category || "").toUpperCase() === "EXCHANGE";
+  const categoryNames = [row.library_category, ...(row.library_categories || [])]
+    .map((value) => String(value || "").toUpperCase());
+  const tracked = categoryNames.includes("EXCHANGE");
   const rejected = tracked && Boolean(row.exchange_rejected);
   const confirmed = tracked && Boolean(row.exchange_confirmed) && !rejected;
   const address = esc(row.address);
+  // 官方名单同步来的地址判定固定：放在最前面判断，避免“大V + EXCHANGE”
+  // 这种主分类不是 EXCHANGE 的地址漏出“标为交易所”按钮。
+  if (isOfficialExchangeRow(row)) {
+    return `<div class="exchange-decision"><span class="tag" title="来自官方交易所名单（系统同步），判定固定，不能人工改判">官方交易所 · 不可改判</span></div>`;
+  }
   const btn = (decision, text, title, css = "ghost") =>
     `<button class="${css} note-save" data-exchange-decision="${decision}" data-address="${address}" title="${esc(title)}" type="button">${text}</button>`;
   const reset = btn("reset", "重置为待确认", "清除人工结论，回到“疑似交易所（待确认）”");
@@ -1101,9 +1129,16 @@ function addressLink(address, text) {
 
 function libraryRowsTable(rows) {
   const rowsHtml = rows.map((row) => {
-    const exchangeControl = row.category === "EXCHANGE"
-      ? `<div class="exchange-confirm-control"><span class="tag ${row.exchange_confirmed ? "" : "warn"}">${row.exchange_confirmed ? "已人工确认" : row.exchange_rejected ? "已人工否定" : "待人工确认"}</span>${row.exchange_confirmed ? `<button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" title="判错了？改成否定，该地址不再进入交易所过滤" type="button">改为否定</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" title="清除人工结论，回到待确认" type="button">重置</button>` : row.exchange_rejected ? `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" title="判错了？改成确认为交易所" type="button">改为交易所</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" title="清除人工结论，回到待确认" type="button">重置</button>` : `<button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button>`}</div>`
-      : "";
+    // 官方名单同步来的交易所：判定固定，不给「改为否定 / 重置」入口。
+    const exchangeControl = !isLibraryExchangeRow(row)
+      ? ""
+      : row.exchange_locked
+        ? `<div class="exchange-confirm-control"><span class="tag" title="来自官方交易所名单（系统同步），判定固定，不能人工改判">官方交易所 · 不可改判</span></div>`
+        : row.exchange_confirmed
+          ? `<div class="exchange-confirm-control"><span class="tag">已人工确认</span><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" title="判错了？改成否定，该地址不再进入交易所过滤" type="button">改为否定</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" title="清除人工结论，回到待确认" type="button">重置</button></div>`
+          : row.exchange_rejected
+            ? `<div class="exchange-confirm-control"><span class="tag warn">已人工否定</span><button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" title="判错了？改成确认为交易所" type="button">改为交易所</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" title="清除人工结论，回到待确认" type="button">重置</button></div>`
+            : `<div class="exchange-confirm-control"><span class="tag warn">待人工确认</span><button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button></div>`;
     const bookCell = row.book ? `<span class="tag">${esc(row.book)}</span>` : "-";
     const categories = (row.categories && row.categories.length ? row.categories : [row.category]).filter(Boolean);
     // 「交易所（系统）/验证者（系统）」标签本身已写明系统分类，避免再并列一个「系统」标签。
@@ -1122,7 +1157,7 @@ function libraryRowsTable(rows) {
       <td class="library-label-cell">${labelCell}</td>
       <td><div class="category-chips">${chips}</div>${exchangeControl}</td>
       <td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td>
-      <td>${bookCell}</td><td>${esc(row.source || "-")}</td>
+      <td>${bookCell}</td><td>${librarySourceCell(row)}</td>
       <td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td>
     </tr>${editorRow}`;
   }).join("");
@@ -1805,6 +1840,7 @@ async function loadLibrary() {
     updateLibrarySelection();
     updateUndoButton();
     updateSeedButton();
+    refreshExchangeSyncStatus();
   } catch (error) { toast(error.message, true); }
 }
 
@@ -2279,6 +2315,17 @@ async function uploadLibrary(file) {
   finally { $("#library-file").value = ""; }
 }
 
+// 把「新增了哪些官方交易所地址」拼成人能读的一行：名称（地址后四位）。
+function describeExchangeAddresses(items, limit = 6) {
+  const list = (items || []).filter((item) => item && item.address);
+  const shown = list.slice(0, limit).map((item) => {
+    const name = String(item.label || "").trim() || "未命名";
+    return `${name}（${shortAddr(item.address)}）`;
+  });
+  const rest = list.length - shown.length;
+  return `${shown.join("、")}${rest > 0 ? ` 等 ${list.length} 个` : ""}`;
+}
+
 async function syncExchangeLibrary() {
   const button = $("#sync-exchanges");
   button.disabled = true;
@@ -2286,14 +2333,57 @@ async function syncExchangeLibrary() {
   try {
     const data = await api("/api/library/import-exchanges", { method: "POST" });
     await loadLibrary();
+    await refreshExchangeSyncStatus();
+    const added = data.inserted_addresses || [];
+    const locked = data.locked_addresses || [];
     const cacheText = data.from_cache ? "（使用 5 分钟内缓存）" : "";
-    toast(`交易所地址同步完成：新增 ${data.inserted}，更新 ${data.updated}，跳过 ${data.skipped}，共识别 ${data.provider_count} 个${cacheText}。`);
+    const parts = [];
+    if (added.length) parts.push(`新增 ${added.length} 个：${describeExchangeAddresses(added)}`);
+    if (locked.length) parts.push(`另有 ${locked.length} 个已有地址补上了官方交易所标记`);
+    if (!added.length && !locked.length) parts.push("没有新增官方交易所地址，名单已是最新");
+    toast(`官方交易所同步完成：${parts.join("；")}。名单共 ${data.official_total ?? 0} 个${cacheText}。`);
+    if (added.length || locked.length) await api("/api/library/exchange-sync/ack", { method: "POST" });
   } catch (error) {
     toast(`交易所地址同步失败：${error.message}`, true);
   } finally {
     button.disabled = false;
     button.textContent = "同步官方交易所地址";
   }
+}
+
+// 官方交易所名单默认导入：服务启动时后台同步一次，这里只负责显示状态和提示新增。
+async function refreshExchangeSyncStatus() {
+  const label = $("#exchange-sync-status");
+  try {
+    const data = await api("/api/library/exchange-sync");
+    if (label) {
+      const when = data.synced_at ? historyTime(data.synced_at) : "尚未同步";
+      const err = data.error ? ` · 上次失败：${data.error}` : "";
+      label.textContent = `官方交易所：${data.official_total || 0} 个 · 最近同步 ${when}${err}`;
+    }
+    return data;
+  } catch (_) {
+    if (label) label.textContent = "官方交易所：状态读取失败";
+    return null;
+  }
+}
+
+async function checkExchangeSyncNotice() {
+  const data = await refreshExchangeSyncStatus();
+  if (!data || !data.notify) return;
+  const pending = data.pending || [];
+  if (!pending.length) return;
+  // 新增的排在前面提示；已存在但补了标记的只报数量，避免一次弹太长。
+  const inserted = new Set((data.last_inserted || []).map((item) => item.address));
+  const added = pending.filter((item) => inserted.has(item.address));
+  const relabeled = pending.length - added.length;
+  const parts = [];
+  if (added.length) parts.push(`新增 ${added.length} 个官方交易所地址：${describeExchangeAddresses(added)}`);
+  if (relabeled > 0) parts.push(`${relabeled} 个已有地址已锁定为官方交易所`);
+  toast(`官方交易所名单已自动导入（${parts.join("；")}）。官方地址判定固定，不能人工改判。`);
+  try {
+    await api("/api/library/exchange-sync/ack", { method: "POST" });
+  } catch (_) { /* 提示失败不影响使用，下次再提示 */ }
 }
 
 // -- 查询记录（历史结果） -------------------------------------------------
@@ -3070,12 +3160,14 @@ function selectExportableAddresses(rows) {
   let skippedExchange = 0;
   let skippedValidator = 0;
   for (const row of rows || []) {
-    const category = String(row.library_category || "").toUpperCase();
-    if (category === "EXCHANGE" && row.exchange_confirmed && !row.exchange_rejected) {
+    // 交易所/验证者身份可能在多分类里（官方名单追加的 EXCHANGE），按全集判断。
+    const names = [row.library_category, ...(row.library_categories || [])]
+      .map((value) => String(value || "").toUpperCase());
+    if (names.includes("EXCHANGE") && row.exchange_confirmed && !row.exchange_rejected) {
       skippedExchange += 1;
       continue;
     }
-    if (category === "VALIDATOR") {
+    if (names.includes("VALIDATOR")) {
       skippedValidator += 1;
       continue;
     }
@@ -3137,4 +3229,5 @@ $("#copy-machine").addEventListener("click", async () => {
   loadOverview();
   loadVersionInfo();
   loadCategories();
+  checkExchangeSyncNotice();
 })();

@@ -211,9 +211,12 @@ button.danger:not(:disabled):hover { border-color:var(--danger); }
 @media (max-width:560px) { .sync-panel .section-title small { text-align:left; } .sync-row label, .sync-row button { flex:1 1 100%; } .history-pager { justify-content:space-between; } }
 .mono,td.mono { font-family:var(--mono); }
 td.address code { word-break:break-all; }
-.library-top { display:flex; justify-content:space-between; gap:24px; align-items:end; }
+.library-top { display:flex; justify-content:space-between; gap:24px; align-items:end; flex-wrap:wrap; }
 .library-top > div:first-child { max-width:700px; }
-@media (max-width:950px) { .library-top { display:block; } .library-top .inline-form { margin-top:14px; } }
+.library-top .inline-form { flex:1 1 640px; }
+/* 官方交易所名单的同步状态：一行小字，跟着「同步官方交易所地址」按钮走 */
+#exchange-sync-status { display:block; margin-top:8px; text-align:right; color:var(--muted); font-size:12px; line-height:1.6; }
+@media (max-width:950px) { .library-top { display:block; } .library-top .inline-form { margin-top:14px; } #exchange-sync-status { text-align:left; } }
 
 /* 查询记录的批量补录：旧版本结果没落库，只能按地址重跑 */
 .backfill-panel #backfill-seeds { width:100%; min-height:96px; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--ink); font:12.5px/1.7 var(--mono); resize:vertical; }

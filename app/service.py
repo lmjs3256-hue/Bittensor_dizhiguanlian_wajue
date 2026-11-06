@@ -35,6 +35,7 @@ from .db import (
 )
 from . import license as license_mod
 from . import interlink
+from . import settings_store
 from .inputs import InputError, parse_plain_addresses, read_addresses
 from .relation import discover, exchange_balance_candidates
 from .relation_config import LibraryEntry, LinkPolicy
@@ -47,6 +48,7 @@ from .taostats import (
     get_exchange_addresses,
     get_stake_transfer_page,
     get_transfer_page,
+    is_configured as taostats_is_configured,
 )
 from .validation import is_valid_ss58
 
@@ -85,6 +87,34 @@ DEFAULT_CATEGORY = "其他"
 CATEGORY_NAME_MAX_LENGTH = 12
 BOOK_NAME_MAX_LENGTH = 60
 MAX_BOOK_ADDRESSES = 5000
+# 官方交易所名单的唯一来源标记。带这个前缀的记录来自系统同步，判定固定，
+# 只有人工判定的交易所（source 为 manual:*）才允许再改判。
+OFFICIAL_EXCHANGE_SOURCE = "taostats:/v1/exchange-addresses"
+OFFICIAL_EXCHANGE_SOURCE_PREFIX = "taostats:"
+OFFICIAL_EXCHANGE_LABEL = "官方交易所"
+
+
+def is_official_exchange_source(source: str | None) -> bool:
+    """来源是否为官方交易所名单同步（这类记录的交易所结论不允许人工改判）。"""
+
+    return str(source or "").strip().startswith(OFFICIAL_EXCHANGE_SOURCE_PREFIX)
+
+
+def row_has_category(row: AddressLibrary, name: str) -> bool:
+    """分类判断走「全部分类」，不只看主分类。
+
+    官方地址可能是“大V + EXCHANGE”并存：主分类留给用户维护，交易所身份
+    追加在多分类字段里，所以这里必须看 ``row_categories``。
+    """
+
+    target = str(name or "").upper()
+    return any(str(item).upper() == target for item in row_categories(row))
+
+
+def is_official_exchange_row(row: AddressLibrary) -> bool:
+    return is_official_exchange_source(getattr(row, "source", "")) and row_has_category(
+        row, "EXCHANGE"
+    )
 
 
 def normalize_category(value: str | None, *, allow_system: bool = True) -> str:
@@ -296,6 +326,7 @@ def library_group_key(row: AddressLibrary) -> tuple[str, str]:
 
 def address_dict(row: AddressLibrary) -> dict[str, Any]:
     label = row.label.strip()
+    official = is_official_exchange_row(row)
     return {
         "id": row.id,
         "address": row.address,
@@ -311,6 +342,9 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
         "book": getattr(row, "book", "") or "",
         "exchange_confirmed": bool(row.exchange_confirmed),
         "exchange_rejected": bool(row.exchange_rejected),
+        # 官方名单同步来的交易所：判定固定，界面不给改判入口，接口也会拒绝。
+        "exchange_locked": official,
+        "exchange_source": "official" if official else "",
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -342,15 +376,18 @@ def select_exportable_addresses(
             if row_depth != int(depth):
                 skipped_other_depth += 1
                 continue
-        category = str(row.get("library_category") or "").upper()
+        row_category_list = [
+            str(value).upper()
+            for value in [row.get("library_category") or "", *(row.get("library_categories") or [])]
+        ]
         if (
-            category == "EXCHANGE"
+            "EXCHANGE" in row_category_list
             and row.get("exchange_confirmed")
             and not row.get("exchange_rejected")
         ):
             skipped_exchange += 1
             continue
-        if category == "VALIDATOR":
+        if "VALIDATOR" in row_category_list:
             skipped_validator += 1
             continue
         categories = [str(value) for value in (row.get("library_categories") or [])]
@@ -495,6 +532,9 @@ class LinkService:
                     continue
                 snapshot = _library_row_snapshot(current)
                 changed = False
+                # 官方名单同步来的交易所结论是固定的：导入、备份还原、改分类
+                # 都不能把交易所身份冲掉，也不能改判成“待确认/已否定”。
+                locked_exchange = is_official_exchange_row(current)
                 incoming_book = str(row.get("book") or "").strip()
                 if incoming_book and not current.book:
                     current.book = incoming_book[:BOOK_NAME_MAX_LENGTH]
@@ -510,10 +550,13 @@ class LinkService:
                     current.category = category
                     current.categories = encode_categories(merged)
                     changed = True
-                elif row.get("categories"):
+                    # 主分类被改掉时把交易所身份补回去。
+                    if locked_exchange and not row_has_category(current, "EXCHANGE"):
+                        current.categories = encode_categories([*row_categories(current), "EXCHANGE"])
+                elif row.get("categories") and not locked_exchange:
                     current.categories = encode_categories(categories)
                     changed = True
-                if current.category == "EXCHANGE":
+                if row_has_category(current, "EXCHANGE") and not locked_exchange:
                     rejected = bool(row.get("exchange_rejected", current.exchange_rejected))
                     confirmed = bool(row.get("exchange_confirmed", current.exchange_confirmed))
                     if rejected:
@@ -525,7 +568,11 @@ class LinkService:
                         current.exchange_rejected = rejected
                         changed = True
                 incoming_source = row.get("source", "")
-                if incoming_source and incoming_source.startswith("taostats:"):
+                if (
+                    incoming_source
+                    and incoming_source.startswith("taostats:")
+                    and not locked_exchange
+                ):
                     if current.source != incoming_source:
                         current.source = incoming_source
                         changed = True
@@ -643,6 +690,20 @@ class LinkService:
                     inserted.append(address)
                     continue
                 current_group = library_group_key(current)
+                # 官方名单同步来的地址：可以继续待在原来的组里，但不接受改判
+                # （「人工确认/否定交易所」这类带结论的组直接拒绝）。
+                if is_official_exchange_row(current) and (force_confirmed or force_rejected):
+                    skipped += 1
+                    conflicts.append(
+                        {
+                            "address": address,
+                            "group": current_group[1],
+                            "kind": current_group[0],
+                            "locked": True,
+                            "reason": "官方交易所地址，判定已固定",
+                        }
+                    )
+                    continue
                 if current_group == target:
                     # 本来就在这一组：重复贴进来不算错，静默算作跳过。
                     skipped += 1
@@ -679,8 +740,11 @@ class LinkService:
                 # 目标组带分类时同步分类（前端会把组的主分类一起传上来）；
                 # 自建库/标签组的分类不动原记录的情况只在没传分类时发生。
                 if group_category:
+                    merged_categories = [group_category]
+                    if is_official_exchange_row(current):
+                        merged_categories.append("EXCHANGE")
                     current.category = group_category
-                    current.categories = encode_categories([group_category])
+                    current.categories = encode_categories(merged_categories)
                 if force_confirmed or force_rejected:
                     current.exchange_confirmed = force_confirmed
                     current.exchange_rejected = force_rejected
@@ -1121,6 +1185,10 @@ class LinkService:
             current = db.get(AddressLibrary, row_id)
             if current is None:
                 raise InputError("address not found")
+            if is_official_exchange_row(current):
+                raise InputError(
+                    "该地址来自官方交易所名单（系统同步），分类与判定都已固定，不能人工修改"
+                )
             for name in values:
                 self._ensure_category(db, name)
             current.category = values[0]
@@ -1189,8 +1257,12 @@ class LinkService:
             current = db.get(AddressLibrary, row_id)
             if current is None:
                 raise InputError("address not found")
-            if current.category != "EXCHANGE":
+            if not row_has_category(current, "EXCHANGE"):
                 raise InputError("只有 EXCHANGE 分类地址可以确认交易所身份")
+            if is_official_exchange_row(current):
+                raise InputError(
+                    "该地址来自官方交易所名单（系统同步），判定已固定，不能人工改判"
+                )
             if decision not in {"confirm", "reject", "reset"}:
                 raise InputError("交易所状态只能是 confirm、reject 或 reset")
             current.exchange_confirmed = decision == "confirm"
@@ -1217,6 +1289,11 @@ class LinkService:
                 raise InputError("交易所状态只能是 confirm、reject 或 reset")
             if current is None and decision == "reset":
                 return {"saved": True, "item": None}
+            # 官方名单同步来的地址判定固定：不改判、不改名、不改分类。
+            if current is not None and is_official_exchange_row(current):
+                raise InputError(
+                    "该地址来自官方交易所名单（系统同步），判定已固定，不能人工改判"
+                )
             # 人工改判（确认 ↔ 否定）时不要把人给这一组起的名字冲掉：
             # 只有空名或系统自动写的“人工确认/否定交易所”才用默认名替换。
             auto_labels = {"", "人工确认交易所", "人工否定交易所"}
@@ -1266,7 +1343,18 @@ class LinkService:
         return self.decide_exchange_address(address, "confirm", label)
 
     def sync_exchange_addresses(self) -> dict[str, Any]:
-        """Import the provider's public exchange directory into the library."""
+        """把官方交易所名单导进地址库（只增不改人工内容）。
+
+        规则：
+
+        - 名单里没见过的地址 → 新增一条 ``EXCHANGE`` 记录，锁定为官方判定；
+        - 已经在库里的地址 → 保留原主分类、名称、备注、所属地址库，只把
+          「EXCHANGE」补进多分类并锁定判定（官方名单为准，人工否定也覆盖）；
+        - 官方名单里已经没有的地址不会被删掉，避免误删用户整理好的数据。
+
+        返回值里带 ``inserted_addresses`` / ``locked_addresses``，前端据此提示
+        “这次到底新增了哪个地址”。
+        """
 
         try:
             rows, from_cache = get_exchange_addresses()
@@ -1280,34 +1368,183 @@ class LinkService:
             raise
         if not from_cache:
             self.database.record_api_request("/v1/exchange-addresses", success=True)
-        source = "taostats:/v1/exchange-addresses"
-        valid_rows: list[dict[str, str]] = []
+        source = OFFICIAL_EXCHANGE_SOURCE
+        valid: dict[str, str] = {}
         invalid_count = 0
         for row in rows:
-            address = row.get("address", "").strip()
+            address = str(row.get("address") or "").strip()
             if not is_valid_ss58(address):
                 invalid_count += 1
                 continue
-            valid_rows.append(
-                {
-                    "address": address,
-                    "category": "EXCHANGE",
-                    "label": row.get("name", "").strip(),
-                    "note": "",
-                    "source": source,
-                    "exchange_confirmed": True,
-                }
-            )
-        result: dict[str, Any] = self.import_rows(valid_rows, source)
-        result.update(
+            valid.setdefault(address, str(row.get("name") or "").strip())
+
+        inserted_addresses: list[dict[str, str]] = []
+        locked_addresses: list[dict[str, str]] = []
+        skipped = 0
+        with self.database.session() as db:
+            addresses = list(valid)
+            existing: dict[str, AddressLibrary] = {}
+            for index in range(0, len(addresses), 400):
+                chunk = addresses[index : index + 400]
+                for row in db.scalars(
+                    select(AddressLibrary).where(AddressLibrary.address.in_(chunk))
+                ).all():
+                    existing[row.address] = row
+            for address, name in valid.items():
+                current = existing.get(address)
+                if current is None:
+                    db.add(
+                        AddressLibrary(
+                            address=address,
+                            label=name,
+                            category="EXCHANGE",
+                            categories=encode_categories(["EXCHANGE"]),
+                            note="",
+                            source=source,
+                            exchange_confirmed=True,
+                            exchange_rejected=False,
+                        )
+                    )
+                    inserted_addresses.append(
+                        {"address": address, "label": name or default_address_label(address)}
+                    )
+                    continue
+                changed = False
+                if not row_has_category(current, "EXCHANGE"):
+                    # 主分类保持用户原来的（大V / 群友 / 其他…），交易所身份
+                    # 追加进多分类，别把用户整理好的分类冲掉。
+                    merged = [*row_categories(current), "EXCHANGE"]
+                    current.categories = encode_categories(merged)
+                    changed = True
+                if current.source != source:
+                    current.source = source
+                    changed = True
+                if not current.exchange_confirmed or current.exchange_rejected:
+                    current.exchange_confirmed = True
+                    current.exchange_rejected = False
+                    changed = True
+                if not current.label.strip() and name:
+                    current.label = name
+                    changed = True
+                if changed:
+                    locked_addresses.append(
+                        {
+                            "address": address,
+                            "label": current.label.strip() or name or default_address_label(address),
+                        }
+                    )
+                else:
+                    skipped += 1
+        synced_at = utcnow().isoformat()
+        result = {
+            "inserted": len(inserted_addresses),
+            "updated": len(locked_addresses),
+            "skipped": skipped,
+            "inserted_addresses": inserted_addresses,
+            "locked_addresses": locked_addresses,
+            "official_total": len(valid),
+            "provider_count": len(rows),
+            "invalid_count": invalid_count,
+            "from_cache": from_cache,
+            "source": source,
+            "synced_at": synced_at,
+        }
+        # 同步状态落盘：地址库页显示“最近同步 + 官方条数”，开机后也能提示
+        # 这次到底新增了哪个地址。
+        settings_store.save_exchange_sync_state(
             {
-                "provider_count": len(rows),
-                "invalid_count": invalid_count,
-                "from_cache": from_cache,
-                "source": source,
+                "attempted_at": synced_at,
+                "synced_at": synced_at,
+                "ok": True,
+                "error": "",
+                "inserted": inserted_addresses,
+                "locked": locked_addresses,
+                "pending": [*inserted_addresses, *locked_addresses],
+                "notify": bool(inserted_addresses or locked_addresses),
             }
         )
         return result
+
+    def exchange_sync_status(self) -> dict[str, Any]:
+        """官方交易所名单的同步状态：总条数、最近一次同步与待提示的新增地址。"""
+
+        with self.database.session() as db:
+            total = int(
+                db.scalar(
+                    select(func.count(AddressLibrary.id)).where(
+                        AddressLibrary.source == OFFICIAL_EXCHANGE_SOURCE
+                    )
+                )
+                or 0
+            )
+        state = settings_store.load_exchange_sync_state()
+        pending = state.get("pending") or []
+        return {
+            "official_total": total,
+            "synced_at": state.get("synced_at") or "",
+            "ok": bool(state.get("ok", False)),
+            "error": state.get("error") or "",
+            "last_inserted": state.get("inserted") or [],
+            "last_locked": state.get("locked") or [],
+            "pending": pending,
+            "notify": bool(pending) and bool(state.get("notify", True)),
+        }
+
+    def auto_sync_exchange_addresses(self, *, min_interval_minutes: int = 30) -> dict[str, Any]:
+        """启动时静默同步官方名单（每次启动只尝试一次）。
+
+        没有 Taostats key、刚同步过、被限流或网络失败都只记一笔状态，绝不
+        影响服务启动；新增地址留给前端开机时提示。
+        """
+
+        state = settings_store.load_exchange_sync_state()
+        if not taostats_is_configured():
+            return {"status": "skipped", "reason": "no_key"}
+        last = str(state.get("attempted_at") or "")
+        if last and min_interval_minutes > 0:
+            try:
+                attempted = datetime.fromisoformat(last)
+                if attempted.tzinfo is None:
+                    attempted = attempted.replace(tzinfo=timezone.utc)
+                if utcnow() - attempted < timedelta(minutes=min_interval_minutes):
+                    return {"status": "skipped", "reason": "recent"}
+            except ValueError:
+                pass
+        attempted_at = utcnow().isoformat()
+        try:
+            result = self.sync_exchange_addresses()
+        except (TaostatsAuthError, TaostatsRateLimitError, TaostatsUnavailableError) as exc:
+            settings_store.save_exchange_sync_state(
+                {
+                    **state,
+                    "attempted_at": attempted_at,
+                    "synced_at": state.get("synced_at") or "",
+                    "ok": False,
+                    "error": str(exc),
+                    "pending": state.get("pending") or [],
+                }
+            )
+            return {"status": "failed", "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - 后台同步失败不冒泡
+            settings_store.save_exchange_sync_state(
+                {
+                    **state,
+                    "attempted_at": attempted_at,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+            return {"status": "failed", "error": str(exc)}
+        return {"status": "synced", **result}
+
+    def acknowledge_exchange_notice(self) -> dict[str, Any]:
+        """前端已经提示过新增地址，清掉待提示列表。"""
+
+        state = settings_store.load_exchange_sync_state()
+        state["pending"] = []
+        state["notify"] = False
+        settings_store.save_exchange_sync_state(state)
+        return {"ok": True}
 
     # -- 地址库分类：大V / 群友 / 其他 + 自定义 -----------------------------
     def categories(self) -> list[dict[str, Any]]:
@@ -1680,14 +1917,15 @@ class LinkService:
             for address in candidates:
                 row = existing.get(address)
                 if row is not None:
+                    row_category_list = {str(value).upper() for value in row_categories(row)}
                     if (
-                        row.category == "EXCHANGE"
+                        "EXCHANGE" in row_category_list
                         and row.exchange_confirmed
                         and not row.exchange_rejected
                     ):
                         skipped_exchange += 1
                         continue
-                    if row.category == "VALIDATOR":
+                    if "VALIDATOR" in row_category_list:
                         skipped_validator += 1
                         continue
                     if SYSTEM_CLASSIFICATION in row_categories(row):
@@ -2434,13 +2672,19 @@ class LinkService:
 
         # 关联终点交易所：人工确认的 EXCHANGE 分类，或用户分类下标签/备注里
         # 写明「交易所」的地址。它们仍出现在结果里，但不再向下扩展（省额度）。
+        # 官方同步来的地址可能是「大V + EXCHANGE」，所以按全部分类判断。
+        def entry_category_set(entry: LibraryEntry) -> set[str]:
+            return {str(entry.category or "").upper()} | {
+                str(value).upper() for value in entry.categories
+            }
+
         exchange_addresses = {
             entry.address
             for entry in library
             if (
-                entry.category == "EXCHANGE" and entry.exchange_confirmed
+                "EXCHANGE" in entry_category_set(entry) and entry.exchange_confirmed
             ) or (
-                entry.category not in {"EXCHANGE", "VALIDATOR"}
+                not (entry_category_set(entry) & {"EXCHANGE", "VALIDATOR"})
                 and not entry.exchange_rejected
                 and ("交易所" in entry.note or "交易所" in entry.label)
             )
@@ -2448,7 +2692,7 @@ class LinkService:
         confirmed_exchange_addresses = {
             entry.address
             for entry in library
-            if entry.category == "EXCHANGE" and entry.exchange_confirmed
+            if "EXCHANGE" in entry_category_set(entry) and entry.exchange_confirmed
         }
         noted_exchange_addresses = exchange_addresses - confirmed_exchange_addresses
         # 「系统」分类：无论是否勾选过滤，查到即作为关联终点（不再向下扩展）；
@@ -2461,10 +2705,10 @@ class LinkService:
         unconfirmed_exchange_addresses = {
             entry.address
             for entry in library
-            if entry.category == "EXCHANGE" and not entry.exchange_confirmed
+            if "EXCHANGE" in entry_category_set(entry) and not entry.exchange_confirmed
         }
         manual_validator_addresses = {
-            entry.address for entry in library if entry.category == "VALIDATOR"
+            entry.address for entry in library if "VALIDATOR" in entry_category_set(entry)
         }
         auto_validator_addresses: set[str] = set()
         validator_api_requests = 0

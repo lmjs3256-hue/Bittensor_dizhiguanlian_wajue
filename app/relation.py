@@ -124,6 +124,22 @@ def _oriented_path(seed: str, hops: list[TransferRecord]) -> list[dict[str, obje
     return steps
 
 
+def _entry_categories(entry: LibraryEntry) -> set[str]:
+    """一条地址库记录的全部分类（主分类 + 多分类），统一成大写。
+
+    官方交易所可能是「大V + EXCHANGE」并存：主分类留给用户维护，交易所
+    身份追加在多分类里，所以判定必须看全集。
+    """
+
+    values = {str(entry.category or "").upper()}
+    values.update(str(value).upper() for value in entry.categories)
+    return {value for value in values if value}
+
+
+def _entry_has(entry: LibraryEntry, name: str) -> bool:
+    return name.upper() in _entry_categories(entry)
+
+
 def _role_for_address(
     address: str,
     entry: LibraryEntry | None,
@@ -138,14 +154,14 @@ def _role_for_address(
     qualified and never claim ownership or identity.
     """
 
-    if entry and entry.category == "EXCHANGE":
+    if entry and _entry_has(entry, "EXCHANGE"):
         if entry.exchange_rejected:
             return "已人工否定交易所", "用户已人工否定该交易所候选，当前不会进入交易所过滤集合。"
         if entry.exchange_confirmed:
             label = entry.label.strip() or "交易所地址"
             return label, "地址库明确标记为交易所地址。"
         return "疑似交易所（待确认）", "交易所候选尚未人工确认，交易所过滤不可用。"
-    if entry and entry.category == "VALIDATOR":
+    if entry and _entry_has(entry, "VALIDATOR"):
         label = entry.label.strip() or "验证者地址"
         return label, "地址库明确标记为验证者地址。"
 
@@ -297,11 +313,11 @@ def discover(
     for entry in library:
         address = entry.address.strip()
         current = library_map.get(address)
+        entry_system = _entry_categories(entry) & {"EXCHANGE", "VALIDATOR"}
         # 同一地址出现多条记录时，系统分类（交易所/验证者）优先于用户分类，
         # 否则过滤公共地址会失效。
         if current is None or (
-            entry.category in {"EXCHANGE", "VALIDATOR"}
-            and current.category not in {"EXCHANGE", "VALIDATOR"}
+            entry_system and not (_entry_categories(current) & {"EXCHANGE", "VALIDATOR"})
         ):
             library_map[address] = LibraryEntry(
                 address=address,
@@ -321,9 +337,9 @@ def discover(
         address
         for address, entry in library_map.items()
         if (
-            entry.category == "EXCHANGE" and entry.exchange_confirmed
+            _entry_has(entry, "EXCHANGE") and entry.exchange_confirmed
         ) or (
-            entry.category not in {"EXCHANGE", "VALIDATOR"}
+            not (_entry_categories(entry) & {"EXCHANGE", "VALIDATOR"})
             and not entry.exchange_rejected
             and ("交易所" in entry.note or "交易所" in entry.label)
         ) or (
@@ -531,6 +547,11 @@ def discover(
                 role_reason=role_reason,
                 exchange_confirmed=entry.exchange_confirmed if entry else False,
                 exchange_rejected=entry.exchange_rejected if entry else False,
+                exchange_locked=bool(
+                    entry
+                    and str(entry.source or "").startswith("taostats:")
+                    and _entry_has(entry, "EXCHANGE")
+                ),
                 stake_transfer_count=sum(
                     1 for edge in edge_rows if edge.edge_type == "stake_transfer"
                 ),
