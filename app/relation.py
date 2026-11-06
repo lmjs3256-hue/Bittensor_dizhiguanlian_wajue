@@ -197,12 +197,24 @@ def _strength_for(
     return _STRENGTH_LEVELS[tier], score, "；".join(notes) or "无可比金额"
 
 
+def _result_categories(row: RelationResult) -> set[str]:
+    categories = {str(row.library_category or "").upper()}
+    categories.update(str(value).upper() for value in row.library_categories)
+    return {value for value in categories if value}
+
+
 def _is_exchange_result(row: RelationResult) -> bool:
     """结果行是不是「已确认 / 官方锁定」的交易所——排序时永远排最前。"""
 
-    categories = {str(row.library_category or "").upper()}
-    categories.update(str(value).upper() for value in row.library_categories)
-    return "EXCHANGE" in categories and bool(row.exchange_confirmed or row.exchange_locked)
+    return "EXCHANGE" in _result_categories(row) and bool(
+        row.exchange_confirmed or row.exchange_locked
+    )
+
+
+def _is_public_result(row: RelationResult) -> bool:
+    """人工标记的公共地址：与交易所同性质，排在交易所之后、其它地址之前。"""
+
+    return "PUBLIC" in _result_categories(row)
 
 
 def _role_for_address(
@@ -229,6 +241,9 @@ def _role_for_address(
     if entry and _entry_has(entry, "VALIDATOR"):
         label = entry.label.strip() or "验证者地址"
         return label, "地址库明确标记为验证者地址。"
+    if entry and _entry_has(entry, "PUBLIC"):
+        label = entry.label.strip() or "公共地址"
+        return label, "地址库人工标记为公共地址：此类地址会和大量不确定钱包往来，作为关联终点不再向下扩展。"
 
     if exchange_related:
         return (
@@ -379,11 +394,12 @@ def discover(
     for entry in library:
         address = entry.address.strip()
         current = library_map.get(address)
-        entry_system = _entry_categories(entry) & {"EXCHANGE", "VALIDATOR"}
-        # 同一地址出现多条记录时，系统分类（交易所/验证者）优先于用户分类，
-        # 否则过滤公共地址会失效。
+        entry_system = _entry_categories(entry) & {"EXCHANGE", "VALIDATOR", "PUBLIC"}
+        # 同一地址出现多条记录时，系统分类（交易所/验证者/公共地址）优先于
+        # 用户分类，否则过滤公共地址会失效。
         if current is None or (
-            entry_system and not (_entry_categories(current) & {"EXCHANGE", "VALIDATOR"})
+            entry_system
+            and not (_entry_categories(current) & {"EXCHANGE", "VALIDATOR", "PUBLIC"})
         ):
             library_map[address] = LibraryEntry(
                 address=address,
@@ -398,15 +414,17 @@ def discover(
             )
 
     # 关联终点：已人工确认的交易所地址、人工在标签/备注里写明「交易所」的
-    # 地址，以及被分到「系统」分类的地址。它们仍会作为关联地址出现在结果里，
-    # 但不再向下扩展其转账。
+    # 地址、人工标记的公共地址（PUBLIC），以及被分到「系统」分类的地址。
+    # 它们仍会作为关联地址出现在结果里，但不再向下扩展其转账。
+    # 公共地址和交易所同性质：会和大量不确定钱包产生往来，不截止就会把
+    # 结果灌满噪音，也白白消耗 Taostats 请求额度。
     terminal_exchange_addresses = {
         address
         for address, entry in library_map.items()
         if (
             _entry_has(entry, "EXCHANGE") and entry.exchange_confirmed
-        ) or (
-            not (_entry_categories(entry) & {"EXCHANGE", "VALIDATOR"})
+        ) or _entry_has(entry, "PUBLIC") or (
+            not (_entry_categories(entry) & {"EXCHANGE", "VALIDATOR", "PUBLIC"})
             and not entry.exchange_rejected
             and ("交易所" in entry.note or "交易所" in entry.label)
         ) or (
@@ -641,10 +659,11 @@ def discover(
                 path_transfers=path_transfers,
             )
         )
-    # 排序：交易所最前，其次按关联强度（分数高的在前），再按跳数与金额。
+    # 排序：交易所最前，公共地址其次（同属「汇聚型」地址），
+    # 然后按关联强度（分数高的在前），再按跳数与金额。
     related.sort(
         key=lambda row: (
-            0 if _is_exchange_result(row) else 1,
+            0 if _is_exchange_result(row) else (1 if _is_public_result(row) else 2),
             -row.strength_score,
             row.depth,
             -row.total_tao,

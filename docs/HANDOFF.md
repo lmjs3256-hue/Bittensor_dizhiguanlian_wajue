@@ -549,3 +549,23 @@ Set-Location G:\bittensor-wallet-link-intel
 - **验收**：`.probe/measure_forms.py`（新）在 1440/1180/1024/760/420 五档量容器宽度、行数、表格列宽、页面 `overflowX` 与元素越界，
   结果存 `.probe/shots/forms-*.json`；`.probe/measure_layout.py` 量侧栏 `position` 与滚动后的 `top`（应恒为 0）。
   全量 `pytest -q` = **191 passed**（纯前端改动，后端未动）；`node --check app/static/app.js` 通过。
+
+## 36. 2026-11-06 0.7.2 交接：地址库「全部/选中」导出 + 「公共地址」终止查询
+
+- **需求原话**：「导出地址库要可以实现全部导出和选中的地址库导出，我刚才试了下选中导出，实际是全部地址库导出。关键地址除了可以标记为交易所，还要增加一个公共地址，公共地址和交易所性质类似会和不确定钱包产生关联，也要终止查询。」
+- **根因**：原来只有 `GET /api/library/export?format=`，前端 `exportLibrary(format)` 不带任何范围参数，两个按钮（导出 CSV / 导出 JSON）永远导整库，勾选框只是给「删除所选」用的。
+- **导出改造**：新增 `POST /api/library/export`，body `{format, addresses}`；`LinkService.export_library(file_format, addresses=None)` 里 `addresses is None` 才是全库。
+  - 前端 `exportLibrary(scope)`：`all` 仍走 GET；`selected` 走 POST，地址从 `[data-library-select]:checked` 的 id 反查 `state.library`。
+  - `updateLibrarySelection()` 里同步「导出选中 (N)」的 disabled 与文案——**新增选中类操作时记得在同一个函数里挂上**，否则按钮状态会和勾选不同步。
+  - 选中集合为空 / 地址已不在库里 → `InputError`（422），别让它静默退化成导出全库（这正是用户踩到的坑）。
+- **公共地址（PUBLIC）**：写进 `SYSTEM_CATEGORIES`（与 EXCHANGE/VALIDATOR 并列），因此分类下拉、`add_category`、`delete_category`、新建地址库、整组改分类、`seed_address` 都会自动把它当系统分类处理，不用逐处改。
+  - `SYSTEM_CATEGORY_LABELS` 加 `PUBLIC → 公共地址（系统）`，`RESERVED_CATEGORY_NAMES` 加 `PUBLIC`，前端 `categoryLabel()` 同步。
+  - `LinkService.decide_public_address(address, marked)`：**只往多分类追加/移除 PUBLIC，主分类保持用户原样**；新地址标记时主分类才用 PUBLIC。接口 `POST /api/library/mark-public`。
+- **终止规则**：`relation.discover()` 的 `terminal_exchange_addresses` 加 `_entry_has(entry, "PUBLIC")`；`LinkService.new_crawl()` 的 `CrawlState.terminal_exchange_addresses` 加 `context.public_addresses`。
+  两处都要改——只改一处会出现「本地查询截止、Taostats 分轮还在往下爬」的不一致。
+- **过滤**：`prepare_relation_context` 新增 `filter_publics`，与 `filter_systems` 同口径（不勾选=终点保留，勾选=连自己也排除）；链路 main.py 两个 Pydantic 模型 → service → jobs.create → context，一处都不能漏。
+- **排序**：`_is_exchange_result` 抽了 `_result_categories()`，新增 `_is_public_result()`，排序键改为 `0 交易所 / 1 公共地址 / 2 其它`。
+- **角色标签**：`_role_for_address()` 里 PUBLIC 判断放在 EXCHANGE / VALIDATOR 之后，label 为空时显示「公共地址」。
+- **前端**：结果行 `.library-decision-cell` 里「交易所结论 + 公共地址按钮」竖排；地址库行分类单元格里两个控件并排。`decidePublic()` 只在 `#result` 面板可见时才 `renderResult()`，否则在地址库页点按钮会被跳回结果页。
+- **样式**：`.public-tag` 用主题变量 `--warn / --warn-soft`（不要再写死 `#b4761a`，深色主题下会看不清）。
+- **验收**：`.probe/ui_check_072.py`（导出按钮文案/禁用态随勾选变化、`#filter-publics` 存在、每行都有「标为公共地址」）；接口层实测 707 库里勾 2 条导出就是 2 条、文件名 `-selected-2`；`pytest -q` = **197 passed**（新增 `tests/test_public_address.py` 6 条）。

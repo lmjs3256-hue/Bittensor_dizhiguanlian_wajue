@@ -333,6 +333,7 @@ class RelationInput(BaseModel):
     filter_exchanges: bool = False
     filter_validators: bool = False
     filter_systems: bool = False
+    filter_publics: bool = False
     # 手动「移除关联」的地址：不进结果，也不再作为中转跳点（其线索整体剪除）。
     removed_addresses: list[str] = Field(default_factory=list, max_length=100)
 
@@ -347,6 +348,7 @@ class RelationJobInput(BaseModel):
     filter_exchanges: bool = False
     filter_validators: bool = False
     filter_systems: bool = False
+    filter_publics: bool = False
     removed_addresses: list[str] = Field(default_factory=list, max_length=100)
     round_interval_seconds: int | None = Field(default=None, ge=10, le=600)
     max_rounds: int | None = Field(default=None, ge=1, le=100)
@@ -382,6 +384,20 @@ class AddressBookInput(BaseModel):
 
 class CategoryInput(BaseModel):
     name: str = Field(min_length=1, max_length=32)
+
+
+class LibraryExportInput(BaseModel):
+    """按选中地址导出：不传 addresses 时等价于“导出全部”。"""
+
+    format: str = Field(default="csv", pattern="^(csv|json)$")
+    addresses: list[str] = Field(default_factory=list, max_length=5000)
+
+
+class PublicAddressInput(BaseModel):
+    """人工标记 / 取消「公共地址」（与交易所同性质，查到即截止）。"""
+
+    address: str = Field(min_length=1, max_length=64)
+    marked: bool = True
 
 
 class LicenseActivateInput(BaseModel):
@@ -492,6 +508,29 @@ def export_library(
         headers={
             "Content-Disposition": (
                 f'attachment; filename="bittensor-address-library.{format}"'
+            )
+        },
+    )
+
+
+@app.post("/api/library/export")
+def export_selected_library(payload: LibraryExportInput, svc: Annotated[LinkService, Depends(service)]):
+    """导出勾选的地址；``addresses`` 为空时退化成导出全部。"""
+
+    try:
+        content, media_type = svc.export_library(
+            payload.format, payload.addresses or None
+        )
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    count = len(payload.addresses or [])
+    suffix = f"-selected-{count}" if count else ""
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="bittensor-address-library{suffix}.{payload.format}"'
             )
         },
     )
@@ -757,6 +796,23 @@ def confirm_exchange_address(
         raise HTTPException(422, str(exc)) from exc
 
 
+@app.post("/api/library/mark-public")
+def mark_public_address(
+    payload: PublicAddressInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """把地址标为 / 取消「公共地址」。
+
+    公共地址和交易所同性质：会和大量不确定钱包往来，查询时作为关联终点，
+    不再向下扩展。
+    """
+
+    try:
+        return svc.decide_public_address(payload.address, payload.marked)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @app.post("/api/library/group-addresses")
 def add_group_addresses(
     payload: GroupAddressInput,
@@ -983,6 +1039,7 @@ def relations(payload: RelationInput, svc: Annotated[LinkService, Depends(servic
             filter_exchanges=payload.filter_exchanges,
             filter_validators=payload.filter_validators,
             filter_systems=payload.filter_systems,
+            filter_publics=payload.filter_publics,
             removed_addresses=[value.strip() for value in payload.removed_addresses if value.strip()],
         )
     except ValueError as exc:
@@ -1011,6 +1068,7 @@ def start_relation_job(
             filter_exchanges=payload.filter_exchanges,
             filter_validators=payload.filter_validators,
             filter_systems=payload.filter_systems,
+            filter_publics=payload.filter_publics,
             removed_addresses=[value.strip() for value in payload.removed_addresses if value.strip()],
             round_interval=payload.round_interval_seconds,
             max_rounds=payload.max_rounds,

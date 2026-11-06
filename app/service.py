@@ -69,9 +69,17 @@ MAX_ARCHIVE_TOTAL_BYTES = 200 * 1024 * 1024
 MAX_ARCHIVE_PAYLOAD_BYTES = 8 * 1024 * 1024
 MAX_SYNC_ADDRESSES = 5000
 # 用户分类（大V / 群友 / 其他 + 自建）之外的系统分类：只用于“过滤交易所/
-# 验证者”，不提供在分类下拉里给用户挑，避免关联地址被误标成公共地址。
-SYSTEM_CATEGORIES = {"EXCHANGE", "VALIDATOR"}
-SYSTEM_CATEGORY_LABELS = {"EXCHANGE": "交易所（系统）", "VALIDATOR": "验证者（系统）"}
+# 验证者/公共地址”，不提供在分类下拉里给用户挑，避免关联地址被误标。
+# PUBLIC（公共地址）与 EXCHANGE 同性质：这类地址会和大量不相关钱包产生往来，
+# 一旦查到就作为关联终点，不再向下扩展，否则结果会被噪音灌满。
+SYSTEM_CATEGORIES = {"EXCHANGE", "VALIDATOR", "PUBLIC"}
+SYSTEM_CATEGORY_LABELS = {
+    "EXCHANGE": "交易所（系统）",
+    "VALIDATOR": "验证者（系统）",
+    "PUBLIC": "公共地址（系统）",
+}
+PUBLIC_CATEGORY = "PUBLIC"
+PUBLIC_ADDRESS_LABEL = "人工标记公共地址"
 # 「系统」是用户可选、可改的预置分类：与交易所一样能过滤，并且始终是关联终点。
 SYSTEM_CLASSIFICATION_KEYS = {SYSTEM_CLASSIFICATION, "SYSTEM"}
 # 0.4.x 及以前的英文分类，导入旧备份或旧 CSV 时自动折算到“其他”。
@@ -83,6 +91,7 @@ RESERVED_CATEGORY_NAMES = {
     "BLACKLIST",
     "EXCHANGE",
     "VALIDATOR",
+    "PUBLIC",
     "SYSTEM",
     "ALL",
 }
@@ -218,6 +227,9 @@ class RelationContext:
     excluded_addresses: set[str] = field(default_factory=set)
     removed_addresses: set[str] = field(default_factory=set)
     system_addresses: set[str] = field(default_factory=set)
+    # 人工标记的公共地址：与交易所同性质，查到即截止、不再向下扩展。
+    public_addresses: set[str] = field(default_factory=set)
+    filter_publics: bool = False
     validator_api_requests: int = 0
     validator_cache_hits: int = 0
     # 地址库两两之间的历史累计规模：本地索引/巡检抓到过多少就记多少，
@@ -1348,6 +1360,51 @@ class LinkService:
     def confirm_exchange_address(self, address: str, label: str = "") -> dict[str, Any]:
         return self.decide_exchange_address(address, "confirm", label)
 
+    def decide_public_address(self, address: str, marked: bool = True) -> dict[str, Any]:
+        """人工标记 / 取消「公共地址」。
+
+        公共地址与交易所同性质：会和大量不确定钱包产生往来，扫描时一旦查到
+        就作为关联终点，不再向下扩展（省 Taostats 额度，也避免结果被噪音淹没）。
+        标记只写进多分类，主分类（大V / 群友 / 其他…）保持用户原来的整理方式。
+        """
+
+        address = address.strip()
+        if not is_valid_ss58(address):
+            raise InputError("invalid SS58 address")
+        with self.database.session() as db:
+            row = db.scalar(
+                select(AddressLibrary).where(AddressLibrary.address == address)
+            )
+            if row is None and not marked:
+                return {"saved": True, "item": None, "marked": False}
+            if row is None:
+                row = AddressLibrary(
+                    address=address,
+                    label="公共地址",
+                    category=PUBLIC_CATEGORY,
+                    categories=encode_categories([PUBLIC_CATEGORY]),
+                    note="由关联扫描结果人工标记为公共地址（与交易所同性质，查到即截止）",
+                    source="manual:public-address",
+                )
+                db.add(row)
+                db.flush()
+            elif marked:
+                if not row_has_category(row, PUBLIC_CATEGORY):
+                    row.categories = encode_categories(
+                        [*row_categories(row), PUBLIC_CATEGORY]
+                    )
+            else:
+                remaining = [
+                    name
+                    for name in row_categories(row)
+                    if name.upper() != PUBLIC_CATEGORY
+                ]
+                if str(row.category or "").strip().upper() == PUBLIC_CATEGORY:
+                    row.category = DEFAULT_CATEGORY
+                    remaining = [DEFAULT_CATEGORY, *remaining]
+                row.categories = encode_categories(remaining or [DEFAULT_CATEGORY])
+            return {"saved": True, "item": address_dict(row), "marked": bool(marked)}
+
     def sync_exchange_addresses(self) -> dict[str, Any]:
         """把官方交易所名单导进地址库（只增不改人工内容）。
 
@@ -1735,11 +1792,23 @@ class LinkService:
                 )
             ]
 
-    def export_library(self, file_format: str) -> tuple[str, str]:
-        """Return a portable address-library backup and its media type."""
+    def export_library(
+        self, file_format: str, addresses: Iterable[str] | None = None
+    ) -> tuple[str, str]:
+        """Return a portable address-library backup and its media type.
+
+        ``addresses`` 为 None 时导出整库；传入选中的地址集合时只导出这些地址
+        （按地址匹配，忽略大小写前后的空白）。选中的地址即使已经不在库里也
+        会被跳过，不会凭空造记录。
+        """
 
         if file_format not in {"csv", "json"}:
             raise InputError("library export format must be csv or json")
+        wanted: set[str] | None = None
+        if addresses is not None:
+            wanted = {str(value).strip() for value in addresses if str(value).strip()}
+            if not wanted:
+                raise InputError("没有选中可导出的地址")
         portable = [
             {
                 "address": item["address"],
@@ -1753,7 +1822,10 @@ class LinkService:
                 "exchange_rejected": item["exchange_rejected"],
             }
             for item in self.library()
+            if wanted is None or item["address"] in wanted
         ]
+        if wanted is not None and not portable:
+            raise InputError("选中的地址已不在地址库中")
         if file_format == "json":
             import json
 
@@ -2637,6 +2709,7 @@ class LinkService:
         filter_exchanges: bool = False,
         filter_validators: bool = False,
         filter_systems: bool = False,
+        filter_publics: bool = False,
         removed_addresses: Iterable[str] = (),
     ) -> RelationContext:
         """收集一次查询中不随轮次变化的部分：地址库、本地索引、过滤名单。"""
@@ -2698,6 +2771,13 @@ class LinkService:
                 and ("交易所" in entry.note or "交易所" in entry.label)
             )
         }
+        # 公共地址：人工标记的 PUBLIC 分类。它和交易所一样是「汇聚型」地址，
+        # 与大量不确定钱包有往来，必须当关联终点，否则结果会被噪音淹没。
+        public_addresses = {
+            entry.address
+            for entry in library
+            if PUBLIC_CATEGORY in entry_category_set(entry)
+        }
         confirmed_exchange_addresses = {
             entry.address
             for entry in library
@@ -2741,6 +2821,8 @@ class LinkService:
         excluded_addresses = set()
         if filter_exchanges:
             excluded_addresses.update(exchange_addresses)
+        if filter_publics:
+            excluded_addresses.update(public_addresses)
         if filter_validators:
             excluded_addresses.update(manual_validator_addresses)
             excluded_addresses.update(auto_validator_addresses)
@@ -2780,6 +2862,16 @@ class LinkService:
                     f"有 {len(system_addresses)} 个「系统」分类地址作为关联终点；"
                     "查到这些地址即截止，不再向下扩展其转账（如需连同它们一起排除，请勾选「过滤系统地址」）。"
                 )
+        if public_addresses:
+            if filter_publics:
+                warnings.append(
+                    f"已启用公共地址过滤，跳过 {len(public_addresses)} 个人工标记的公共地址。"
+                )
+            else:
+                warnings.append(
+                    f"有 {len(public_addresses)} 个人工标记的公共地址作为关联终点；"
+                    "查到即截止，不再向下扩展（如需连同它们一起排除，请勾选「过滤公共地址」）。"
+                )
         if removed_addresses:
             excluded_addresses.update(removed_addresses)
             warnings.append(
@@ -2805,6 +2897,8 @@ class LinkService:
             excluded_addresses=excluded_addresses,
             removed_addresses=set(removed_addresses),
             system_addresses=set(system_addresses),
+            public_addresses=set(public_addresses),
+            filter_publics=filter_publics,
             validator_api_requests=validator_api_requests,
             validator_cache_hits=validator_cache_hits,
             book_pair_stats=pair_stats,
@@ -2818,7 +2912,9 @@ class LinkService:
             depth=context.depth,
             policy=context.policy,
             terminal_exchange_addresses=(
-                set(context.exchange_addresses) | set(context.system_addresses)
+                set(context.exchange_addresses)
+                | set(context.system_addresses)
+                | set(context.public_addresses)
             ),
             excluded_addresses=set(context.excluded_addresses),
         )
@@ -2864,6 +2960,7 @@ class LinkService:
         filter_exchanges: bool = False,
         filter_validators: bool = False,
         filter_systems: bool = False,
+        filter_publics: bool = False,
         removed_addresses: Iterable[str] = (),
     ) -> dict[str, Any]:
         """单轮查询：只花掉一次请求预算，返回当前已取得的结果。"""
@@ -2879,6 +2976,7 @@ class LinkService:
             filter_exchanges=filter_exchanges,
             filter_validators=filter_validators,
             filter_systems=filter_systems,
+            filter_publics=filter_publics,
             removed_addresses=removed_addresses,
         )
         crawl = None

@@ -1,5 +1,28 @@
 # 验证交付记录
 
+## 0.7.2 验证记录（2026-11-06）
+
+**地址库导出范围**（接口层，本机 707 条地址实测）：
+- `POST /api/library/export {format:"csv", addresses:[2 条]}` → 返回 2 行，`Content-Disposition` 含 `selected-2`；
+- `GET /api/library/export?format=json` → 707 条，与改前一致；
+- 选中集合为空、或选中的地址已不在库中 → 422 并给出中文原因，不会退化成导出全库。
+
+**界面探针**（`.probe/ui_check_072.py`，1440×900）：
+- `导出选中 (0)` 初始为禁用；勾选 2 行后变成 `导出选中 (2)` 且可点；
+- 工具栏含「格式」下拉（CSV / JSON）+「导出全部」+「导出选中 (N)」三个控件；
+- `#filter-publics`（过滤公共地址）存在；地址库 707 行每行都有「标为公共地址」按钮；
+- 结果页与地址库页的标记按钮走同一个 `decidePublic()`，地址库页点击不会跳回结果页。
+
+**公共地址行为**（`tests/test_public_address.py`，6 条）：
+- 标记/取消只动多分类，主分类保持「群友」不变；重复标记幂等；新地址标记时主分类为 PUBLIC；
+- `SEED → 公共地址 → DOWNSTREAM` 结构下，公共地址保留在结果里但 DOWNSTREAM 不出现，`address_role` 为「公共地址」；
+- 勾 `filter_publics` 后公共地址本身也被排除；
+- 排序：交易所第 1、公共地址第 2；
+- 导出全部 / 选中（CSV/JSON）条数正确，空集合报错；
+- `POST /api/library/mark-public` 返回的 categories 含 PUBLIC。
+
+**回归**：`pytest -q` = **197 passed**；`node --check app/static/app.js` 通过；`/api/health` 报 `0.7.2`，页面资源戳 `?v=0.7.2`；`tools/build_usage_html.py` 重新生成 `使用说明.html`（66 013 bytes）。
+
 ## 0.7.1 验证记录（2026-11-06）
 
 **布局量测**（`.probe/measure_forms.py`，1440 / 1180 / 1024 / 760 / 420 五档）：

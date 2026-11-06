@@ -393,6 +393,26 @@ function exchangeDecisionControl(row) {
   return `<div class="exchange-decision">${btn("confirm", "标为交易所", "公共地址或未录入的交易所？标记后刷新，其下游只经由它连通的地址会自动移除")}</div>`;
 }
 
+function isLibraryPublicRow(row) {
+  const names = [
+    row.library_category,
+    row.category,
+    ...(row.library_categories || []),
+    ...(row.categories || []),
+  ].map((value) => String(value || "").toUpperCase());
+  return names.includes("PUBLIC");
+}
+
+// 公共地址：中转 / 发币池 / 公共充值地址这类会和大量不确定钱包往来的地址。
+// 与交易所同性质，标记后查询时作为关联终点，查到即截止。
+function publicDecisionControl(row) {
+  const address = esc(row.address);
+  if (isLibraryPublicRow(row)) {
+    return `<span class="tag public-tag" title="人工标记的公共地址：与交易所同性质，查到即截止，不再向下扩展">公共地址</span><button class="ghost note-save" data-public-decision="unmark" data-address="${address}" title="取消公共地址标记：只移除 PUBLIC 分类，不影响原有分类" type="button">取消公共标记</button>`;
+  }
+  return `<button class="ghost note-save" data-public-decision="mark" data-address="${address}" title="公共地址（中转、发币池、公共充值地址等）会和大量不确定钱包往来；标记后作为关联终点，查到即截止，刷新后其下游不再展开" type="button">标为公共地址</button>`;
+}
+
 const STRENGTH_CLASS = { "极强": "s4", "强": "s3", "中": "s2", "弱": "s1", "未知": "s0" };
 
 // 老版本存下的历史结果没有 strength 字段，这里按同一套规则现算一份，
@@ -432,7 +452,7 @@ function relatedTable(rows) {
       : "";
     const removeButton = `<button class="ghost copy-address remove-relation" data-remove-relation="${esc(row.address)}" title="确认非同一人？移除后点「刷新结果」，这条线索的下游地址也会一并消失" type="button">移除关联</button>`;
     const strength = strengthBadge(row);
-    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main">${addressLink(row.address, shortAddr(row.address))}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${removeButton}${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td>${strength}</td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
+    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main">${addressLink(row.address, shortAddr(row.address))}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${removeButton}${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td>${strength}</td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td><div class="library-decision-cell">${library}${exchangeActions}${publicDecisionControl(row)}</div></td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 
@@ -993,6 +1013,7 @@ function scanPayload(seed) {
     filter_exchanges: $("#filter-exchanges").checked,
     filter_validators: $("#filter-validators").checked,
     filter_systems: $("#filter-systems").checked,
+    filter_publics: $("#filter-publics") ? $("#filter-publics").checked : false,
   };
 }
 
@@ -1163,6 +1184,9 @@ function libraryRowsTable(rows) {
           : row.exchange_rejected
             ? `<div class="exchange-confirm-control"><span class="tag warn">已人工否定</span><button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" title="判错了？改成确认为交易所" type="button">改为交易所</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" title="清除人工结论，回到待确认" type="button">重置</button></div>`
             : `<div class="exchange-confirm-control"><span class="tag warn">待人工确认</span><button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button></div>`;
+    const publicControl = `<div class="public-confirm-control">${isLibraryPublicRow(row)
+      ? `<span class="tag public-tag" title="人工标记的公共地址：查询时作为关联终点，查到即截止">公共地址</span><button class="ghost note-save" data-public-decision="unmark" data-address="${esc(row.address)}" title="取消公共地址标记：只移除 PUBLIC 分类，不影响原有分类" type="button">取消公共标记</button>`
+      : `<button class="ghost note-save" data-public-decision="mark" data-address="${esc(row.address)}" title="公共地址（中转、发币池、公共充值地址等）会和大量不确定钱包往来；标记后查询时作为关联终点，查到即截止" type="button">标为公共地址</button>`}</div>`;
     const bookCell = row.book ? `<span class="tag">${esc(row.book)}</span>` : "-";
     const categories = (row.categories && row.categories.length ? row.categories : [row.category]).filter(Boolean);
     // 「交易所（系统）/验证者（系统）」标签本身已写明系统分类，避免再并列一个「系统」标签。
@@ -1179,7 +1203,7 @@ function libraryRowsTable(rows) {
       <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td>
       <td class="mono address library-address-cell"><div class="address-main">${addressLink(row.address, row.address)}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button></div></td>
       <td class="library-label-cell">${labelCell}</td>
-      <td><div class="category-chips">${chips}</div>${exchangeControl}</td>
+      <td><div class="category-chips">${chips}</div>${exchangeControl}${publicControl}</td>
       <td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td>
       <td>${bookCell}</td><td>${librarySourceCell(row)}</td>
       <td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td>
@@ -1278,6 +1302,15 @@ function updateLibrarySelection() {
   const button = $("#delete-selected");
   button.disabled = selected === 0;
   button.textContent = `删除所选 (${selected})`;
+  // 导出选中：只导出勾选的行，没勾选时禁用（避免又变成“点了一下导出全部”）。
+  const exportSelected = $("#export-library-selected");
+  if (exportSelected) {
+    exportSelected.disabled = selected === 0;
+    exportSelected.textContent = `导出选中 (${selected})`;
+    exportSelected.title = selected
+      ? `只导出勾选的 ${selected} 个地址（当前格式）`
+      : "先在列表里勾选地址，再导出选中的部分";
+  }
 
   const selectAll = $("#select-all-addresses");
   if (selectAll) {
@@ -1782,7 +1815,12 @@ async function dissolveBook(name) {
 const NEW_CATEGORY = "__new__";
 
 function categoryLabel(value) {
-  return ({ EXCHANGE: "交易所（系统）", VALIDATOR: "验证者（系统）", SYSTEM: "系统" })[value] || value || "未分类";
+  return ({
+    EXCHANGE: "交易所（系统）",
+    VALIDATOR: "验证者（系统）",
+    PUBLIC: "公共地址（系统）",
+    SYSTEM: "系统",
+  })[value] || value || "未分类";
 }
 
 function categoryOptionsMarkup(selected) {
@@ -2207,9 +2245,33 @@ async function decideLibraryExchange(button) {
   }
 }
 
-async function exportLibrary(format) {
+function selectedLibraryAddresses() {
+  const ids = new Set(
+    [...document.querySelectorAll("[data-library-select]")]
+      .filter((checkbox) => checkbox.checked)
+      .map((checkbox) => String(checkbox.value))
+  );
+  return (state.library || [])
+    .filter((row) => ids.has(String(row.id)))
+    .map((row) => row.address);
+}
+
+async function exportLibrary(scope = "all") {
+  const formatEl = $("#library-export-format");
+  const format = formatEl ? formatEl.value : "csv";
+  const addresses = scope === "selected" ? selectedLibraryAddresses() : [];
+  if (scope === "selected" && !addresses.length) {
+    toast("没有勾选任何地址。先勾选要导出的地址，或点「导出全部」。", true);
+    return;
+  }
   try {
-    const response = await fetch(`/api/library/export?format=${encodeURIComponent(format)}`);
+    const response = scope === "selected"
+      ? await fetch("/api/library/export", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format, addresses }),
+        })
+      : await fetch(`/api/library/export?format=${encodeURIComponent(format)}`);
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || `导出失败 (${response.status})`);
@@ -2218,12 +2280,17 @@ async function exportLibrary(format) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `bittensor-address-library-${new Date().toISOString().slice(0, 10)}.${format}`;
+    const suffix = scope === "selected" ? `-selected-${addresses.length}` : "";
+    link.download = `bittensor-address-library${suffix}-${new Date().toISOString().slice(0, 10)}.${format}`;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    toast(`地址库已导出为 ${format.toUpperCase()}，可在其他设备通过“导入文件”恢复。`);
+    toast(
+      scope === "selected"
+        ? `已导出选中的 ${addresses.length} 个地址（${format.toUpperCase()}）。`
+        : `地址库全部地址已导出为 ${format.toUpperCase()}，可在其他设备通过“导入文件”恢复。`
+    );
   } catch (error) {
     toast(`地址库导出失败：${error.message}`, true);
   }
@@ -2345,6 +2412,51 @@ async function decideExchange(address, decision, button) {
     }
   } catch (error) {
     toast(`确认失败：${error.message}`, true);
+    button.disabled = false;
+  }
+}
+
+async function decidePublic(address, decision, button) {
+  if (!address) return;
+  button.disabled = true;
+  const marked = decision === "mark";
+  try {
+    const result = await api("/api/library/mark-public", {
+      method: "POST",
+      body: JSON.stringify({ address, marked }),
+    });
+    const item = result.item;
+    const row = state.lastResult?.related?.find((entry) => entry.address === address);
+    if (row && item) {
+      row.match = true;
+      row.library_label = item.label;
+      row.library_category = item.category;
+      row.library_categories = item.categories || [];
+      row.library_note = item.note;
+      row.library_source = item.source;
+      row.address_role = marked ? "公共地址" : "";
+      row.role_reason = marked
+        ? "地址库人工标记为公共地址：此类地址会和大量不确定钱包往来，查到即作为关联终点不再向下扩展。"
+        : "";
+    }
+    // 和「标为交易所」一致：本会话先把只经由它连通的下游在列表里隐藏，
+    // 真正是否移除以刷新后重查的结果为准。
+    const pruned = marked ? pruneDownstreamOf(address) : 0;
+    // 只在结果页已经打开时重绘，避免在地址库页点按钮被跳回结果页。
+    const resultPanel = $("#result");
+    if (row && resultPanel && !resultPanel.classList.contains("hidden")) {
+      renderResult(state.lastResult);
+    }
+    await loadLibrary();
+    if (marked) {
+      toast(pruned
+        ? `已标为公共地址：其下游 ${pruned} 个关联地址已从列表隐藏，点「刷新结果」重查后不会再展开。`
+        : "已标为公共地址：该地址作为关联终点，刷新后不再向下扩展。", false);
+    } else {
+      toast("已取消公共地址标记（原有分类保持不变）。", false);
+    }
+  } catch (error) {
+    toast(`公共地址标记失败：${error.message}`, true);
     button.disabled = false;
   }
 }
@@ -3101,8 +3213,8 @@ $("#watch-save").addEventListener("click", saveWatchConfig);
 $("#watch-run").addEventListener("click", runWatchNow);
 $("#watch-logs-toggle").addEventListener("click", toggleWatchLogs);
 $("#watch-log-filter").addEventListener("change", loadWatchLogs);
-$("#export-library-csv").addEventListener("click", () => exportLibrary("csv"));
-$("#export-library-json").addEventListener("click", () => exportLibrary("json"));
+$("#export-library-all").addEventListener("click", () => exportLibrary("all"));
+$("#export-library-selected").addEventListener("click", () => exportLibrary("selected"));
 document.addEventListener("click", (event) => {
   const revokeButton = event.target.closest("[data-revoke-import]");
   if (revokeButton) {
@@ -3113,6 +3225,8 @@ document.addEventListener("click", (event) => {
   if (button) saveRelationNote(button);
   const exchangeButton = event.target.closest("[data-exchange-decision]");
   if (exchangeButton) decideExchange(exchangeButton.dataset.address, exchangeButton.dataset.exchangeDecision, exchangeButton);
+  const publicButton = event.target.closest("[data-public-decision]");
+  if (publicButton) decidePublic(publicButton.dataset.address, publicButton.dataset.publicDecision, publicButton);
   const copyButton = event.target.closest("[data-copy-address]");
   if (copyButton) copyAddress(copyButton.dataset.copyAddress, copyButton);
   const pathToggle = event.target.closest("[data-path-toggle]");

@@ -105,6 +105,7 @@ class RelationJobManager:
         filter_exchanges: bool = False,
         filter_validators: bool = False,
         filter_systems: bool = False,
+        filter_publics: bool = False,
         removed_addresses: list[str] | None = None,
         round_interval: int | None = None,
         max_rounds: int | None = None,
@@ -120,6 +121,7 @@ class RelationJobManager:
             filter_exchanges=filter_exchanges,
             filter_validators=filter_validators,
             filter_systems=filter_systems,
+            filter_publics=filter_publics,
             removed_addresses=removed_addresses or (),
         )
         job = RelationJob(
@@ -136,6 +138,7 @@ class RelationJobManager:
                 "include_outgoing": include_outgoing,
                 "filter_exchanges": filter_exchanges,
                 "filter_validators": filter_validators,
+                "filter_publics": filter_publics,
                 "removed_addresses": sorted(set(removed_addresses or ())),
             },
             created_at=time.time(),

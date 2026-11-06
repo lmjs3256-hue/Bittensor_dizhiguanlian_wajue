@@ -415,9 +415,9 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <td>5 轮 ≈ 25 次请求；想查得更全可以调高，比如 12 轮 ≈ 60 次请求。设为 1 就是只查一轮（最快）</td>
 </tr>
 <tr>
-<td><strong>过滤交易所 / 验证者地址</strong></td>
+<td><strong>过滤交易所 / 验证者 / 公共地址</strong></td>
 <td>按需</td>
-<td>勾上后结果里不再出现已确认的交易所和验证者，适合“只想看真实对手方”的场景</td>
+<td>勾上后结果里不再出现已确认的交易所、验证者和公共地址，适合“只想看真实对手方”的场景</td>
 </tr>
 </tbody>
 </table>
@@ -466,7 +466,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </tr>
 </tbody>
 </table>
-<p><strong>排序规则</strong>：交易所地址永远排最前（官方名单和人工确认的都算），其余按「关联强度」从强到弱排；同强度内层级浅的在前，再按累计金额。</p>
+<p><strong>排序规则</strong>：交易所地址永远排最前（官方名单和人工确认的都算），<strong>公共地址</strong>排第二，其余按「关联强度」从强到弱排；同强度内层级浅的在前，再按累计金额。</p>
 <p><strong>强度是怎么算的</strong>（全部可解释，鼠标悬停能看到具体依据）：</p>
 <table>
 <thead>
@@ -581,7 +581,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <p>重跑结果按现在的链上数据计算，和当时可能略有差异。</p>
 <hr />
 <h2 id="七已知地址库">七、已知地址库</h2>
-<p>左侧菜单 <strong>已知地址库</strong> 是工具的“常识库”：地址被标成交易所、验证者后，查询时才能过滤、才能在结果里显示标签。</p>
+<p>左侧菜单 <strong>已知地址库</strong> 是工具的“常识库”：地址被标成交易所、验证者或公共地址后，查询时才能过滤、才能在结果里显示标签。</p>
 <h3 id="分类含义">分类含义</h3>
 <p>分类记录“这个地址是谁”。预置三类，可以自己加（例如项目方、做市商，最多 12 个字）：</p>
 <table>
@@ -635,8 +635,21 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <td>验证者名单</td>
 <td>查询时勾选“过滤验证者”就会排除</td>
 </tr>
+<tr>
+<td><code>PUBLIC</code>（显示为“公共地址（系统）”）</td>
+<td>“标为公共地址”按钮</td>
+<td>查询时勾选“过滤公共地址”就会排除；不勾选时仍然作为<strong>关联终点</strong>（查到即截止，不再展开）</td>
+</tr>
 </tbody>
 </table>
+<h3 id="公共地址和交易所同性质的汇聚型地址">公共地址：和交易所同性质的“汇聚型”地址</h3>
+<p>中转地址、发币池、公共充值地址这类账号，会和成百上千个互不相关的钱包发生往来。把它们标成<strong>公共地址</strong>后，查询时一旦查到就<strong>立即截止，不再从它继续往外扩展</strong>——否则结果会被噪音灌满，也会白白多花 Taostats 请求额度。</p>
+<ul>
+<li>标记入口有两处：<strong>扫描结果</strong>里关联地址行的「地址库」列，以及 <strong>已知地址库</strong> 清单展开后的同一列，点「标为公共地址」。</li>
+<li>标记只是往多分类里追加 <code>PUBLIC</code>，<strong>不会改你原来的分类 / 组名 / 备注</strong>；想撤回点同一位置的「取消公共标记」，只移除 PUBLIC。</li>
+<li>结果里这类地址会带琥珀色的「公共地址」标签，排序排在<strong>交易所之后、其他地址之前</strong>。</li>
+<li>想连它本身也不看，就勾选查询页的 <strong>「过滤公共地址」</strong>。</li>
+</ul>
 <blockquote>
 <p>升级提示：旧版本的 WATCH / SEED / BLACKLIST 已不再使用，升级后这些地址会自动归到「其他」，不用手工改。</p>
 </blockquote>
@@ -836,7 +849,12 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </code></pre>
 <pre><code class="language-json">[{&quot;address&quot;: &quot;5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt&quot;, &quot;category&quot;: &quot;大V&quot;, &quot;label&quot;: &quot;重点观察&quot;}]
 </code></pre>
-<p>地址库也能 <strong>导出 CSV / JSON</strong>，方便备份或换电脑时迁移。</p>
+<p>地址库也能 <strong>导出 CSV / JSON</strong>，方便备份或换电脑时迁移。工具栏上是三个控件：</p>
+<ul>
+<li><strong>格式</strong>：CSV 或 JSON，两个按钮共用这个选择。</li>
+<li><strong>导出全部</strong>：导出地址库里的所有地址，不受上方「地址库筛选」影响。</li>
+<li><strong>导出选中 (N)</strong>：只导出你在列表里<strong>勾选</strong>的那几条。按钮上的 N 跟着勾选数量实时变化，没勾选时按钮是灰的（避免像以前那样点了一下其实导出的是整库）。文件名会带 <code>-selected-N</code> 便于区分。</li>
+</ul>
 <hr />
 <h2 id="八taostats-api-key可选但推荐">八、Taostats API key（可选，但推荐）</h2>
 <p>没有 key 也能用，但只能查本地已经采集过的区块，实际价值有限。想让工具真正好用，配一个免费 key。</p>

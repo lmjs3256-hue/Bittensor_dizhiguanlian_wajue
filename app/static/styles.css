@@ -649,3 +649,50 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 .library-actions .select-all-control { font-size:12.5px; }
 /* 地址库「导入文件」是这一页的主入口之一，跟添加地址拉开层次 */
 #choose-file { padding:10px 18px; font-weight:750; }
+
+/* ============================================================================
+   0.7.2 公共地址 + 地址库导出
+   公共地址与交易所同性质（汇聚型地址），标签用琥珀色，和交易所的蓝色区分开；
+   导出改成「格式 + 导出全部 + 导出选中 (N)」，选中按钮跟着勾选数量走。
+   ============================================================================ */
+
+.library-decision-cell { display:grid; gap:6px; justify-items:start; }
+.public-confirm-control { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.public-confirm-control button,
+.library-decision-cell [data-public-decision] { padding:4px 9px; font-size:11.5px; }
+/* 用主题里的 warn 变量（本来就是琥珀色系），四套主题都自动可读 */
+.public-tag {
+  background:var(--warn-soft);
+  color:var(--warn);
+  border:1px solid var(--warn-soft);
+  font-weight:700;
+}
+
+/* 导出控件：格式下拉紧贴两个按钮，短宽度，不抢列表位置 */
+.library-actions .library-export-format {
+  display:flex; align-items:center; gap:6px;
+  padding:0 2px 0 6px; color:var(--muted); font-size:12px;
+}
+.library-actions .library-export-format select {
+  width:auto; min-width:74px; padding:8px 8px; font-size:12px;
+  text-align:center; text-align-last:center;
+}
+.library-actions #export-library-selected { font-weight:700; }
+.library-actions #export-library-selected:disabled { font-weight:400; }
+
+@media (max-width:950px) {
+  .library-actions .library-export-format { flex:1 1 auto; }
+  .library-actions #export-library-all,
+  .library-actions #export-library-selected { flex:1 1 auto; }
+}
+
+/* 工具栏分组：导出三个控件 / 全选+删除 各自成组，换行时不会被拆散 */
+.library-actions .library-export-group,
+.library-actions .library-danger-group {
+  display:flex; align-items:center; gap:7px;
+}
+.library-actions .library-danger-group { margin-left:auto; }
+.library-actions .library-danger-group #delete-selected { white-space:nowrap; }
+@media (max-width:1300px) {
+  .library-actions .library-danger-group { margin-left:0; }
+}
