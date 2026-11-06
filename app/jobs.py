@@ -55,6 +55,9 @@ class RelationJob:
     error: str = ""
     finished_at: float = 0.0
     archive_id: int | None = None
+    # 扫描开始前为「起始地址画像」已花掉的请求数：只有第一轮要从额度里扣，
+    # 后面每轮之间已经隔了 62 秒，不受同一分钟限速影响。
+    prefetched_requests: int = 0
     # 连续「0 请求」轮次：被限流或没有可用数据时不再空转下去。
     empty_rounds: int = 0
     cancel_requested: bool = False
@@ -109,6 +112,7 @@ class RelationJobManager:
         removed_addresses: list[str] | None = None,
         round_interval: int | None = None,
         max_rounds: int | None = None,
+        prefetched_requests: int = 0,
     ) -> RelationJob:
         context = service.prepare_relation_context(
             seed=seed,
@@ -123,6 +127,7 @@ class RelationJobManager:
             filter_systems=filter_systems,
             filter_publics=filter_publics,
             removed_addresses=removed_addresses or (),
+            prefetched_requests=prefetched_requests,
         )
         job = RelationJob(
             id=uuid.uuid4().hex[:12],
@@ -145,6 +150,7 @@ class RelationJobManager:
             round_interval=float(round_interval or self.round_interval),
             max_rounds=int(max_rounds or self.max_rounds),
             max_addresses=self.max_addresses,
+            prefetched_requests=max(0, int(prefetched_requests or 0)),
         )
         with self._lock:
             self._jobs[job.id] = job
@@ -246,11 +252,16 @@ class RelationJobManager:
 
         job.status = "running"
         state.api_error = ""
+        # 第一轮要扣掉「起始地址画像」已经花掉的请求（同一分钟内），
+        # 之后每轮隔 62 秒，额度自然重置，就不再扣。
+        budget = MAX_TAOSTATS_REQUESTS_PER_QUERY
+        if job.rounds_done == 0:
+            budget = max(0, budget - job.prefetched_requests)
         try:
             # should_stop 让"停止续查"在本轮任意两个请求之间生效：
             # 当前请求一结束就收尾，不等本轮剩余请求（每个最长 20 秒）。
             spent = job.crawl.run_round(
-                MAX_TAOSTATS_REQUESTS_PER_QUERY,
+                budget,
                 should_stop=lambda: job.cancel_requested,
             )
         except Exception as exc:  # pragma: no cover - 兜底，正常错误在 crawl 内部处理
@@ -416,6 +427,7 @@ class RelationJobManager:
             "requests_total": job.total_requests,
             "requests_last_round": job.requests_last_round,
             "requests_per_round": MAX_TAOSTATS_REQUESTS_PER_QUERY,
+            "prefetched_requests": job.prefetched_requests,
             "pending_transfer": state.pending_transfer,
             "pending_stake": state.pending_stake,
             "remaining_requests": remaining,

@@ -125,7 +125,7 @@ function renderSeedProfile(profile, rpcBalance) {
   $("#seed-result-daily").textContent = daily === null ? placeholder : `${daily} 次/天`;
   $("#seed-result-daily-note").textContent =
     daily === null
-      ? (count === null ? "" : "缺注册日期")
+      ? (count === null ? "需要 Taostats API key" : "缺质押次数或注册日期")
       : `按 ${number(profile.active_days)} 天算`;
 
   // 余额优先用「含质押」的总余额，退回 RPC 可用的自由余额。
@@ -145,7 +145,39 @@ function renderSeedProfile(profile, rpcBalance) {
     : (shown === null || shown === undefined ? "未取得余额" : "RPC 可用余额");
 }
 
-function formatTao(value, suffix = false) {  if (value === null || value === undefined || value === "") return "未获取";
+// 扫描第一步：只查起始地址画像，先填左栏。
+// 返回本次真实花掉的 Taostats 请求数（0~2），由调用方从本轮额度里扣掉。
+// 任何失败都只是「画像未获取」，不能让扫描停在这里。
+async function prefetchSeedProfile(seed, dataSource) {
+  const card = $("#side-seed");
+  // 先把卡片显示出来并标成「正在查询」，避免用户以为按钮没反应。
+  setSeedAddress(seed);
+  if (card) card.classList.remove("hidden");
+  $("#seed-result-registered").textContent = "查询中…";
+  $("#seed-result-txcount").textContent = "查询中…";
+  $("#seed-result-daily").textContent = "查询中…";
+  $("#seed-result-balance").textContent = "查询中…";
+  $("#seed-result-registered-note").textContent = "";
+  $("#seed-result-txcount-note").textContent = "";
+  $("#seed-result-daily-note").textContent = "";
+  $("#seed-result-balance-note").textContent = "";
+  try {
+    const data = await api("/api/seed-profile", {
+      method: "POST",
+      body: JSON.stringify({ seed, data_source: dataSource }),
+    });
+    renderSeedProfile(data.seed_profile || {}, null);
+    (data.warnings || []).forEach((text) => toast(text, true));
+    return Number(data.api_requests) || 0;
+  } catch (error) {
+    renderSeedProfile({}, null);
+    toast(`起始地址画像未获取：${error.message}`, true);
+    return 0;
+  }
+}
+
+function formatTao(value, suffix = false) {
+  if (value === null || value === undefined || value === "") return "未获取";
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return "未获取";
   const formatted = new Intl.NumberFormat("zh-CN", {
@@ -975,9 +1007,12 @@ function renderResult(data) {
   $("#result").classList.remove("hidden");
   renderResultAlert(data);
   const sourcesLabel = (data.data_sources_used || []).map(sourceLabel).join(" + ") || "无数据来源";
+  // 画像请求（最多 2 次）单独标出来：它跑在扫描之前，用户容易以为白花了额度。
+  const profileRequests = Number(data.seed_profile_requests) || 0;
+  const profileUsage = profileRequests > 0 ? ` + 起始地址画像 ${profileRequests} 次` : "";
   const apiUsage = data.data_source === "taostats"
-    ? ` · API 请求 ${data.api_requests}/${data.api_request_budget ?? "?"} 次（优先一级关联转账） · 返回转账 ${data.taostats_transfer_count} 条 · 缓存命中 ${data.api_cache_hits} 次`
-    : "";
+    ? ` · API 请求 ${data.api_requests}/${data.api_request_budget ?? "?"} 次（优先一级关联转账）${profileUsage} · 返回转账 ${data.taostats_transfer_count} 条 · 缓存命中 ${data.api_cache_hits} 次`
+    : (profileRequests > 0 ? ` · 起始地址画像 ${profileRequests} 次` : "");
   const stakeUsage = data.stake_transfer_count > 0 ? ` · 子网 stake 转移 ${data.stake_transfer_count} 条` : "";
   $("#result-subtitle").textContent = `${shortAddr(data.seed)} · 最多 ${data.max_depth} 级 · 来源 ${sourcesLabel}${apiUsage}${stakeUsage} · 数据截止 ${data.data_cutoff_block ? number(data.data_cutoff_block) : "未采集"} 区块`;
   setSeedAddress(data.seed);
@@ -1063,6 +1098,9 @@ function showJobProgress(state) {
     parts.push("查询已结束，正在合成结果（最多约 12 秒）");
   }
   parts.push(`累计请求 ${state.requests_total} 次`);
+  if (state.prefetched_requests > 0) {
+    parts.push(`起始地址画像已用 ${state.prefetched_requests} 次`);
+  }
   if (state.remaining_requests > 0) {
     parts.push(`剩余 ${state.remaining_requests} 个请求（约 ${state.estimated_rounds_left} 轮）`);
   } else {
@@ -1205,6 +1243,10 @@ async function runRelations(keepRemovals = false) {
     if (state.removedAddresses.size) {
       payload.removed_addresses = [...state.removedAddresses];
     }
+    // 第一步：先把起始地址画像查出来填到左栏，用户不用等关联跑完。
+    // 这一步固定 2 次 Taostats 请求（命中 5 分钟缓存则 0 次），
+    // 花掉的次数回传给后续查询从本轮额度里扣，不会让同一分钟超限。
+    payload.prefetched_requests = await prefetchSeedProfile(seed, requestedSource);
     if (requestedSource === "taostats" && $("#multi-round").checked) {
       const rounds = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 5));
       $("#max-rounds").value = rounds;
@@ -1289,9 +1331,11 @@ async function runBackfill() {
         `正在补录 ${index + 1}/${seeds.length}：${seed.slice(0, 8)}… · 成功 ${ok} / 失败 ${failed}`
       );
       try {
+        // 补录不走左栏预取（一次几十个地址，逐个预取只会多花额度），
+        // 画像交给 result 合成阶段一次性取，这里传 0。
         const data = await api("/api/relations", {
           method: "POST",
-          body: JSON.stringify({ ...payloadBase, seed }),
+          body: JSON.stringify({ ...payloadBase, seed, prefetched_requests: 0 }),
         });
         ok += 1;
         related += data.related.length;

@@ -357,6 +357,8 @@ class RelationInput(BaseModel):
     filter_publics: bool = False
     # 手动「移除关联」的地址：不进结果，也不再作为中转跳点（其线索整体剪除）。
     removed_addresses: list[str] = Field(default_factory=list, max_length=100)
+    # 扫描开始前，前端已经用 /api/seed-profile 花掉的请求数：从本轮额度里扣。
+    prefetched_requests: int = Field(default=0, ge=0, le=10)
 
 
 class RelationJobInput(BaseModel):
@@ -373,6 +375,14 @@ class RelationJobInput(BaseModel):
     removed_addresses: list[str] = Field(default_factory=list, max_length=100)
     round_interval_seconds: int | None = Field(default=None, ge=10, le=600)
     max_rounds: int | None = Field(default=None, ge=1, le=100)
+    prefetched_requests: int = Field(default=0, ge=0, le=10)
+
+
+class SeedProfileInput(BaseModel):
+    """起始地址画像：扫描一开始先查这个，左栏立刻能显示。"""
+
+    seed: str = Field(min_length=1, max_length=64)
+    data_source: str = Field(default="taostats", pattern="^(local|taostats)$")
 
 
 class RelationSyncInput(BaseModel):
@@ -1140,6 +1150,29 @@ def relations(payload: RelationInput, svc: Annotated[LinkService, Depends(servic
             filter_systems=payload.filter_systems,
             filter_publics=payload.filter_publics,
             removed_addresses=[value.strip() for value in payload.removed_addresses if value.strip()],
+            prefetched_requests=payload.prefetched_requests,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/seed-profile")
+def seed_profile(
+    payload: SeedProfileInput, svc: Annotated[LinkService, Depends(service)]
+):
+    """只查起始地址画像（注册日期 / 质押次数 / 日均频次 / 余额）。
+
+    扫描一开始先调它，左栏立刻能显示，不用等关联地址跑完。固定 2 次
+    Taostats 请求（命中缓存则 0 次），返回的 ``api_requests`` 前端要回传给
+    ``/api/relations``，从本轮额度里扣掉。
+    """
+
+    if not payload.seed.strip():
+        raise HTTPException(422, "seed must not be blank")
+    try:
+        return svc.seed_profile_snapshot(
+            seed=payload.seed.strip(),
+            data_source=payload.data_source,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -1171,6 +1204,7 @@ def start_relation_job(
             removed_addresses=[value.strip() for value in payload.removed_addresses if value.strip()],
             round_interval=payload.round_interval_seconds,
             max_rounds=payload.max_rounds,
+            prefetched_requests=payload.prefetched_requests,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

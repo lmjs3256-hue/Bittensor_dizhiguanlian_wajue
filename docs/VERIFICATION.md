@@ -1,5 +1,28 @@
 # 验证交付记录
 
+## 0.8.1 验证记录（2026-11-06）
+
+**需求：质押解质押是不是只能本地索引？API 查要调几次？扫描开始优先查起始地址信息，查到先显示左栏，关联继续扫描，结束再汇总**
+
+- **问题一：质押/解质押只能本地索引吗？** 不是。本地索引只有 `stake_transfer`（子网 stake 转移）边，**没有** `stake` / `unstake` 操作事件，数不出质押次数；真实次数必须走 Taostats `GET /v1/subnets/stake-events?coldkey=<地址>&action=all` 的 `pagination.total_items`。0.8.0 的实现只在 `data_source="taostats"` 时走 API，选本地索引会退回转账笔数——**这是个口径错误**，已改成不分数据源、只要配了 key 就走 API。
+- **问题二：API 要调几次？** 画像固定 **2 次**：`/api/account/latest/v1`（注册日期 + 余额构成）1 次，`/v1/subnets/stake-events`（质押总量，`limit=1` 只读分页）1 次。都要 5 分钟缓存，命中则为 0 次。关联扫描本身另算（单轮 5 次、分轮每轮 5 次）。
+- 新增接口 `POST /api/seed-profile`（`{seed, data_source}` → `{seed, seed_profile, api_requests, warnings}`），只查画像不跑关联；新增 `RelationInput.prefetched_requests` / `RelationJobInput.prefetched_requests`（0–10）。
+- 预算扣减：`RelationContext.prefetched_requests` → `relations()` 的爬取预算改为 `5 - validator_requests - prefetched_requests`；分轮作业只在 `rounds_done == 0` 时扣（后续轮次已隔 62 秒）。
+- **实测（真实 key，本机 5 次/分钟限速，地址 `5CQBKc8nXsmgDyR4L8daUY1Xq2evTNhLaNNJoAsp68hWjMQ4`）**：
+  - `POST /api/seed-profile` → 2.6 秒返回，`api_requests=2`，注册 `2026-03-27 / finney`、质押 `9,468` 次、`active_days=224`、`daily_frequency=42.27`、余额 `37.453912447`（可用 16.514131557 + 质押 20.93978089），`warnings=[]`。
+  - 紧接着 `POST /api/relations`（depth 2、`prefetched_requests=2`）→ `api_requests=3`（5−2，画像命中缓存 0 次）、`prefetched_requests=2`、`seed_profile_requests=0`、**15 个关联地址**、无 429。
+  - 地址 `5CCo5n…TFX`：画像 `api_requests=2`、质押 `906` 次、日均 `1.5 次/天`、注册 `2025-03-11`。
+- **时序实测（CDP，1440×1000，真实点击「扫描关联」，不 mock 前端）**：
+  - 3.1 秒左栏出现并显示「查询中…」→ 5.5 秒填入真实数字（`906 次`）→ 11.9 秒关联结果才渲染。`sidebarFilledBeforeRelations = true`，画像比结果早 **6.4 秒**。
+  - 请求体确认 `prefetched_requests: 2`、`data_source: "taostats"` 已实际传给 `/api/relations`。
+- **口径修正（本轮发现并修掉）**：配了 key 但质押接口被限流时，旧逻辑会拿「本地索引转账 1 笔」填「质押 1 次」，日均算成 `0.0 次/天`，看起来像这个地址从没质押过。现在如实显示「未获取」+ 原因；只有完全没配 key 才退回本地转账笔数并标注口径，且此时不计算日均频次（两种口径不同）。
+- 画像请求现在计入「Taostats 查询次数」统计（此前漏记）；结果新增 `seed_profile_requests`、`api_requests_total`，副标题显示「+ 起始地址画像 N 次」。
+- **排版数值核查（CDP）**：
+  - 宽屏三档 1440 / 1180 / 1080：`fitsSidebar=true`、`cardOverflowX=false`、`pageOverflowX=false`、`valuesAligned=true`（四行右边缘统一 `207px`）、`overlap=false`、行无溢出；字号 `dt=11px` / `value=13px` / `note=10px`；地址显示 `5CQB…jMQ4`，`dataset.full` 为完整 48 位。
+  - 窄屏 950 / 900 / 760 / 560 / 480：`inSlot=true`、`hasInSlotClass=true`；卡片宽 903 → 433，高度在 ≤760px 由 131px 变 178px（降两列），全程 `cardOverflowX=false`、`pageOverflowX=false`、无重叠无溢出。
+  - 探针踩坑记录：卡片搬到 `#seed-card-slot` 后若 `#result` 仍 hidden，量到的是 `0×0`、`overlap` 全真——必须先 `classList.remove('hidden')`；另外 `--user-data-dir` 必须给绝对路径，相对路径在 Git Bash 下会让 Chrome 起不来。
+- 回归：**264 passed**（新增 `tests/test_seed_profile_endpoint.py` 8 条 + `tests/test_seed_profile.py` 5 条：接口四项指标、缓存时请求数 0、非法地址 422、无 key 不报错、预算扣减到 3 次、画像命中缓存不重复取、作业首轮扣减、payload 暴露 `prefetched_requests`、本地模式走 API、缓存命中不计请求数、失败不拿转账笔数顶替）。
+
 ## 0.8.0 验证记录（2026-11-06）
 
 **需求：起始地址的「历史交易」「日均频次」不算转账笔数，改为统计子网质押买卖次数（质押与解质押都算）**

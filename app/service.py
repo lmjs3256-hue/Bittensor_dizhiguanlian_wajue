@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from .collector import RPCCollector, query_account_balances
 from .crawl import CrawlState, TaostatsCrawl
@@ -270,6 +270,10 @@ class RelationContext:
     # 地址库两两之间的历史累计规模：本地索引/巡检抓到过多少就记多少，
     # 用于「没有直接金额可比时」的关联排序（不额外消耗 API 额度）。
     book_pair_stats: dict[tuple[str, str], Decimal] = field(default_factory=dict)
+    # 本轮之前已经为「起始地址画像」花掉的 Taostats 请求数：扫描开始时先查
+    # 画像是为了立刻把左栏填上，这几次请求必须从本轮 5 次额度里扣掉，
+    # 否则同一分钟内 2 + 5 = 7 次会被本地 5 次/分钟的保护限速挡掉。
+    prefetched_requests: int = 0
 
 
 def _extend_unique(target: list[str], items: list[str]) -> None:
@@ -2681,6 +2685,18 @@ class LinkService:
         return archive_id
 
     # -- 起始地址画像：注册日期 / 质押操作次数 / 日均频次 / 余额 ------------
+    def _record_api_use(
+        self, endpoint: str, *, status_code: int | None = None, success: bool = False
+    ) -> None:
+        """记一次真实发出去的 Taostats 请求；用量统计失败不能影响主流程。"""
+
+        try:
+            self.database.record_api_request(
+                endpoint, status_code=status_code, success=success
+            )
+        except Exception:  # noqa: BLE001 - 统计失败不打断查询
+            pass
+
     def _seed_profile(
         self,
         seed: str,
@@ -2702,6 +2718,10 @@ class LinkService:
 
         每个字段都可能为 None（未配置 key / 限流 / 网络失败），界面显示
         「未获取」；任何异常都不会打断主查询。
+
+        请求成本固定 **2 次**（``account/latest`` 1 次 + ``stake-events`` 1 次，
+        都只读分页总量、不翻页），走 5 分钟缓存；命中缓存不计入
+        ``api_requests``，也不重复写用量统计。
         """
 
         profile: dict[str, Any] = {
@@ -2717,6 +2737,7 @@ class LinkService:
             "daily_frequency": None,
             "transfer_count_scope": None,
             "source": None,
+            "api_requests": 0,
         }
         if not include:
             return profile
@@ -2728,6 +2749,10 @@ class LinkService:
                 account = get_account_profile(seed)
             except Exception as exc:  # noqa: BLE001 - 画像失败不能影响主查询
                 warnings.append(f"起始地址的注册日期与总余额未获取：{exc}")
+            else:
+                if account is not None and not account.from_cache:
+                    profile["api_requests"] += 1
+                    self._record_api_use("/api/account/latest/v1", success=True)
         if account is not None:
             profile.update(
                 registered_on=account.created_on_date,
@@ -2738,17 +2763,24 @@ class LinkService:
                 source="taostats",
             )
 
-        # 质押操作次数（质押 + 解质押）：本地索引没有这类事件，
-        # 拿不到时退回「本地索引内的转账笔数」，并明确标注口径。
+        # 质押操作次数（质押 + 解质押）：本地索引只有 stake_transfer 边，
+        # 没有 stake/unstake 操作事件，数不出真实次数——这时宁可显示
+        # 「未获取」，也不能拿「本地转账 1 笔」冒充「质押 1 次」，
+        # 那会让日均频次算成 0.0 次/天，看起来像「这个地址没质押过」。
         count: int | None = None
         scope: str | None = None
-        if data_source == "taostats" and taostats_is_configured():
+        if taostats_is_configured():
             try:
-                count, _cached = get_stake_event_total(seed)
+                count, cached = get_stake_event_total(seed)
                 scope = "taostats"
+                if not cached:
+                    profile["api_requests"] += 1
+                    self._record_api_use("/v1/subnets/stake-events", success=True)
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"起始地址的质押操作次数未获取：{exc}")
-        if count is None:
+        if count is None and not taostats_is_configured():
+            # 没有 key 的用户只能看本地索引：明确标注这是转账笔数、
+            # 不是质押次数，让界面能区分口径而不是当成质押数。
             counted = sum(
                 1
                 for row in transfer_rows
@@ -2764,7 +2796,9 @@ class LinkService:
         profile["transfer_count_scope"] = scope
 
         # 日均频次：注册日到今天的自然天数（当天的按 1 天算）。
-        if count is not None and profile["registered_on"]:
+        # 只有真实的质押事件次数才算频次；本地转账笔数的口径不同，
+        # 拿来除会得出一个「看着像质押频次、实际不是」的数字。
+        if count is not None and scope == "taostats" and profile["registered_on"]:
             try:
                 registered = date.fromisoformat(str(profile["registered_on"]))
                 days = max((utcnow().date() - registered).days, 1)
@@ -2774,7 +2808,51 @@ class LinkService:
                 pass
         return profile
 
-    # -- 按最新地址库校正历史结果 ----------------------------------------
+    def seed_profile_snapshot(
+        self,
+        *,
+        seed: str,
+        data_source: str = "taostats",
+        include: bool = True,
+    ) -> dict[str, Any]:
+        """只查起始地址画像，不跑关联：扫描一开始就能把左栏填上。
+
+        固定花 **2 次** Taostats 请求（注册日期/余额 + 质押操作次数），
+        都在 5 分钟缓存里；本地索引模式也照样走 API——本地索引只有
+        ``stake_transfer`` 边，没有 ``stake`` / ``unstake`` 操作事件，
+        数不出真实的质押次数，只能拿 API 的总量。
+
+        返回的 ``api_requests`` 由调用方（前端）回传给查询接口，
+        从本轮 5 次额度里扣掉，避免同分钟超限。
+        """
+
+        address = (seed or "").strip()
+        if not is_valid_ss58(address):
+            raise ValueError("起始地址不是有效的 SS58 地址")
+        warnings: list[str] = []
+        with self.database.session() as db:
+            rows = db.scalars(
+                select(Transfer).where(
+                    or_(
+                        Transfer.from_address == address,
+                        Transfer.to_address == address,
+                    )
+                )
+            ).all()
+        profile = self._seed_profile(
+            address,
+            transfer_rows=to_relation_records(rows),
+            data_source=data_source,
+            include=include,
+            warnings=warnings,
+        )
+        return {
+            "seed": address,
+            "seed_profile": profile,
+            "api_requests": int(profile.get("api_requests") or 0),
+            "warnings": warnings,
+        }
+
     @staticmethod
     def _library_entries(db) -> list[LibraryEntry]:
         """把地址库读成关联引擎用的条目（只传人工命名，避免角色名被后四位覆盖）。"""
@@ -3459,6 +3537,7 @@ class LinkService:
         filter_systems: bool = False,
         filter_publics: bool = False,
         removed_addresses: Iterable[str] = (),
+        prefetched_requests: int = 0,
     ) -> RelationContext:
         """收集一次查询中不随轮次变化的部分：地址库、本地索引、过滤名单。"""
 
@@ -3637,6 +3716,7 @@ class LinkService:
             validator_api_requests=validator_api_requests,
             validator_cache_hits=validator_cache_hits,
             book_pair_stats=pair_stats,
+            prefetched_requests=max(0, int(prefetched_requests or 0)),
         )
 
     def new_crawl(self, context: RelationContext) -> TaostatsCrawl:
@@ -3697,6 +3777,7 @@ class LinkService:
         filter_systems: bool = False,
         filter_publics: bool = False,
         removed_addresses: Iterable[str] = (),
+        prefetched_requests: int = 0,
     ) -> dict[str, Any]:
         """单轮查询：只花掉一次请求预算，返回当前已取得的结果。"""
 
@@ -3713,12 +3794,17 @@ class LinkService:
             filter_systems=filter_systems,
             filter_publics=filter_publics,
             removed_addresses=removed_addresses,
+            prefetched_requests=prefetched_requests,
         )
         crawl = None
         if data_source == "taostats" and seed not in context.excluded_addresses:
             crawl = self.new_crawl(context)
+            # 画像已经花掉 prefetched_requests 次：剩下的才是本轮的爬取额度。
             budget = max(
-                0, MAX_TAOSTATS_REQUESTS_PER_QUERY - context.validator_api_requests
+                0,
+                MAX_TAOSTATS_REQUESTS_PER_QUERY
+                - context.validator_api_requests
+                - context.prefetched_requests,
             )
             crawl.run_round(budget)
         result = self.finalize_relations(
@@ -3944,14 +4030,16 @@ class LinkService:
                 balances=balances,
                 book_pair_stats=context.book_pair_stats,
             )
-        # 起始地址画像：注册日期 / 余额构成 / 历史转账笔数。这三项只对
-        # seed 取，各占 1 次 Taostats 请求，失败就留空由界面显示「未获取」，
-        # 绝不因为拿不到画像而让主查询失败。
+        # 起始地址画像：注册日期 / 余额构成 / 质押操作次数。扫描开始时前端
+        # 已经用 /api/seed-profile 取过一次（命中 5 分钟缓存，这里 0 次请求），
+        # 所以正常情况下不会再花额度；本次请求数累加进 api_requests，
+        # 让「本轮花了多少次」对得上真实网络调用。
+        profile_include = include_balances or bool(context.prefetched_requests)
         seed_profile = self._seed_profile(
             seed,
             transfer_rows=transfer_rows,
             data_source=data_source,
-            include=include_balances,
+            include=profile_include,
             warnings=warnings,
         )
         result = {
@@ -3970,6 +4058,11 @@ class LinkService:
             "api_requests": api_requests,
             "api_request_budget": MAX_TAOSTATS_REQUESTS_PER_QUERY,
             "api_cache_hits": cache_hits,
+            # 起始地址画像单独花掉几次（扫描开始时已查过，命中缓存就是 0）。
+            "seed_profile_requests": int(seed_profile.get("api_requests") or 0),
+            # 本次调用真实发出的请求总数（含画像），给界面显示真实成本。
+            "api_requests_total": api_requests + int(seed_profile.get("api_requests") or 0),
+            "prefetched_requests": context.prefetched_requests,
             "validator_api_requests": context.validator_api_requests,
             "validator_cache_hits": context.validator_cache_hits,
             "filter_exchanges": filter_exchanges,

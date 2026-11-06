@@ -702,3 +702,22 @@ Set-Location G:\bittensor-wallet-link-intel
 - **验证数据**：真实接口 `9266` 那类大数照实显示，别截断；本机实测 `5CQBKc…MQ4` = 9466 次 / 224 天 / 42.26 次/天。
 - **踩坑**：探测接口时连发会被本地限速（5 次/分钟）挡住，`429` 不是接口坏了。间隔 13–14 秒再发，或直接 `sleep 60`。另外**测试用的地址必须是真实存在的 SS58**，随便编的会返回 `coldkey is not a valid SS58 address`（400），别误判成参数错误。
 - **验收**：**251 passed**（`tests/test_seed_profile.py` +5 条：参数必须 `action=all&limit=1` 且不含 `is_transfer`、缓存第二次不发请求、429 抛限流、无 key 抛鉴权、汇总与日均）。UI 三态（正常 / 本地索引 / 缺失）文案与对齐均正确，1440px 零溢出。
+
+## 45. 2026-11-06 0.8.1 交接：扫描先查画像 + 本地索引也走 API 取质押次数
+
+- **用户的两个问题，答案记这里**：
+  1. **质押/解质押不是只能本地索引**——恰恰相反，**本地索引里根本没有**。本地库只有 `stake_transfer` 边（子网 stake 在 coldkey 之间的转移），没有 `stake` / `unstake` 操作事件，所以拿本地数据数出来的永远不是质押次数。真实次数只能走 `GET /v1/subnets/stake-events?coldkey=<地址>&action=all` 的 `pagination.total_items`。
+  2. **API 调用次数：固定 2 次**。`/api/account/latest/v1`（注册日期 + 余额构成）1 次，`/v1/subnets/stake-events?limit=1`（只读分页总量、不翻页）1 次。都吃 5 分钟缓存，命中即 0 次。
+- **0.8.0 留下的口径 bug（本轮修掉）**：`_seed_profile` 里原写 `if data_source == "taostats" and taostats_is_configured()`，选本地索引时直接跳过 API，退回「本地索引转账笔数」。更糟的是**配了 key 但被限流**时也会退回，于是「本地转账 1 笔」被显示成「质押 1 次 / 日均 0.0 次/天」，看起来像这个地址从没质押过。现在：只要配了 key 就调 API；失败就如实「未获取」；只有**完全没配 key** 才退回本地笔数并标注口径，且此时**不算日均频次**（两种口径相除是假数字）。
+- **新流程（用户要求的「先显示左栏、再继续扫描」）**：
+  - 新增 `POST /api/seed-profile`（`SeedProfileInput{seed, data_source}`）→ `{seed, seed_profile, api_requests, warnings}`。服务层是 `LinkService.seed_profile_snapshot()`，只查画像不跑关联，2.6 秒返回。
+  - 前端 `runRelations()` 第一步 `await prefetchSeedProfile(seed, source)`：先把卡片显示出来（四项写「查询中…」），拿到数据 `renderSeedProfile()` 填真实值，**返回本次真实花掉的请求数**；随后才走 `/api/relations` 或 `/api/relations/jobs`，把这个数放进 `prefetched_requests`。
+  - 后端 `RelationContext.prefetched_requests` → `relations()` 的爬取预算 `5 - validator_api_requests - prefetched_requests`；`RelationManager.create(..., prefetched_requests=)` → `_run_round_locked` 里**只在 `rounds_done == 0` 时扣**（后续轮次间隔 62 秒，限速窗口已重置，再扣就白白少查）。
+  - 结果新增 `seed_profile_requests`（画像那几次）与 `api_requests_total`（含画像总计），`job.payload()` 暴露 `prefetched_requests`。副标题显示「+ 起始地址画像 N 次」，分轮进度显示「起始地址画像已用 N 次」。
+- **别把画像请求算成 0 或 2 硬编码**：`get_account_profile` / `get_stake_event_total` 都返回/带 `from_cache` / `cached`，`_seed_profile` 按真实命中情况累加 `api_requests`，只有真的发了网络请求才 `_record_api_use()`（新增的封装，包了 try/except，统计失败不影响主流程）。硬编码会让「缓存命中却扣额度」或「实际发了却没记用量」。
+- **时序实测数据（下次改这块拿这个对比）**：3.1 秒左栏出现「查询中…」→ 5.5 秒填真实数字 → 11.9 秒关联结束渲染。CDP 探针 `.probe/chk_seed_first_081.py` 直接点按钮、不 mock 前端，用 `performance.now()` 记 `/api/seed-profile` 与 `/api/relations` 的完成时刻，外加每 100ms 采一次左栏文本。
+- **探针两个坑（踩过，别再踩）**：
+  - 卡片搬到 `#seed-card-slot` 后，如果 `#result` 还是 `hidden`，量出来是 `0×0`、`overlap` 全 `true`——必须先在探针里 `classList.remove('hidden')`。
+  - Chrome 的 `--user-data-dir` **必须给绝对路径**。给相对路径（`.probe/xxx`）在 Git Bash 下会静默失败，`/json/list` 拿不到 `type=page`，报 `scheme isn't ws or wss`。另外机器上常驻的用户 Chrome 会抢 profile，`--disable-extensions` 也建议带上，否则列表里第一个是扩展的 background_page。
+- **验收**：**264 passed**（新增 `tests/test_seed_profile_endpoint.py` 8 条 + `tests/test_seed_profile.py` 5 条）。真实端到端：`5CQBKc…MQ4` 画像 9,468 次 / 42.27 次/天 / 余额 37.45（可用 16.51 + 质押 20.94）；随后带 `prefetched_requests=2` 扫描 → `api_requests=3`、15 个关联、无 429。排版 1440/1180/1080 三档 `fitsSidebar=true`、右边缘统一 207px；窄屏 950/900/760/560/480 `inSlot=true`、≤760px 降两列、零溢出。
+- **给下一任**：改动画像相关的任何请求路径，都先想清楚「这次请求会不会和本轮 5 次额度打架」。画像跑在扫描之前，是唯一一个**在用户按下按钮后、关联开始前**就消耗额度的东西，`prefetched_requests` 这条链路断了就会稳定出现 429。

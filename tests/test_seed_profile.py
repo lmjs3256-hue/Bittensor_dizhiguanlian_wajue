@@ -112,8 +112,35 @@ def test_profile_swallows_api_failures(monkeypatch):
     assert any("质押操作次数" in item for item in warnings)
 
 
+def test_profile_does_not_fake_stake_count_from_transfers(monkeypatch):
+    """配了 key 但质押接口失败时，不能拿「本地转账 1 笔」冒充「质押 1 次」。"""
+
+    monkeypatch.setattr(service_module, "taostats_is_configured", lambda: True)
+    monkeypatch.setattr(
+        service_module,
+        "get_account_profile",
+        lambda address: taostats.AccountProfile(created_on_date="2025-09-17"),
+    )
+
+    def boom(address):
+        raise taostats.TaostatsRateLimitError("限流", request_made=True)
+
+    monkeypatch.setattr(service_module, "get_stake_event_total", boom)
+    warnings: list[str] = []
+
+    profile = _profile(
+        monkeypatch, transfer_rows=[_Row(SEED, "A")], data_source="taostats", warnings=warnings
+    )
+
+    assert profile["stake_event_count"] is None
+    assert profile["stake_event_scope"] is None
+    # 次数拿不到，日均频次也不能拿转账笔数算出来。
+    assert profile["daily_frequency"] is None
+    assert any("质押操作次数未获取" in item for item in warnings)
+
+
 def test_profile_falls_back_to_local_count(monkeypatch):
-    """Taostats 不可用时，用本地索引里的笔数并标明口径。"""
+    """完全没 key 时用本地索引笔数，并标明口径（不是质押次数）。"""
 
     monkeypatch.setattr(service_module, "taostats_is_configured", lambda: False)
     rows = [_Row(SEED, "A"), _Row("B", SEED), _Row("C", "D")]
@@ -270,3 +297,90 @@ def test_profile_stake_count_and_frequency(monkeypatch):
     assert profile["stake_event_scope"] == "taostats"
     days = max((date.today() - date(2025, 9, 17)).days, 1)
     assert profile["daily_frequency"] == round(906 / days, 2)
+
+
+# -- 本地索引也要走 API 拿质押次数 ------------------------------------------
+
+
+def test_local_source_still_uses_api_for_stake_count(monkeypatch):
+    """本地索引没有 stake/unstake 事件，质押次数只能由 API 给。"""
+
+    monkeypatch.setattr(service_module, "taostats_is_configured", lambda: True)
+    monkeypatch.setattr(
+        service_module,
+        "get_account_profile",
+        lambda address: taostats.AccountProfile(created_on_date="2025-09-17"),
+    )
+    monkeypatch.setattr(service_module, "get_stake_event_total", lambda address: (906, False))
+
+    profile = _profile(monkeypatch, data_source="local", transfer_rows=[_Row(SEED, "A")])
+
+    # 不该因为选了本地索引就退回「本地转账 1 笔」。
+    assert profile["stake_event_count"] == 906
+    assert profile["stake_event_scope"] == "taostats"
+
+
+def test_profile_counts_only_real_network_requests(monkeypatch):
+    """缓存命中不算请求数：前端靠它扣预算，算多了会白扣额度。"""
+
+    monkeypatch.setattr(service_module, "taostats_is_configured", lambda: True)
+    monkeypatch.setattr(
+        service_module,
+        "get_account_profile",
+        lambda address: taostats.AccountProfile(
+            created_on_date="2025-09-17", from_cache=True
+        ),
+    )
+    monkeypatch.setattr(service_module, "get_stake_event_total", lambda address: (906, True))
+
+    profile = _profile(monkeypatch)
+
+    assert profile["api_requests"] == 0
+
+
+def test_profile_reports_two_requests_on_full_miss(monkeypatch):
+    monkeypatch.setattr(service_module, "taostats_is_configured", lambda: True)
+    monkeypatch.setattr(
+        service_module,
+        "get_account_profile",
+        lambda address: taostats.AccountProfile(created_on_date="2025-09-17"),
+    )
+    monkeypatch.setattr(service_module, "get_stake_event_total", lambda address: (906, False))
+
+    profile = _profile(monkeypatch)
+
+    # 注册日期/余额 1 次 + 质押总量 1 次，固定 2 次。
+    assert profile["api_requests"] == 2
+
+
+def test_profile_records_api_usage(monkeypatch):
+    """画像请求要计入「Taostats 查询次数」统计，否则用量面板会少算。"""
+
+    recorded: list[tuple[str, bool]] = []
+
+    class _FakeDb:
+        def record_api_request(self, endpoint, *, status_code=None, success=False):
+            recorded.append((endpoint, success))
+
+    service = object.__new__(service_module.LinkService)
+    service.database = _FakeDb()
+    monkeypatch.setattr(service_module, "taostats_is_configured", lambda: True)
+    monkeypatch.setattr(
+        service_module,
+        "get_account_profile",
+        lambda address: taostats.AccountProfile(created_on_date="2025-09-17"),
+    )
+    monkeypatch.setattr(service_module, "get_stake_event_total", lambda address: (906, False))
+
+    service._seed_profile(
+        SEED,
+        transfer_rows=[],
+        data_source="taostats",
+        include=True,
+        warnings=[],
+    )
+
+    assert recorded == [
+        ("/api/account/latest/v1", True),
+        ("/v1/subnets/stake-events", True),
+    ]
