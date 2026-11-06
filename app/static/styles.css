@@ -383,3 +383,38 @@ body.license-locked .shell { filter:blur(2px); pointer-events:none; user-select:
 .merge-mode { display:flex; align-items:center; gap:4px; color:var(--muted); font-size:12px; cursor:pointer; }
 .merge-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .merge-actions small { color:var(--muted); font-size:11.5px; }
+
+/* -- 地址库巡检 / 自动入库 ------------------------------------------------ */
+.watch-form { display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-top:6px; }
+.watch-form > label { min-width:96px; }
+.watch-form input[type="number"] { width:110px; }
+.watch-check { display:flex; align-items:center; gap:7px; color:var(--ink); font-size:12.5px; white-space:nowrap; padding-bottom:10px; }
+.watch-check input { width:16px; height:16px; padding:0; accent-color:var(--accent); }
+.watch-panel .library-hint { display:block; margin-top:10px; color:var(--muted); font-size:11.5px; line-height:1.6; }
+.watch-log { margin-top:12px; border-top:1px solid var(--line); padding-top:12px; display:grid; gap:8px; }
+.watch-log-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.watch-log-head select { width:auto; padding:6px 10px; font-size:12px; }
+.watch-log-head #watch-log-count { color:var(--muted); font-size:11.5px; }
+.watch-log-list { display:grid; gap:7px; max-height:380px; overflow:auto; }
+.watch-log-item { border:1px solid var(--line); border-radius:9px; padding:9px 11px; background:var(--bg); display:grid; gap:3px; }
+.watch-log-line { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.watch-log-line strong { font-family:var(--mono); font-size:12.5px; }
+.watch-log-line small { color:var(--muted); font-size:11px; }
+.watch-log-reason,.watch-log-time { color:var(--muted); font-size:11px; line-height:1.55; }
+.watch-log-time code { color:var(--ink); }
+
+/* -- 关联强度徽章 -------------------------------------------------------- */
+.strength-badge { display:inline-block; border-radius:20px; padding:3px 9px; font-size:11px; font-weight:650; white-space:nowrap; }
+.strength-badge.s4 { background:#fde7e4; color:#a32b1c; }
+.strength-badge.s3 { background:#fdeedd; color:#95500a; }
+.strength-badge.s2 { background:var(--accent-soft); color:var(--accent); }
+.strength-badge.s1 { background:var(--bg); color:var(--muted); border:1px solid var(--line); }
+.strength-badge.s0 { background:var(--bg); color:var(--muted); }
+@media (prefers-color-scheme: dark) { .strength-badge.s4 { background:#4a2723; color:#ffb3a8; } .strength-badge.s3 { background:#463421; color:#ffd29b; } }
+:root[data-theme="darkgray"] .strength-badge.s4 { background:#4a2723; color:#ffb3a8; }
+:root[data-theme="darkgray"] .strength-badge.s3 { background:#463421; color:#ffd29b; }
+:root[data-theme="eye"] .strength-badge.s4 { background:#f0dfd9; color:#8a3a2c; }
+:root[data-theme="eye"] .strength-badge.s3 { background:#efe6d3; color:#7b5a29; }
+@media (max-width:560px) { .watch-form { gap:10px; } .watch-form > label { min-width:calc(50% - 5px); flex:1 1 calc(50% - 5px); } .watch-form input[type="number"] { width:100%; } }
+.watch-actions { display:flex; gap:8px; align-items:center; margin-left:auto; flex-wrap:wrap; }
+@media (max-width:560px) { .watch-actions { margin-left:0; width:100%; } .watch-actions button { flex:1; } }

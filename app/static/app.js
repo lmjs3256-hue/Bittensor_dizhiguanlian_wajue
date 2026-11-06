@@ -232,7 +232,10 @@ function navigate(view, updateHash = true) {
       else history.replaceState(null, "", `#${view}`);
     } catch (_) { /* 本地文件打开时忽略 */ }
   }
-  if (view === "library") loadLibrary();
+  if (view === "library") {
+    loadLibrary();
+    loadWatchStatus();
+  }
   if (view === "history") loadHistory();
   if (view === "release") loadVersionInfo();
 }
@@ -390,9 +393,29 @@ function exchangeDecisionControl(row) {
   return `<div class="exchange-decision">${btn("confirm", "标为交易所", "公共地址或未录入的交易所？标记后刷新，其下游只经由它连通的地址会自动移除")}</div>`;
 }
 
+const STRENGTH_CLASS = { "极强": "s4", "强": "s3", "中": "s2", "弱": "s1", "未知": "s0" };
+
+// 老版本存下的历史结果没有 strength 字段，这里按同一套规则现算一份，
+// 保证「查看记录」打开时也有强度标签（不影响排序顺序）。
+function fallbackStrength(row) {
+  const amount = Number(row.total_tao || 0);
+  const depth = Number(row.depth || 1);
+  let tier = amount >= 1000 ? 4 : amount >= 100 ? 3 : amount >= 30 ? 2 : amount > 0 ? 1 : 0;
+  if (tier >= 1 && Number(row.tx_count || 0) >= 3 && tier < 4) tier += 1;
+  if (depth >= 2) tier = Math.max(1, tier - 1);
+  return { 4: "极强", 3: "强", 2: "中", 1: "弱", 0: "未知" }[tier];
+}
+
+function strengthBadge(row) {
+  const label = String(row.strength || "").trim() || fallbackStrength(row);
+  const cls = STRENGTH_CLASS[label] || "s0";
+  const reason = row.strength_reason || "按累计转账金额与跳数推算（旧记录没有保存强度依据）";
+  return `<span class="strength-badge ${cls}" title="${esc(reason)}">${esc(label)}</span>`;
+}
+
 function relatedTable(rows) {
   if (!rows.length) return '<div class="placeholder">没有达到过滤条件的关联地址。</div>';
-  return `<table><thead><tr><th>关联钱包地址</th><th>当前余额 TAO</th><th>层级</th><th>流入 TAO</th><th>流出 TAO</th><th>累计转账 TAO</th><th>地址库</th><th>备注</th></tr></thead><tbody>${rows.map((row) => {
+  return `<table><thead><tr><th>关联钱包地址</th><th>当前余额 TAO</th><th>层级</th><th title="按累计转账金额分档：≥1000 极强、≥100 强、≥30 中，其余弱；间接关联降一档">关联强度</th><th>流入 TAO</th><th>流出 TAO</th><th>累计转账 TAO</th><th>地址库</th><th>备注</th></tr></thead><tbody>${rows.map((row) => {
     const role = row.address_role
       ? `<span class="tag role-tag" title="${esc(row.role_reason || "")}">${esc(row.address_role)}</span>`
       : "";
@@ -408,7 +431,8 @@ function relatedTable(rows) {
       ? `<button class="ghost note-save" data-path-toggle="${esc(row.address)}" type="button" title="从起始地址到该地址的逐笔转账记录">路径明细</button>`
       : "";
     const removeButton = `<button class="ghost copy-address remove-relation" data-remove-relation="${esc(row.address)}" title="确认非同一人？移除后点「刷新结果」，这条线索的下游地址也会一并消失" type="button">移除关联</button>`;
-    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main">${addressLink(row.address, shortAddr(row.address))}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${removeButton}${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
+    const strength = strengthBadge(row);
+    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main">${addressLink(row.address, shortAddr(row.address))}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${removeButton}${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td>${strength}</td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td>${library}${exchangeActions}</td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 
@@ -433,7 +457,7 @@ function pathDetailRowHtml(row) {
   const seedLabel = seedAddress
     ? `从起始地址 <code>${esc(shortAddr(seedAddress))}</code> 到 <code>${esc(shortAddr(row.address))}</code> 的关联路径`
     : `从起始地址到 <code>${esc(shortAddr(row.address))}</code> 的关联路径`;
-  return `<tr class="path-detail-row" data-path-detail="${esc(row.address)}"><td colspan="8"><div class="path-detail"><div class="path-detail-title">${seedLabel}（共 ${hops.length} 笔转账，按路径顺序）</div><table><thead><tr><th>跳数</th><th>方向（起始地址 → 当前地址）</th><th>类型</th><th>金额 TAO</th><th>时间（北京）</th><th>区块</th></tr></thead><tbody>${body}</tbody></table></div></td></tr>`;
+  return `<tr class="path-detail-row" data-path-detail="${esc(row.address)}"><td colspan="9"><div class="path-detail"><div class="path-detail-title">${seedLabel}（共 ${hops.length} 笔转账，按路径顺序）</div><table><thead><tr><th>跳数</th><th>方向（起始地址 → 当前地址）</th><th>类型</th><th>金额 TAO</th><th>时间（北京）</th><th>区块</th></tr></thead><tbody>${body}</tbody></table></div></td></tr>`;
 }
 
 function togglePathDetail(address) {
@@ -2387,6 +2411,182 @@ async function syncExchangeLibrary() {
   }
 }
 
+// -- 地址库巡检 / 自动入库 ---------------------------------------------------
+const WATCH_RUN_LABEL = {
+  running: "进行中",
+  complete: "已完成",
+  budget: "已达每日上限",
+  error: "失败",
+  disabled: "已关闭",
+  no_api_key: "未配置 API key",
+  waiting: "等待下一轮",
+};
+
+function watchStatusText(data) {
+  const config = data.config || {};
+  const run = data.last_run;
+  const parts = [];
+  parts.push(config.enabled ? "已开启" : "已关闭");
+  parts.push(`可巡检 ${data.watchable || 0} 个地址`);
+  if (!config.enabled) {
+    parts.push("打开开关后才会自动巡检");
+  } else if (run && run.status === "running") {
+    parts.push(`本轮已查 ${run.addresses_checked || 0} 个，入库 ${run.inserted || 0} 个`);
+  } else if (run && run.finished_at) {
+    parts.push(`上轮${WATCH_RUN_LABEL[run.status] || run.status}：查 ${run.addresses_checked || 0} 个，入库 ${run.inserted || 0} 个`);
+    parts.push(historyTime(run.finished_at));
+  } else {
+    parts.push("尚未跑过，等待第一次巡检");
+  }
+  parts.push(`今日请求 ${data.today_requests || 0}/${config.daily_budget || 0}`);
+  if (data.imported) parts.push(`累计自动入库 ${data.imported} 个`);
+  if (!data.api_configured) parts.push("未配置 Taostats key，巡检不会执行");
+  if (run && run.error) parts.push(`提示：${run.error}`);
+  return `巡检状态：${parts.join(" · ")}（时间均为北京时间）`;
+}
+
+function fillWatchConfig(config) {
+  if (!config) return;
+  const enabled = $("#watch-enabled");
+  if (enabled) enabled.checked = Boolean(config.enabled);
+  const threshold = $("#watch-threshold");
+  if (threshold) threshold.value = config.threshold_tao ?? 30;
+  const interval = $("#watch-interval");
+  if (interval) {
+    const value = String(config.interval_minutes ?? 1440);
+    if (![...interval.options].some((option) => option.value === value)) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = `每 ${value} 分钟`;
+      interval.appendChild(option);
+    }
+    interval.value = value;
+  }
+  const budget = $("#watch-budget");
+  if (budget) budget.value = config.daily_budget ?? 700;
+  const stake = $("#watch-stake");
+  if (stake) stake.checked = Boolean(config.include_stake);
+  const follow = $("#watch-follow");
+  if (follow) follow.checked = Boolean(config.follow_auto_imported);
+}
+
+async function loadWatchStatus() {
+  const label = $("#watch-status");
+  try {
+    const data = await api("/api/watch/status");
+    fillWatchConfig(data.config);
+    if (label) label.textContent = watchStatusText(data);
+    state.watchStatus = data;
+    return data;
+  } catch (_) {
+    if (label) label.textContent = "巡检状态：读取失败";
+    return null;
+  }
+}
+
+async function saveWatchConfig() {
+  const payload = {
+    enabled: Boolean($("#watch-enabled")?.checked),
+    threshold_tao: Number($("#watch-threshold")?.value || 30),
+    interval_minutes: Number($("#watch-interval")?.value || 1440),
+    daily_budget: Number($("#watch-budget")?.value || 700),
+    include_stake: Boolean($("#watch-stake")?.checked),
+    follow_auto_imported: Boolean($("#watch-follow")?.checked),
+  };
+  try {
+    await api("/api/watch/config", { method: "POST", body: JSON.stringify(payload) });
+    await loadWatchStatus();
+    toast(`巡检设置已保存：${payload.enabled ? "开启" : "关闭"}，阈值 ${payload.threshold_tao} TAO，${payload.include_stake ? "含" : "不含"}代币转移。`);
+  } catch (error) {
+    toast(`保存巡检设置失败：${error.message}`, true);
+  }
+}
+
+async function runWatchNow() {
+  const button = $("#watch-run");
+  button.disabled = true;
+  button.textContent = "已启动…";
+  try {
+    const data = await api("/api/watch/run", { method: "POST" });
+    if (!data.started) {
+      toast("巡检已经在跑了，进度看下面的状态行。");
+    } else {
+      toast("巡检已在后台启动：每 30 秒检查一个地址，进度会自动更新。");
+    }
+    // 轮询几次，让用户马上看到进度走动。
+    for (let index = 0; index < 6; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      const status = await loadWatchStatus();
+      if (status?.last_run && status.last_run.status !== "running") break;
+    }
+    await loadLibrary();
+  } catch (error) {
+    toast(`启动巡检失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "立即巡检一轮";
+  }
+}
+
+async function toggleWatchLogs() {
+  const panel = $("#watch-log-panel");
+  if (!panel) return;
+  const willShow = panel.classList.contains("hidden");
+  panel.classList.toggle("hidden", !willShow);
+  if (willShow) await loadWatchLogs();
+}
+
+function watchLogHtml(item) {
+  const kind = item.kind === "stake" ? "代币转移" : item.kind === "mixed" ? "转账 + 代币转移" : "普通转账";
+  const state = item.status === "revoked"
+    ? '<span class="tag warn">已撤回</span>'
+    : '<span class="tag">已入库</span>';
+  const action = item.status === "revoked"
+    ? ""
+    : `<button class="ghost note-save" data-revoke-import="${item.id}" type="button" title="从地址库删掉这条自动入库记录，之后巡检不再收它">撤回</button>`;
+  return `<div class="watch-log-item">
+    <div class="watch-log-line"><code>${esc(shortAddr(item.address))}</code>${state}
+      <span class="tag">${esc(item.book || "未归属")}</span>
+      <strong>${esc(formatTao(item.amount_tao))} TAO</strong>
+      <small>${esc(kind)} · ${item.tx_count || 0} 笔转账 / ${item.stake_count || 0} 笔代币</small>
+      ${action}
+    </div>
+    <small class="watch-log-reason">${esc(item.reason || "")}</small>
+    <small class="watch-log-time">${esc(historyTime(item.created_at))} · 触发地址 <code>${esc(shortAddr(item.trigger_address))}</code></small>
+  </div>`;
+}
+
+async function loadWatchLogs() {
+  const list = $("#watch-log-list");
+  const count = $("#watch-log-count");
+  const status = $("#watch-log-filter")?.value ?? "active";
+  if (!list) return;
+  list.innerHTML = '<div class="placeholder">读取中…</div>';
+  try {
+    const data = await api(`/api/library/auto-import-log?limit=100&status=${encodeURIComponent(status)}`);
+    if (count) count.textContent = `共 ${data.total} 条`;
+    if (!data.items.length) {
+      list.innerHTML = '<div class="placeholder">还没有自动入库记录。巡检发现达标的新地址后会写在这里。</div>';
+      return;
+    }
+    list.innerHTML = data.items.map(watchLogHtml).join("");
+  } catch (error) {
+    list.innerHTML = `<div class="placeholder">读取失败：${esc(error.message)}</div>`;
+  }
+}
+
+async function revokeWatchImport(logId) {
+  try {
+    const data = await api(`/api/library/auto-import-log/${logId}/revoke`, { method: "POST" });
+    toast(data.removed ? "已撤回：地址已从地址库删除，之后巡检不会再收它。" : "已标记撤回：该地址是人工记录，只停止自动入库。");
+    await loadWatchLogs();
+    await loadLibrary();
+    await loadWatchStatus();
+  } catch (error) {
+    toast(`撤回失败：${error.message}`, true);
+  }
+}
+
 // 官方交易所名单默认导入：服务启动时后台同步一次，这里只负责显示状态和提示新增。
 async function refreshExchangeSyncStatus() {
   const label = $("#exchange-sync-status");
@@ -2897,9 +3097,18 @@ $("#add-address").addEventListener("click", addAddress);
 $("#choose-file").addEventListener("click", () => $("#library-file").click());
 $("#library-file").addEventListener("change", (event) => { if (event.target.files[0]) uploadLibrary(event.target.files[0]); });
 $("#sync-exchanges").addEventListener("click", syncExchangeLibrary);
+$("#watch-save").addEventListener("click", saveWatchConfig);
+$("#watch-run").addEventListener("click", runWatchNow);
+$("#watch-logs-toggle").addEventListener("click", toggleWatchLogs);
+$("#watch-log-filter").addEventListener("change", loadWatchLogs);
 $("#export-library-csv").addEventListener("click", () => exportLibrary("csv"));
 $("#export-library-json").addEventListener("click", () => exportLibrary("json"));
 document.addEventListener("click", (event) => {
+  const revokeButton = event.target.closest("[data-revoke-import]");
+  if (revokeButton) {
+    revokeWatchImport(Number(revokeButton.dataset.revokeImport));
+    return;
+  }
   const button = event.target.closest("[data-save-relation-note]");
   if (button) saveRelationNote(button);
   const exchangeButton = event.target.closest("[data-exchange-decision]");

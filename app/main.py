@@ -32,6 +32,7 @@ from .taostats import (
     is_configured as taostats_is_configured,
 )
 from .version_info import read_version_info
+from .watch import WatchService
 
 
 ROOT = Path(__file__).resolve().parent
@@ -42,6 +43,12 @@ VERSION_INFO = read_version_info()
 SEED_BOOKS_ENABLED = True
 # 官方交易所名单默认导入：每次启动在后台静默同步一次（有 key 才发请求）。
 AUTO_EXCHANGE_SYNC_ENABLED = True
+# 地址库巡检：调度器每 30 秒推进一个地址（≈每地址 1~2 次请求，卡在 5 次/分钟以内）。
+WATCH_TICK_SECONDS = 30
+# 本地索引定期自动扫描：默认每 5 分钟扫 16 个新块，不消耗 API 额度。
+LOCAL_AUTO_SCAN_ENABLED = True
+LOCAL_AUTO_SCAN_SECONDS = 300
+LOCAL_AUTO_SCAN_BLOCKS = 16
 
 
 async def _auto_sync_exchanges() -> None:
@@ -72,13 +79,20 @@ async def lifespan(_app: FastAPI):
     exchange_sync = (
         asyncio.create_task(_auto_sync_exchanges()) if AUTO_EXCHANGE_SYNC_ENABLED else None
     )
+    watch_loop = asyncio.create_task(_watch_scheduler())
+    local_scan = (
+        asyncio.create_task(_local_scan_scheduler()) if LOCAL_AUTO_SCAN_ENABLED else None
+    )
     try:
         yield
     finally:
         scheduler.cancel()
         if exchange_sync is not None:
             exchange_sync.cancel()
-        for task in (scheduler, exchange_sync):
+        watch_loop.cancel()
+        if local_scan is not None:
+            local_scan.cancel()
+        for task in (scheduler, exchange_sync, watch_loop, local_scan):
             if task is None:
                 continue
             try:
@@ -95,6 +109,11 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 SERVICE = LinkService(DATABASE, CONFIG.rpc_url)
 JOBS = RelationJobManager()
+WATCH = WatchService(DATABASE)
+# 手动「立即巡检」的并发保护：同一时刻只允许跑一轮。
+WATCH_LOCK = asyncio.Lock()
+# 定期本地索引扫描的并发保护（真正的互斥在数据库扫描锁里）。
+LOCAL_SCAN_LOCK = asyncio.Lock()
 
 # 勾了「使用 Taostats 历史索引」但没有 key 时直接报错，不再静默退回本地索引：
 # 以前那种回退会返回 0 个关联地址，用户只看到一张空表，以为是工具坏了。
@@ -148,6 +167,49 @@ async def _job_scheduler() -> None:
             raise
         except Exception:  # noqa: BLE001 - 定时器不因单次失败退出
             continue
+
+
+async def _watch_scheduler() -> None:
+    """地址库巡检：每 30 秒推进一个地址。
+
+    一个地址要 1 次 TAO 转账 + 1 次代币转移请求，30 秒推一个正好在
+    5 次/分钟的保护限速以内。整轮可能跨几小时，进度实时落库，
+    重启后从上次那一个地址继续。
+    """
+
+    while True:
+        await asyncio.sleep(WATCH_TICK_SECONDS)
+        try:
+            if WATCH_LOCK.locked():
+                continue
+            async with WATCH_LOCK:
+                await asyncio.to_thread(WATCH.tick, 1)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 巡检失败不能拖垮服务
+            print(f"[watch] 巡检异常：{exc}", file=sys.stderr)
+
+
+async def _local_scan_scheduler() -> None:
+    """本地索引定期自动扫描：只补启动之后的新块，不消耗 Taostats 额度。"""
+
+    while True:
+        await asyncio.sleep(LOCAL_AUTO_SCAN_SECONDS)
+        try:
+            if LOCAL_SCAN_LOCK.locked():
+                continue
+            async with LOCAL_SCAN_LOCK:
+                result = await asyncio.to_thread(
+                    SERVICE.scan, blocks=LOCAL_AUTO_SCAN_BLOCKS, advance=True
+                )
+                if result.get("status") == "busy":
+                    continue
+        except asyncio.CancelledError:
+            raise
+        except ScanBusyError:
+            continue
+        except Exception as exc:  # noqa: BLE001 - 节点不可用时不打断服务
+            print(f"[local-scan] 本地索引扫描异常：{exc}", file=sys.stderr)
 
 
 def service() -> LinkService:
@@ -246,6 +308,18 @@ class InterlinkInput(BaseModel):
 class AddressNoteInput(BaseModel):
     address: str = Field(min_length=1, max_length=64)
     note: str = Field(default="", max_length=2000)
+
+
+class WatchConfigInput(BaseModel):
+    """地址库巡检设置：开关、间隔、阈值、是否含代币转移、每日预算。"""
+
+    enabled: bool | None = None
+    interval_minutes: int | None = Field(default=None, ge=15, le=10080)
+    threshold_tao: float | None = Field(default=None, ge=0, le=1_000_000)
+    include_stake: bool | None = None
+    daily_budget: int | None = Field(default=None, ge=0, le=100_000)
+    auto_import: bool | None = None
+    follow_auto_imported: bool | None = None
 
 
 class RelationInput(BaseModel):
@@ -790,8 +864,80 @@ def exchange_sync_status(svc: Annotated[LinkService, Depends(service)]):
 @app.post("/api/library/exchange-sync/ack")
 def exchange_sync_ack(svc: Annotated[LinkService, Depends(service)]):
     """前端已提示过新增地址，清掉待提示列表，避免每次刷新都弹。"""
-
     return svc.acknowledge_exchange_notice()
+
+
+# -- 地址库巡检 / 自动入库 ---------------------------------------------------
+@app.get("/api/watch/status")
+def watch_status():
+    """巡检进度、今日请求数、最近几轮结果、金额最高的待入库候选。"""
+
+    return WATCH.status()
+
+
+@app.post("/api/watch/config")
+def watch_config(payload: WatchConfigInput):
+    """保存巡检设置：开关、间隔、阈值（默认 30 TAO）、是否含代币转移。"""
+
+    values = payload.model_dump(exclude_none=True)
+    if not values:
+        return WATCH.config()
+    return WATCH.update_config(values)
+
+
+@app.post("/api/watch/run")
+async def watch_run():
+    """手动立即巡检一轮（后台跑，前端轮询 /api/watch/status 看进度）。"""
+
+    if not taostats_is_configured():
+        raise HTTPException(400, TAOSTATS_KEY_MISSING)
+    if WATCH_LOCK.locked():
+        return {"started": False, "reason": "already_running"}
+    asyncio.create_task(_watch_manual_run())
+    return {"started": True}
+
+
+async def _watch_manual_run() -> None:
+    async with WATCH_LOCK:
+        try:
+            await asyncio.to_thread(WATCH.run, True, None, None)
+        except Exception as exc:  # noqa: BLE001 - 手动触发失败只记日志
+            print(f"[watch] 手动巡检失败：{exc}", file=sys.stderr)
+
+
+@app.get("/api/library/auto-import-log")
+def auto_import_log(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    status: str = Query(default=""),
+    book: str = Query(default=""),
+    keyword: str = Query(default=""),
+):
+    """自动入库流水：谁触发的、多少钱、为什么归到这个库。"""
+
+    return WATCH.logs(
+        limit=limit, offset=offset, status=status, book=book, keyword=keyword
+    )
+
+
+@app.post("/api/library/auto-import-log/{log_id}/revoke")
+def revoke_auto_import(log_id: int):
+    """撤回一条自动入库：删掉自动写入的地址，并让巡检以后不再收它。"""
+
+    try:
+        return WATCH.revoke(log_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/library/auto-import-log/revoke-address")
+def revoke_auto_import_address(payload: AddressNoteInput):
+    """按地址撤回（该地址的所有自动入库记录）。"""
+
+    try:
+        return WATCH.revoke_address(payload.address)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/notes")

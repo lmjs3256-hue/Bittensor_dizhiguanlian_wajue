@@ -240,6 +240,113 @@ class ChainCursor(Base):
     )
 
 
+class WatchState(Base):
+    """某个库内地址上一次被巡检到哪。
+
+    ``last_checked_at`` 为 NULL 表示新加入地址库、还没被巡检过；巡检循环按
+    它升序取下一批地址，天然就是「最久没查的优先」的轮转队列，不用再维护
+    一个自增游标。
+    """
+
+    __tablename__ = "watch_state"
+    address: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_block: Mapped[int] = mapped_column(Integer, default=0)
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    checked_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(String(255), default="")
+
+
+class WatchCandidate(Base):
+    """巡检发现的新地址，按「对端地址 × 归属库」累加转账金额。
+
+    只有累计金额达到阈值才会写进地址库；未达阈值的也先记账，否则「10 笔
+    5 TAO」这种小额多次永远攒不到 30 TAO 的门槛。
+    """
+
+    __tablename__ = "watch_candidates"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    address: Mapped[str] = mapped_column(String(64), index=True)
+    book: Mapped[str] = mapped_column(String(80), default="", index=True)
+    cumulative_tao: Mapped[Decimal] = mapped_column(default=Decimal("0"))
+    tx_count: Mapped[int] = mapped_column(Integer, default=0)
+    stake_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_block: Mapped[int] = mapped_column(Integer, default=0)
+    last_block: Mapped[int] = mapped_column(Integer, default=0)
+    trigger_address: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (UniqueConstraint("address", "book", name="uq_candidate_address_book"),)
+
+
+class AutoImportLog(Base):
+    """自动入库流水：谁触发的、多少钱、为什么归到这个库，都能回查和撤回。"""
+
+    __tablename__ = "auto_import_log"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    address: Mapped[str] = mapped_column(String(64), index=True)
+    book: Mapped[str] = mapped_column(String(80), default="", index=True)
+    trigger_address: Mapped[str] = mapped_column(String(64), default="", index=True)
+    trigger_book: Mapped[str] = mapped_column(String(80), default="")
+    amount_tao: Mapped[Decimal] = mapped_column(default=Decimal("0"))
+    tx_count: Mapped[int] = mapped_column(Integer, default=0)
+    stake_count: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(16), default="tao")
+    tx_hash: Mapped[str] = mapped_column(String(160), default="")
+    first_block: Mapped[int] = mapped_column(Integer, default=0)
+    last_block: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    # active = 已自动入库；revoked = 用户撤回过（之后巡检不再自动入库）
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class BookPairStat(Base):
+    """两个地址库之间累计发生过多少转账，用于「没有具体金额时」的排序。"""
+
+    __tablename__ = "book_pair_stats"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    book_a: Mapped[str] = mapped_column(String(80), index=True)
+    book_b: Mapped[str] = mapped_column(String(80), index=True)
+    total_tao: Mapped[Decimal] = mapped_column(default=Decimal("0"))
+    tx_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (UniqueConstraint("book_a", "book_b", name="uq_book_pair"),)
+
+
+class WatchRun(Base):
+    """一次巡检（自动到点触发或手动点「立即巡检」）的进度与结果。"""
+
+    __tablename__ = "watch_runs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # running / complete / budget / rate_limited / error / stopped
+    status: Mapped[str] = mapped_column(String(20), default="running", index=True)
+    manual: Mapped[bool] = mapped_column(Boolean, default=False)
+    addresses_checked: Mapped[int] = mapped_column(Integer, default=0)
+    new_found: Mapped[int] = mapped_column(Integer, default=0)
+    inserted: Mapped[int] = mapped_column(Integer, default=0)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+
+
 class ApiRequest(Base):
     __tablename__ = "api_requests"
     id: Mapped[int] = mapped_column(primary_key=True)

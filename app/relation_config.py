@@ -23,6 +23,11 @@ class LinkPolicy:
     include_outgoing: bool = True
     exclude_system_accounts: bool = True
     system_prefix: str = "5EYCAe5"
+    # 关联强度分档阈值（累计金额，TAO）：≥extreme 极强，≥strong 强，
+    # ≥medium 中，其余弱；间接关联（≥2 跳）再降一档。
+    medium_tao: Decimal = Decimal("30")
+    strong_tao: Decimal = Decimal("100")
+    extreme_tao: Decimal = Decimal("1000")
 
     def __post_init__(self) -> None:
         if self.min_edge_tao < 0:
@@ -33,6 +38,8 @@ class LinkPolicy:
             raise ValueError("at least one transfer direction must be enabled")
         if not self.system_prefix:
             raise ValueError("system_prefix must not be empty")
+        if not (0 <= self.medium_tao <= self.strong_tao <= self.extreme_tao):
+            raise ValueError("强度阈值必须满足 0 <= medium <= strong <= extreme")
 
     @classmethod
     def from_dict(cls, values: dict[str, Any] | None) -> "LinkPolicy":
@@ -47,6 +54,9 @@ class LinkPolicy:
                     values.get("exclude_system_accounts", True)
                 ),
                 system_prefix=str(values.get("system_prefix", "5EYCAe5")),
+                medium_tao=Decimal(str(values.get("medium_tao", "30"))),
+                strong_tao=Decimal(str(values.get("strong_tao", "100"))),
+                extreme_tao=Decimal(str(values.get("extreme_tao", "1000"))),
             )
         except (InvalidOperation, ValueError) as exc:
             raise ValueError(f"invalid link policy: {exc}") from exc
@@ -112,6 +122,8 @@ class LibraryEntry:
     exchange_rejected: bool = False
     # 同一个地址可以属于多个分类；系统分类（含「系统」）据此判断关联终点。
     categories: tuple[str, ...] = ()
+    # 所属地址库名称，用于「无具体金额时按库间交易规模排序」。
+    book: str = ""
 
 
 @dataclass
@@ -140,6 +152,11 @@ class RelationResult:
     # 官方交易所名单同步来的地址：判定固定，前端不给改判入口。
     exchange_locked: bool = False
     stake_transfer_count: int = 0
+    # 关联强度：极强 / 强 / 中 / 弱（按累计金额分档，间接降一档）；
+    # score 是同档内的排序分，reason 说明这条结论是怎么来的。
+    strength: str = ""
+    strength_score: int = 0
+    strength_reason: str = ""
     # 从起始地址到该关联地址的逐笔转账路径（BFS 最短跳数路径），
     # 每项含 tx_hash、时间、金额，以及按起始地址方向整理好的
     # path_from → path_to / direction（out=转出、in=转入），供前端「路径明细」展示。

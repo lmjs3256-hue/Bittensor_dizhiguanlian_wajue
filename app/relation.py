@@ -140,6 +140,71 @@ def _entry_has(entry: LibraryEntry, name: str) -> bool:
     return name.upper() in _entry_categories(entry)
 
 
+# 强度档位：4 极强 / 3 强 / 2 中 / 1 弱 / 0 未知。
+_STRENGTH_LEVELS = {4: "极强", 3: "强", 2: "中", 1: "弱", 0: "未知"}
+_STRENGTH_SCORES = {4: 100, 3: 86, 2: 72, 1: 52, 0: 24}
+
+
+def _amount_tier(amount: Decimal, policy: LinkPolicy) -> int:
+    if amount >= policy.extreme_tao:
+        return 4
+    if amount >= policy.strong_tao:
+        return 3
+    if amount >= policy.medium_tao:
+        return 2
+    if amount > 0:
+        return 1
+    return 0
+
+
+def _strength_for(
+    *,
+    amount: Decimal,
+    tx_count: int,
+    depth: int,
+    policy: LinkPolicy,
+    book_pair_tao: Decimal | None,
+) -> tuple[str, int, str]:
+    """把金额事实换成「极强 / 强 / 中 / 弱」。
+
+    规则（全部可解释、可复算）：
+
+    1. 累计金额落到哪一档就是哪一档：≥1000 极强、≥100 强、≥30 中、其余弱。
+    2. 笔数加权：累计已达到「弱」以上且往来 ≥3 笔，升一档（极强封顶）。
+    3. 间接关联（≥2 跳）降一档，最低到「弱」——两跳之外的地址不该和直接
+       对手方同档。
+    4. 没有直接金额可比时（例如只通过库关系排在一起），用所属两个地址库的
+       历史累计规模补一个很小的加分，只影响同档内排序，不改变档位。
+    """
+
+    tier = _amount_tier(amount, policy)
+    notes: list[str] = []
+    if amount > 0:
+        notes.append(f"累计往来 {amount.normalize():f} TAO")
+    if tx_count:
+        notes.append(f"{tx_count} 笔")
+    if tier >= 1 and tx_count >= 3 and tier < 4:
+        tier += 1
+        notes.append("往来 3 笔以上升一档")
+    if depth >= 2:
+        tier = max(1, tier - 1)
+        notes.append(f"{depth} 跳间接关联降一档")
+    score = _STRENGTH_SCORES[tier]
+    if book_pair_tao and book_pair_tao > 0:
+        # 最多 +8 分：同档内「两个库之间本来就走得多」的地址排前面。
+        score = min(score + 8, 100)
+        notes.append(f"所属地址库间累计 {book_pair_tao.normalize():f} TAO")
+    return _STRENGTH_LEVELS[tier], score, "；".join(notes) or "无可比金额"
+
+
+def _is_exchange_result(row: RelationResult) -> bool:
+    """结果行是不是「已确认 / 官方锁定」的交易所——排序时永远排最前。"""
+
+    categories = {str(row.library_category or "").upper()}
+    categories.update(str(value).upper() for value in row.library_categories)
+    return "EXCHANGE" in categories and bool(row.exchange_confirmed or row.exchange_locked)
+
+
 def _role_for_address(
     address: str,
     entry: LibraryEntry | None,
@@ -272,6 +337,7 @@ def discover(
     excluded_addresses: Iterable[str] = (),
     removed_addresses: Iterable[str] = (),
     balances: dict[str, Decimal | None] | None = None,
+    book_pair_stats: dict[tuple[str, str], Decimal] | None = None,
 ) -> ScanReport:
     """Traverse transfer edges at most ``max_depth`` hops from the seed.
 
@@ -328,6 +394,7 @@ def discover(
                 exchange_confirmed=entry.exchange_confirmed,
                 exchange_rejected=entry.exchange_rejected,
                 categories=entry.categories,
+                book=getattr(entry, "book", "") or "",
             )
 
     # 关联终点：已人工确认的交易所地址、人工在标签/备注里写明「交易所」的
@@ -520,6 +587,19 @@ def discover(
         unique_tx = {edge.tx_hash for edge in edge_rows if edge.tx_hash}
         incoming = [edge for edge in edge_rows if edge.to_address == address]
         outgoing = [edge for edge in edge_rows if edge.from_address == address]
+        # 库间规模：两个地址分属不同地址库时，用两库历史累计规模做同档内排序。
+        pair_tao = None
+        seed_book = (library_map.get(seed).book if library_map.get(seed) else "") or ""
+        address_book = (entry.book if entry is not None else "") or ""
+        if book_pair_stats and seed_book and address_book:
+            pair_tao = book_pair_stats.get(tuple(sorted([seed_book, address_book])))
+        strength, strength_score, strength_reason = _strength_for(
+            amount=total,
+            tx_count=len(unique_tx) or len(edge_rows),
+            depth=visible.get(address, len(path)),
+            policy=policy,
+            book_pair_tao=pair_tao,
+        )
         # 起始地址到该地址的逐笔路径：BFS 走过的每一跳原始转账记录。
         # 每一跳额外给出「按起始地址方向」的 path_from → path_to：转账本身可能是
         # 对方转入，直接照抄 from/to 会让路径看起来从别的地址开始。
@@ -555,10 +635,22 @@ def discover(
                 stake_transfer_count=sum(
                     1 for edge in edge_rows if edge.edge_type == "stake_transfer"
                 ),
+                strength=strength,
+                strength_score=strength_score,
+                strength_reason=strength_reason,
                 path_transfers=path_transfers,
             )
         )
-    related.sort(key=lambda row: (row.depth, -row.total_tao, row.address))
+    # 排序：交易所最前，其次按关联强度（分数高的在前），再按跳数与金额。
+    related.sort(
+        key=lambda row: (
+            0 if _is_exchange_result(row) else 1,
+            -row.strength_score,
+            row.depth,
+            -row.total_tao,
+            row.address,
+        )
+    )
     seed_entry = library_map.get(seed)
     final_warnings = list(warnings)
     final_warnings.extend(removed_contact_notes)

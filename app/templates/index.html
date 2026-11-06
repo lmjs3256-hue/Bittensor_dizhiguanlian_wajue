@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.6.29">
+  <link rel="stylesheet" href="/static/styles.css?v=0.7.0">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -120,6 +120,44 @@
           <div class="inline-form"><label>名称<input id="lib-label" placeholder="留空用地址后四位"></label><label>分类<select id="lib-category" data-category-select aria-label="地址分类"></select></label><label>地址<input id="lib-address" placeholder="SS58 地址" spellcheck="false"></label><label>备注<input id="lib-note" placeholder="可选备注"></label><button class="secondary" id="add-address">添加地址</button><button class="primary" id="choose-file">导入文件</button><button class="secondary" id="sync-exchanges">同步官方交易所地址</button><input type="file" id="library-file" accept=".txt,.csv,.json" hidden></div>
           <small id="exchange-sync-status" class="library-hint">官方交易所：读取中…</small>
         </section>
+        <section class="panel watch-panel">
+          <div class="section-title">
+            <div><h3>地址库巡检</h3><span class="tag">自动发现新地址</span></div>
+            <small>按设定间隔检查库内每个地址的新转账（含代币转移）：新出现的对手方单笔或累计达到阈值就自动入库，归属到累计金额最多的地址库，并写一条入库日志。第一次检查只记录基线，不会把历史对手方灌进库；交易所、验证者、系统地址不参与巡检。</small>
+          </div>
+          <div class="watch-form">
+            <label class="watch-check"><input type="checkbox" id="watch-enabled"> 开启巡检</label>
+            <label>阈值 TAO<input id="watch-threshold" type="number" min="0" step="1" value="30" inputmode="decimal"></label>
+            <label>间隔<select id="watch-interval">
+              <option value="60">每 1 小时</option>
+              <option value="360">每 6 小时</option>
+              <option value="720">每 12 小时</option>
+              <option value="1440" selected>每天</option>
+              <option value="10080">每周</option>
+            </select></label>
+            <label>每日请求上限<input id="watch-budget" type="number" min="0" step="50" value="700" inputmode="numeric"></label>
+            <label class="watch-check"><input type="checkbox" id="watch-stake"> 含代币转移</label>
+            <label class="watch-check" title="打开后，自动入库的地址也会继续被巡检，会顺着转账一层层扩散"><input type="checkbox" id="watch-follow"> 跟踪自动入库地址</label>
+            <div class="watch-actions">
+              <button class="secondary" id="watch-save" type="button">保存设置</button>
+              <button class="primary" id="watch-run" type="button">立即巡检一轮</button>
+              <button class="ghost" id="watch-logs-toggle" type="button">入库日志</button>
+            </div>
+          </div>
+          <small id="watch-status" class="library-hint">巡检状态：读取中…</small>
+          <div id="watch-log-panel" class="watch-log hidden">
+            <div class="watch-log-head">
+              <strong>自动入库日志</strong>
+              <select id="watch-log-filter" aria-label="筛选入库日志">
+                <option value="active" selected>仅有效</option>
+                <option value="revoked">已撤回</option>
+                <option value="">全部</option>
+              </select>
+              <span id="watch-log-count"></span>
+            </div>
+            <div id="watch-log-list" class="watch-log-list"></div>
+          </div>
+        </section>
         <section class="panel interlink-panel">
           <div class="section-title"><div><h3>地址关联明细检索</h3><span class="tag">地址 × 地址库 / 地址 × 地址</span></div><small>查两个地址之间到底有没有发生过转账：选一个地址库，就找出地址 A 和库里哪些地址有往来；填第二个地址，就直接查 A 与 B 之间的转账，没有直连时继续顺着双方的流水找中间地址，拼出关联链路。</small></div>
           <div class="interlink-form">
@@ -176,6 +214,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.6.29"></script>
+  <script src="/static/app.js?v=0.7.0"></script>
 </body>
 </html>

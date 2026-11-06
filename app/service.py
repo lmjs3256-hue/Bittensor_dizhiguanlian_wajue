@@ -20,6 +20,7 @@ from .db import (
     AddressBook,
     AddressCategory,
     AddressLibrary,
+    BookPairStat,
     ChainCursor,
     Database,
     ImportBatch,
@@ -219,6 +220,9 @@ class RelationContext:
     system_addresses: set[str] = field(default_factory=set)
     validator_api_requests: int = 0
     validator_cache_hits: int = 0
+    # 地址库两两之间的历史累计规模：本地索引/巡检抓到过多少就记多少，
+    # 用于「没有直接金额可比时」的关联排序（不额外消耗 API 额度）。
+    book_pair_stats: dict[tuple[str, str], Decimal] = field(default_factory=dict)
 
 
 def _extend_unique(target: list[str], items: list[str]) -> None:
@@ -2661,9 +2665,14 @@ class LinkService:
                     exchange_confirmed=bool(row.exchange_confirmed),
                     exchange_rejected=bool(row.exchange_rejected),
                     categories=tuple(row_categories(row)),
+                    book=(row.book or ""),
                 )
                 for row in db.scalars(select(AddressLibrary)).all()
             ]
+            pair_stats = {
+                (row.book_a, row.book_b): Decimal(row.total_tao or 0)
+                for row in db.scalars(select(BookPairStat)).all()
+            }
             first_block = db.scalar(select(func.min(Transfer.block_number)))
             last_block = db.scalar(select(func.max(Transfer.block_number)))
             local_transfer_rows = to_relation_records(
@@ -2798,6 +2807,7 @@ class LinkService:
             system_addresses=set(system_addresses),
             validator_api_requests=validator_api_requests,
             validator_cache_hits=validator_cache_hits,
+            book_pair_stats=pair_stats,
         )
 
     def new_crawl(self, context: RelationContext) -> TaostatsCrawl:
@@ -3045,6 +3055,7 @@ class LinkService:
             excluded_addresses=excluded_addresses,
             removed_addresses=context.removed_addresses,
             balances=balances,
+            book_pair_stats=context.book_pair_stats,
         )
         if balance_budget_short:
             # 额度已用完：只读取起始地址的余额（单次 RPC），不扩展到关联地址。
@@ -3098,6 +3109,7 @@ class LinkService:
                 excluded_addresses=excluded_addresses,
                 removed_addresses=context.removed_addresses,
                 balances=balances,
+                book_pair_stats=context.book_pair_stats,
             )
         result = {
             "seed": report.seed,
@@ -3139,7 +3151,14 @@ class LinkService:
                 + (["local"] if local_transfer_rows else [])
             ),
             "freshness": report.freshness,
-            "policy": {**report.policy.to_dict(), "min_edge_tao": str(policy.min_edge_tao), "min_total_tao": str(policy.min_total_tao)},
+            "policy": {
+                **report.policy.to_dict(),
+                "min_edge_tao": str(policy.min_edge_tao),
+                "min_total_tao": str(policy.min_total_tao),
+                "medium_tao": str(policy.medium_tao),
+                "strong_tao": str(policy.strong_tao),
+                "extreme_tao": str(policy.extreme_tao),
+            },
             "edges": [edge.__dict__ | {"amount_tao": str(edge.amount_tao)} for edge in report.edges],
             "related": [
                 row.__dict__ | {
