@@ -309,7 +309,9 @@ class RelationJobManager:
             "job": {
                 "id": job.id,
                 "rounds": job.rounds_done,
+                "max_rounds": job.max_rounds,
                 "requests": job.total_requests,
+                "round_requests": list(job.state.rounds),
                 "stopped": False,
             },
         }
