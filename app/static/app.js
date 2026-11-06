@@ -66,6 +66,35 @@ function shortAddr(value) {
 
 // 起始地址画像：注册日期 / 历史交易次数 / 日均频次 / 余额。
 // 每个值都可能缺失，缺失就写「未获取」并说明原因，不拿 0 顶替。
+
+// 画像默认放在左侧栏空白处；窄屏侧栏变成顶部横条时，整块搬回结果区，
+// 否则四个指标会被挤成一条极窄的竖列。
+const SIDE_SEED_NARROW = window.matchMedia("(max-width: 950px)");
+
+function placeSideSeed() {
+  const card = $("#side-seed");
+  const slot = $("#seed-card-slot");
+  if (!card || !slot) return;
+  const narrow = SIDE_SEED_NARROW.matches;
+  if (narrow && card.parentElement !== slot) {
+    slot.appendChild(card);
+    card.classList.add("in-slot");
+  } else if (!narrow && card.parentElement === slot) {
+    const status = $(".aside-status");
+    status.parentElement.insertBefore(card, status);
+    card.classList.remove("in-slot");
+  }
+}
+
+function setSeedAddress(address) {
+  const full = String(address || "").trim();
+  const code = $("#seed-result-address");
+  if (!code) return;
+  code.textContent = full ? shortAddr(full) : "-";
+  code.dataset.full = full;
+  code.title = full || "";
+}
+
 function renderSeedProfile(profile, rpcBalance) {
   const placeholder = "未获取";
 
@@ -92,7 +121,7 @@ function renderSeedProfile(profile, rpcBalance) {
   $("#seed-result-daily-note").textContent =
     daily === null
       ? (count === null ? "" : "缺注册日期")
-      : `按注册至今 ${number(profile.active_days)} 天`;
+      : `按 ${number(profile.active_days)} 天算`;
 
   // 余额优先用「含质押」的总余额，退回 RPC 可用的自由余额。
   const total = profile.balance_total_tao;
@@ -945,8 +974,9 @@ function renderResult(data) {
     ? ` · API 请求 ${data.api_requests}/${data.api_request_budget ?? "?"} 次（优先一级关联转账） · 返回转账 ${data.taostats_transfer_count} 条 · 缓存命中 ${data.api_cache_hits} 次`
     : "";
   const stakeUsage = data.stake_transfer_count > 0 ? ` · 子网 stake 转移 ${data.stake_transfer_count} 条` : "";
-  $("#result-subtitle").textContent = `${data.seed} · 最多 ${data.max_depth} 级 · 来源 ${sourcesLabel}${apiUsage}${stakeUsage} · 数据截止 ${data.data_cutoff_block ? number(data.data_cutoff_block) : "未采集"} 区块`;
-  $("#seed-result-address").textContent = data.seed || "-";
+  $("#result-subtitle").textContent = `${shortAddr(data.seed)} · 最多 ${data.max_depth} 级 · 来源 ${sourcesLabel}${apiUsage}${stakeUsage} · 数据截止 ${data.data_cutoff_block ? number(data.data_cutoff_block) : "未采集"} 区块`;
+  setSeedAddress(data.seed);
+  $("#side-seed").classList.remove("hidden");
   renderSeedProfile(data.seed_profile || {}, data.seed_balance_tao);
   const paginationBadge = data.data_source === "taostats" && data.pagination_complete === false
     ? '<span class="badge warn">分页未完整</span>' : "";
@@ -3441,6 +3471,12 @@ $("#taostats-api-key").addEventListener("keydown", (event) => {
   if (event.key === "Enter") saveTaostatsKey();
 });
 $("#run-scan").addEventListener("click", () => runRelations(false));
+$("#copy-seed-address").addEventListener("click", (event) => {
+  const full = $("#seed-result-address").dataset.full || "";
+  copyAddress(full, event.currentTarget);
+});
+SIDE_SEED_NARROW.addEventListener("change", placeSideSeed);
+placeSideSeed();
 $("#run-diagnose").addEventListener("click", runDiagnose);
 $("#refresh-result").addEventListener("click", () => {
   if (!state.lastResult) {

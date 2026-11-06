@@ -1,5 +1,18 @@
 # 验证交付记录
 
+## 0.7.9 验证记录（2026-11-06）
+
+**需求：起始地址画像（地址 / 注册日期 / 历史交易 / 日均频次 / 余额）移到左侧栏空白处，地址只显示头尾 4 位并加复制按钮**
+
+- 结构：结果区原 `.seed-balance-card` 五列卡片删除，改为 `#seed-card-slot` 占位；画像块 `#side-seed` 插在左栏 `<nav>` 与 `.aside-status` 之间，默认 `hidden`，首次出结果时显示。
+- 左栏实测（CDP，1440 / 1180 / 1080 三档）：卡片 `x=16, w=205`，侧栏 `w=238`，`fitsSidebar=true`、`cardOverflowX=false`、`pageOverflowX=false`；卡片位于状态行之上（`beforeStatus=true`）。
+- 地址：`addrText="5Hiv…N8kS"`、`addrFull` 为完整 48 位、`addrFont=13px`、`addrTruncated=false`；复制按钮 `btnRight=207 ≤ cardRight=221`（不出框），点击后 `navigator.clipboard` 收到完整地址、按钮回显「已复制」。
+- 四个指标渲染：注册日期 `2022-10-30` / 注册网络 finney、历史交易 `47,288 笔`（Taostats 全量）、日均频次 `32.21 笔/天`（按 1,468 天算）、余额 `119,310.99 TAO`（可用 210.50 · 质押 119,100.49）；四项高度统一 31px，均无横向溢出。
+- 响应式搬家：900px 时卡片 `parent=seed-card-slot`、`in-slot=true`、网格 2 列、页面无横向溢出；回到 1440px 自动搬回侧栏（`inSidebar=true`、`in-slot=false`）。
+- 深灰主题（`data-theme=darkgray`）：卡片底 `rgb(41,43,47)`、地址色 `rgb(169,181,166)`、数值 `rgb(226,226,222)`、标签 `rgb(169,170,171)`，对比度正常。
+- 截图：`.probe/shots/side_seed_1440.png`；探针脚本 `.probe/ui_check_078_side.py`。
+- 回归：`pytest -q` 全量通过（无后端改动，仅模板/样式/前端脚本）。
+
 ## 0.7.8 验证记录（2026-11-06）
 
 **根因定位：`start.ps1` 在服务已运行时直接 `exit 0`，「升级后功能不生效」不是代码问题**

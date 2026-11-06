@@ -431,7 +431,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </ol>
 <p>界面上会实时显示：<code>第 3 轮 / 5 轮</code>、这一轮准备查什么、还剩多少个待查对象。嫌慢或已经够用，随时点 <strong>停止续查</strong>——当前请求一结束（最长约 20 秒）就出结果，已查到的关联会保留，可以照常查看和导出，并会告诉你还剩多少没查。</p>
 <h3 id="结果怎么看">结果怎么看</h3>
-<p>结果页最上面是<strong>起始地址画像</strong>：起始地址本身用大字 + 高亮色显示（左边带一条竖条），后面并排四个指标：</p>
+<p>结果页最上面是<strong>起始地址画像</strong>，它显示在<strong>左侧栏导航下方的空白处</strong>（不占结果阅读宽度）：地址显示为头 4 + 尾 4 位（例如 <code>5Hiv…N8kS</code>），鼠标悬停可看完整地址，后面的「复制」按钮复制的是完整 48 位地址。下面是四个指标：</p>
 <table>
 <thead>
 <tr>
@@ -441,23 +441,24 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </thead>
 <tbody>
 <tr>
-<td>地址注册日期</td>
+<td>注册日期</td>
 <td>这个地址第一次上链的时间，副行标注注册网络（<code>nakamoto</code> 是最早期网络，<code>finney</code> 是现在的主网）</td>
 </tr>
 <tr>
-<td>历史交易次数</td>
+<td>历史交易</td>
 <td>该地址<strong>累计发生过多少笔转账</strong>，是 Taostats 给出的全量数字，和这次只翻了几页无关</td>
 </tr>
 <tr>
-<td>日均交易频次</td>
+<td>日均频次</td>
 <td>历史交易次数 ÷ 注册至今的天数。注册当天按 1 天算；数字越大说明这个钱包越活跃（交易所、做市商通常几十上百）</td>
 </tr>
 <tr>
-<td>余额（含质押）</td>
+<td>余额</td>
 <td>总余额 = 可用 + 质押 + 预留，副行把可用和质押拆开显示</td>
 </tr>
 </tbody>
 </table>
+<p>窗口较窄（≤950px，左侧栏变成顶部横条）时，这块会自动搬回结果区顶部，改成横向四列（手机宽度两列），不影响阅读。</p>
 <p>想看的数据没出来（显示「未获取」），通常是这三种情况：</p>
 <ul>
 <li><strong>没配 Taostats API key</strong>：注册日期、交易次数、总余额都来自 Taostats。副行会写「需要 Taostats API key」。</li>

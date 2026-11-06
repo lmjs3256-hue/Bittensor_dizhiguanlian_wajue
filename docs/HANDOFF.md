@@ -678,3 +678,14 @@ Set-Location G:\bittensor-wallet-link-intel
 - **实测**：进程 0.7.7 + 磁盘 0.7.8 时运行 `start.ps1` 正确触发重启，重启后 `/api/health` 为 0.7.8 且带 `validator_snapshot:1196`；`/api/diagnose` 五项全 pass；失败态（模拟旧进程 + 空库）横幅/页脚/三条建议均正确，1440 与 1080 两档零横向溢出；深灰主题下 fail 卡片 `rgb(73,56,54)` + 浅字可读。
 - **验收**：`pytest -q` = **246 passed**（新增 `tests/test_diagnostics.py` 12 条）；`使用说明.html` 已重新生成（77,806 bytes）。
 - **给下一任的话**：这个项目已经连续三次栽在「看起来升级了其实没生效」上（0.7.6 以为 SSL、0.7.7 以为 405、0.7.8 才发现是没重启）。以后收到「XX 修复没起作用」，**先让用户跑 `run.py --doctor` 或看环境自检截图**，别急着改代码。
+
+## 43. 2026-11-06 0.7.9 交接：起始地址画像移入左栏、地址脱敏 + 复制
+
+- **需求**：起始地址画像那一排（地址、注册日期、历史交易、日均频次、余额）原本横在结果区最上面，占掉整行宽度，用户要求挪到**左侧栏导航下方的空白处**，地址只显示头尾 4 位、后面带复制按钮。
+- **结构改法**：结果区原来的 `<section class="seed-balance-card">` 五列卡片整段删掉，换成 `<div id="seed-card-slot"></div>` 占位；画像块改写成 `<section id="side-seed" class="side-seed hidden">` 插在 `.sidebar` 的 `<nav>` 与 `.aside-status` 之间。**不要删 slot**——窄屏时画像要搬进去。
+- **四个 id 全部复用**（`#seed-result-address/-registered/-txcount/-daily/-balance` 及其 `-note`），所以 `renderSeedProfile()` 逻辑一行没改，只是 DOM 位置变了。新增 `setSeedAddress()` 负责「头尾 4 位 + `data-full` + `title`」。结果副标题里的起始地址也改成 `shortAddr()`。
+- **响应式关键**：侧栏在 `max-width:950px` 会变成顶部横条（`flex-direction:row`），此时画像挤在横条里会被压成一条极窄竖列。做法是 `placeSideSeed()`：窄屏 `appendChild` 到 `#seed-card-slot` 并加 `.in-slot`（内部网格变四列、≤950px 两列），宽屏则 `insertBefore(status)` 搬回侧栏并去掉 class。用 `window.matchMedia("(max-width: 950px)")` 的 `change` 事件驱动，**不要用 resize 事件**（会被动画刷爆）。
+- **排版取值**（238px 侧栏内实宽 205px）：卡片 padding `13px`、圆角 12px、底色 `--bg`（侧栏本身是 `--panel`，靠底色反差分块）；地址 13px/700 + 3px 左竖条 + `--accent`；指标行用 `dl` + 两列网格（`dt auto` / `dd 1fr`），标签 11px 靠左、数值 12.5px 等宽数字靠右、说明 10px 右对齐（`small:empty { display:none }` 避免空行撑高）；复制按钮 10.5px / `padding:4px 8px`，实测 `btnRight 207 ≤ cardRight 221` 不出框。
+- **踩坑**：一开始把地址写成 `white-space:nowrap; overflow:hidden; text-overflow:ellipsis` —— 但现在地址本身已经截成 `5Hiv…N8kS`（12 字符），13px 下宽约 78px，永远不触发省略号，**保留这两行是给超短侧栏兜底的**，别以为没生效就删掉。
+- **验收**：1440/1180/1080 三档 `fitsSidebar=true`、零横向溢出；复制回显「已复制」且写入剪贴板的 URL 为完整 48 位；900px 搬进 slot 变两列，回到 1440 自动搬回；深灰主题下 `cardBg rgb(41,43,47)` + 数值 `rgb(226,226,222)` 可读。全量 **246 passed**（纯前端改动，后端无变化）。
+- **给下一任**：改这块只动 `app/static/{app.js,styles.css}` 与 `app/templates/index.html`，**改完必须升 `VERSION` 并同步 `?v=` 资源戳**（`styles.css?v=` / `app.js?v=`），否则远端浏览器拿缓存看不到改动；0.7.8 起的自动重启只解决 Python 进程，静态资源还是靠这个戳。

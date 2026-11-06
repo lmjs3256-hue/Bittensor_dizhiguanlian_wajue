@@ -162,28 +162,43 @@ button.refresh-result-btn.is-armed:not(:disabled)::after { content:""; position:
 .app-footer .version-stale { color:var(--warn); font-weight:750; }
 .app-footer { display:flex; justify-content:center; align-items:center; gap:14px; flex-wrap:wrap; padding:18px 0 0; color:var(--muted); font-size:12px; }
 .footer-release-link { border:0; padding:0; background:transparent; color:var(--accent); font-size:12px; }
-.seed-balance-card { display:grid; grid-template-columns:minmax(0,1.6fr) repeat(4,minmax(0,1fr)); align-items:start; gap:18px; margin-bottom:18px; padding:15px 18px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
-.seed-balance-card > div { display:flex; flex-direction:column; gap:5px; min-width:0; }
-.seed-balance-card span { color:var(--muted); font-size:12px; }
-.seed-balance-card b { font-family:var(--mono); font-size:20px; }
-/* 起始地址是这一块的标题：字号明显大于旁边四个指标，用主题强调色 + 左侧竖条区分 */
-.seed-balance-card .seed-identity { padding-left:11px; border-left:3px solid var(--accent); }
-.seed-balance-card .seed-identity code {
-  font-family:var(--mono); font-size:17px; font-weight:700; line-height:1.35;
-  letter-spacing:.2px; color:var(--accent); word-break:break-all;
+/* 起始地址画像：从结果区移到左侧栏空白处（导航与状态之间），不占结果阅读宽度。
+   地址只显示头 4 + 尾 4，完整值放在 title 与 dataset 里供复制。 */
+.side-seed {
+  margin-top:-6px; padding:13px 13px 14px;
+  border:1px solid var(--line); border-radius:12px; background:var(--bg);
 }
-.seed-balance-card .seed-metric b { color:var(--ink); }
-.seed-balance-card .seed-metric small { color:var(--muted); font-size:11px; line-height:1.4; min-height:14px; }
-@media (max-width:1180px) {
-  .seed-balance-card { grid-template-columns:repeat(3,minmax(0,1fr)); }
-  .seed-balance-card .seed-identity { grid-column:1/-1; }
+.side-seed-label { display:block; font-size:10px; letter-spacing:1.1px; font-weight:750; color:var(--muted); }
+.side-seed-addr-row { display:flex; align-items:center; gap:6px; margin-top:8px; }
+.side-seed-addr {
+  flex:1; min-width:0; padding:2px 0 2px 8px;
+  border-left:3px solid var(--accent);
+  font-family:var(--mono); font-size:13px; font-weight:700; letter-spacing:.3px;
+  color:var(--accent); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
-@media (max-width:560px) {
-  .seed-balance-card { grid-template-columns:1fr 1fr; }
-  .seed-balance-card .seed-identity { grid-column:1/-1; }
-  .seed-balance-card .seed-identity code { font-size:15px; }
+.side-seed-copy {
+  flex:0 0 auto; padding:4px 8px; border-radius:6px; border:1px solid var(--line);
+  background:var(--panel); color:var(--muted); font-size:11px; line-height:1.3;
 }
-@media (max-width:560px) { .release-heading { display:block; } .release-meta { margin-top:7px; } }
+.side-seed-copy:hover { color:var(--accent); border-color:var(--accent); }
+.side-seed-metrics { margin:11px 0 0; padding:10px 0 0; display:grid; gap:9px; border-top:1px solid var(--line); }
+.side-seed-metrics > div { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:baseline; gap:8px; }
+.side-seed-metrics dt { font-size:11px; color:var(--muted); white-space:nowrap; }
+.side-seed-metrics dd { margin:0; min-width:0; display:grid; gap:2px; justify-items:end; }
+.side-seed-metrics b { font-family:var(--mono); font-size:13px; font-weight:700; color:var(--ink); text-align:right; overflow-wrap:anywhere; }
+.side-seed-metrics small { font-size:10px; line-height:1.4; color:var(--muted); text-align:right; overflow-wrap:anywhere; }
+.side-seed-metrics small:empty { display:none; }
+/* 窄屏（侧栏变成顶部横条）时这块由脚本搬回结果区，改成横向四列。 */
+.side-seed.in-slot { margin:0 0 18px; padding:15px 17px; background:var(--panel); }
+.side-seed.in-slot .side-seed-metrics { grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; }
+.side-seed.in-slot .side-seed-metrics dd { justify-items:start; }
+.side-seed.in-slot .side-seed-metrics b,
+.side-seed.in-slot .side-seed-metrics small { text-align:left; }
+.side-seed.in-slot .side-seed-addr { font-size:15px; }
+@media (max-width:760px) {
+  .side-seed.in-slot .side-seed-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (prefers-reduced-motion:none) { .side-seed { transition:border-color .15s; } .side-seed:hover { border-color:var(--line); } }@media (max-width:560px) { .release-heading { display:block; } .release-meta { margin-top:7px; } }
 
 /* 起始地址与扫描按钮同一行：按钮紧跟输入框，避免在设置区底部反复上下找 */
 .seed-field { display:grid; gap:6px; color:var(--muted); font-size:12px; }
