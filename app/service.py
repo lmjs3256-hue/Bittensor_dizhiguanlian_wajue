@@ -1693,14 +1693,18 @@ class LinkService:
         locked: list[dict[str, str]] = []
         skipped = 0
         with self.database.session() as db:
+            # 预置验证者快照有上千条，逐条 select 会让启动慢好几秒；
+            # 先一次性把库里已有的地址读进字典再比对。
+            existing = {
+                row.address: row
+                for row in db.scalars(select(AddressLibrary)).all()
+            }
             for item in builtin_entries():
                 address = item.address.strip()
                 if not is_valid_ss58(address):
                     skipped += 1
                     continue
-                current = db.scalar(
-                    select(AddressLibrary).where(AddressLibrary.address == address)
-                )
+                current = existing.get(address)
                 if current is None:
                     db.add(
                         AddressLibrary(

@@ -275,3 +275,103 @@ def test_validator_sync_endpoint(monkeypatch):
         finally:
             main_module.SERVICE = original
             database.engine.dispose()
+
+
+# -- 预置验证者快照 / 路由方法兼容 -----------------------------------------
+
+
+def test_validator_snapshot_is_loaded_and_deduped():
+    """随版本发布的验证者快照要能离线读到，且和人工名单不重复。"""
+
+    from app.builtin_addresses import (
+        VALIDATOR_SNAPSHOT_LABEL,
+        load_validator_snapshot,
+    )
+
+    snapshot = load_validator_snapshot()
+    assert len(snapshot) > 1000
+    assert len(set(snapshot)) == len(snapshot)
+    assert all(address.startswith("5") and len(address) == 48 for address in snapshot)
+
+    entries = builtin_entries()
+    ids = [item.address for item in entries]
+    assert len(ids) == len(set(ids)), "预置快照与人工名单重叠必须去重"
+
+    preset = [item for item in entries if item.label == VALIDATOR_SNAPSHOT_LABEL]
+    assert len(preset) == len(snapshot) - (1 if VALIDATOR in snapshot else 0)
+    assert all(item.category == "VALIDATOR" for item in preset)
+    assert all(item.source == "builtin:validator" for item in preset)
+
+
+def test_snapshot_addresses_become_locked_validator_rows():
+    """预置的验证者地址进库后是 VALIDATOR 分类、内置来源、不可删除。"""
+
+    from app.builtin_addresses import load_validator_snapshot
+
+    sample = load_validator_snapshot()[:3]
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "snapshot.db")
+        try:
+            service.ensure_builtin_addresses()
+            rows = {row["address"]: row for row in service.library()}
+            for address in sample:
+                row = rows[address]
+                assert row["category"] == "VALIDATOR"
+                assert row["builtin_locked"] is True
+                assert "VALIDATOR" in row["categories"]
+        finally:
+            database.engine.dispose()
+
+
+def test_validator_sync_endpoint_accepts_get(monkeypatch):
+    """远端踩到过 405：浏览器拿到的是 GET。两条方法都要能用。"""
+
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+
+    monkeypatch.setattr(
+        service_module,
+        "get_active_validator_addresses",
+        lambda: ({SYNCED_VALIDATOR_2}, False),
+    )
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "api-get.db")
+        original = getattr(main_module, "SERVICE", None)
+        main_module.SERVICE = service
+        try:
+            main_module.app.dependency_overrides[main_module.service] = lambda: service
+            client = TestClient(main_module.app)
+            try:
+                response = client.get("/api/library/import-validators")
+                assert response.status_code == 200
+                assert response.json()["official_total"] == 1
+            finally:
+                main_module.app.dependency_overrides.clear()
+        finally:
+            main_module.SERVICE = original
+            database.engine.dispose()
+
+
+def test_unknown_library_subpath_returns_404_not_405():
+    """动态行路由限定整数后，不存在的单词路径应该是 404 而不是误导性的 405。"""
+
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "api-404.db")
+        original = getattr(main_module, "SERVICE", None)
+        main_module.SERVICE = service
+        try:
+            main_module.app.dependency_overrides[main_module.service] = lambda: service
+            client = TestClient(main_module.app)
+            try:
+                response = client.get("/api/library/not-a-real-action")
+                assert response.status_code == 404
+            finally:
+                main_module.app.dependency_overrides.clear()
+        finally:
+            main_module.SERVICE = original
+            database.engine.dispose()

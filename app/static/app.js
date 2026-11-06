@@ -38,6 +38,13 @@ const state = {
   // 合并群组面板：picked 存 `${kind}\u0000${name}`，mode 为 new / inherit。
   merge: { open: false, picked: new Set(), mode: "new" },
   libraryGroupsOpen: new Set(),
+  // 地址库组内分页：groupId → 页码（1 起）。预置验证者有上千条，整组铺开
+  // 会把浏览器拖死，所以每组单独分页，翻页不影响折叠状态。
+  libraryGroupPages: new Map(),
+  // 每次渲染时记下「组 → 该组所有行 ID」，供全选 / 翻页使用。
+  libraryGroupIndex: new Map(),
+  // 选中集合按 ID 存，跨页保留：翻到第 2 页不会把第 1 页的勾选丢掉。
+  librarySelection: new Set(),
   history: { offset: 0, total: 0, items: [] },
 };
 
@@ -1254,7 +1261,7 @@ function libraryRowsTable(rows) {
     // 分类是「组」的属性：单条地址不单独改分类，改分类在组标题上做。
     const editorRow = "";
     return `<tr>
-      <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"${row.builtin_locked ? ' disabled title="内置固定名单地址，不能批量删除"' : ""}></td>
+      <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"${state.librarySelection.has(String(row.id)) ? " checked" : ""}${row.builtin_locked ? ' disabled title="内置固定名单地址，不能批量删除"' : ""}></td>
       <td class="mono address library-address-cell"><div class="address-main">${addressLink(row.address, row.address)}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button></div></td>
       <td class="library-label-cell">${labelCell}</td>
       <td><div class="category-chips">${chips}</div>${exchangeControl}${publicControl}</td>
@@ -1267,6 +1274,44 @@ function libraryRowsTable(rows) {
   }).join("");
   // 包一层 .table-wrap：列多时（地址 + 复制按钮）可横向滚动，避免名称/来源被挤成竖排。
   return `<div class="table-wrap"><table><thead><tr><th class="selection-cell"></th><th>地址</th><th>名称</th><th>分类</th><th>备注</th><th>地址库</th><th>来源</th><th></th></tr></thead><tbody>${rowsHtml}</tbody></table></div>`;
+}
+
+// 地址库组内分页：预置验证者上千条时整组铺开会让浏览器卡死。
+const LIBRARY_GROUP_PAGE_SIZE = 50;
+
+function libraryPageInfo(groupId, total) {
+  const pages = Math.max(1, Math.ceil(total / LIBRARY_GROUP_PAGE_SIZE));
+  const raw = Number(state.libraryGroupPages.get(groupId)) || 1;
+  const current = Math.min(Math.max(1, raw), pages);
+  return { current, pages, start: (current - 1) * LIBRARY_GROUP_PAGE_SIZE };
+}
+
+function libraryPagerHtml(groupId, info, total) {
+  if (info.pages <= 1) return "";
+  const shown = Math.min(LIBRARY_GROUP_PAGE_SIZE, total - info.start);
+  const disabled = (flag) => (flag ? " disabled" : "");
+  return `<div class="library-pager" data-library-pager="${groupId}">
+    <span>第 <b>${info.current}</b> / ${info.pages} 页 · 共 ${total} 个地址，本页 ${shown} 个（每页 ${LIBRARY_GROUP_PAGE_SIZE} 条）</span>
+    <div class="library-pager-actions">
+      <button class="ghost" data-library-page="first"${disabled(info.current === 1)} type="button">首页</button>
+      <button class="ghost" data-library-page="prev"${disabled(info.current === 1)} type="button">上一页</button>
+      <button class="ghost" data-library-page="next"${disabled(info.current === info.pages)} type="button">下一页</button>
+      <button class="ghost" data-library-page="last"${disabled(info.current === info.pages)} type="button">末页</button>
+    </div>
+  </div>`;
+}
+
+function turnLibraryPage(action, groupId) {
+  const total = (state.libraryGroupIndex.get(groupId) || []).length;
+  if (!total) return;
+  const info = libraryPageInfo(groupId, total);
+  let next = info.current;
+  if (action === "first") next = 1;
+  else if (action === "prev") next = info.current - 1;
+  else if (action === "next") next = info.current + 1;
+  else if (action === "last") next = info.pages;
+  state.libraryGroupPages.set(groupId, Math.min(Math.max(1, next), info.pages));
+  renderLibraryList();
 }
 
 function libraryTable(rows) {
@@ -1303,9 +1348,14 @@ function libraryTable(rows) {
     groups.get(key).categories.add(row.category);
     groups.get(key).rows.push(row);
   });
+  state.libraryGroupIndex.clear();
   return `<div class="library-groups">${[...groups.values()].map((group, index) => {
     const groupId = `library-group-${index}`;
     const expanded = state.libraryGroupsOpen.has(groupId);
+    // 组 → 全部行 ID：翻页只影响这一页，全选 / 统计仍按整组算。
+    state.libraryGroupIndex.set(groupId, group.rows.map((row) => String(row.id)));
+    const pageInfo = libraryPageInfo(groupId, group.rows.length);
+    const pageRows = group.rows.slice(pageInfo.start, pageInfo.start + LIBRARY_GROUP_PAGE_SIZE);
     const groupCategories = [...group.categories];
     const categoryTag = group.book
       ? '<span class="lib-category book-tag">自建库</span>'
@@ -1348,14 +1398,19 @@ function libraryTable(rows) {
     const addEditor = addingHere
       ? `<div class="group-add-editor"><textarea data-group-add-input rows="3" placeholder="每行一个 SS58 地址，也支持逗号 / 空格分隔（一次最多 200 个）" aria-label="要添加的地址"></textarea><input data-group-add-note maxlength="2000" autocomplete="off" placeholder="备注（选填，只写给这次新加的地址）" aria-label="新地址的备注"><label class="group-add-move"><input type="checkbox" data-group-add-move> 已在别的组的地址也移到本组（改它的组名/分类，备注保留）</label><div class="group-add-actions"><button class="secondary note-save" data-save-group-add ${addAttrs} type="button">添加到本组</button><button class="ghost note-save" data-cancel-group-add type="button">取消</button></div><small>地址格式不对会逐个提示；加入后可点「撤回上次导入」一次性撤销这次添加。${isExchangeGroupLabel(group.label) ? "本组是人工交易所结论组，加进来的地址会同步标为" + esc(group.label) + "。" : ""}</small></div>`
       : "";
-    return `<section class="library-group"><div class="library-group-head"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-actions"><label class="group-select" title="全选「${esc(group.label)}」这一组的 ${group.rows.length} 个地址"><input type="checkbox" data-group-select="${groupId}" aria-label="全选「${esc(group.label)}」组地址">全选本组</label><span class="group-selected" data-group-selected="${groupId}"></span>${categoryControl}${renameControl}</div></div>${categoryEditor}<div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${addBar}${addEditor}${libraryRowsTable(group.rows)}</div></section>`;
+    return `<section class="library-group"><div class="library-group-head"><button class="library-group-toggle" data-library-toggle="${groupId}" aria-expanded="${expanded}" type="button"><span><b>${esc(group.label)}</b>${categoryTag}</span><span>${group.rows.length} 个地址 <span class="group-chevron">⌄</span></span></button><div class="library-group-actions"><label class="group-select" title="全选「${esc(group.label)}」这一组的 ${group.rows.length} 个地址"><input type="checkbox" data-group-select="${groupId}" aria-label="全选「${esc(group.label)}」组地址">全选本组</label><span class="group-selected" data-group-selected="${groupId}"></span>${categoryControl}${renameControl}</div></div>${categoryEditor}<div class="library-group-details${expanded ? "" : " hidden"}" data-library-details="${groupId}">${addBar}${addEditor}${libraryRowsTable(pageRows)}${libraryPagerHtml(groupId, pageInfo, group.rows.length)}</div></section>`;
   }).join("")}</div>`;
 }
 
 function updateLibrarySelection() {
-  // 内置固定名单的复选框是禁用的：选中/全选只统计可删除的行。
-  const checkboxes = [...document.querySelectorAll("[data-library-select]:not(:disabled)")];
-  const selected = checkboxes.filter((checkbox) => checkbox.checked).length;
+  // 选中状态存在 state.librarySelection 里（按 ID），所以翻页不会丢勾选；
+  // 内置固定名单的行不可选，统计时排除。
+  const selectable = (state.library || []).filter((row) => !row.builtin_locked);
+  const selectableIds = new Set(selectable.map((row) => String(row.id)));
+  for (const id of [...state.librarySelection]) {
+    if (!selectableIds.has(id)) state.librarySelection.delete(id);
+  }
+  const selected = state.librarySelection.size;
   const button = $("#delete-selected");
   button.disabled = selected === 0;
   button.textContent = `删除所选 (${selected})`;
@@ -1371,18 +1426,17 @@ function updateLibrarySelection() {
 
   const selectAll = $("#select-all-addresses");
   if (selectAll) {
-    selectAll.checked = checkboxes.length > 0 && selected === checkboxes.length;
-    selectAll.indeterminate = selected > 0 && selected < checkboxes.length;
+    selectAll.checked = selectable.length > 0 && selected === selectable.length;
+    selectAll.indeterminate = selected > 0 && selected < selectable.length;
   }
-  // 每个标签组自己的「全选本组」：全选 / 部分选中（半选）/ 未选。
-  document.querySelectorAll("[data-library-details]").forEach((container) => {
-    const groupId = container.dataset.libraryDetails;
-    const boxes = [...container.querySelectorAll("[data-library-select]:not(:disabled)")];
-    const checked = boxes.filter((checkbox) => checkbox.checked).length;
+  // 每个标签组自己的「全选本组」：按整组（跨页）统计，不是只算当前页。
+  state.libraryGroupIndex.forEach((ids, groupId) => {
+    const allowed = ids.filter((id) => selectableIds.has(id));
+    const checked = allowed.filter((id) => state.librarySelection.has(id)).length;
     const toggle = document.querySelector(`[data-group-select="${groupId}"]`);
     if (toggle) {
-      toggle.checked = boxes.length > 0 && checked === boxes.length;
-      toggle.indeterminate = checked > 0 && checked < boxes.length;
+      toggle.checked = allowed.length > 0 && checked === allowed.length;
+      toggle.indeterminate = checked > 0 && checked < allowed.length;
     }
     const counter = document.querySelector(`[data-group-selected="${groupId}"]`);
     if (counter) counter.textContent = checked ? `已选 ${checked}` : "";
@@ -2303,11 +2357,7 @@ async function decideLibraryExchange(button) {
 }
 
 function selectedLibraryAddresses() {
-  const ids = new Set(
-    [...document.querySelectorAll("[data-library-select]")]
-      .filter((checkbox) => checkbox.checked)
-      .map((checkbox) => String(checkbox.value))
-  );
+  const ids = new Set(state.librarySelection);
   return (state.library || [])
     .filter((row) => ids.has(String(row.id)))
     .map((row) => row.address);
@@ -3391,6 +3441,15 @@ $("#watch-log-filter").addEventListener("change", loadWatchLogs);
 $("#export-library-all").addEventListener("click", () => exportLibrary("all"));
 $("#export-library-selected").addEventListener("click", () => exportLibrary("selected"));
 document.addEventListener("click", (event) => {
+  // 地址库组内分页：只翻这一组，其它组与折叠状态不变。
+  const libraryPageButton = event.target.closest("[data-library-page]");
+  if (libraryPageButton) {
+    const pager = libraryPageButton.closest("[data-library-pager]");
+    if (pager) {
+      turnLibraryPage(libraryPageButton.dataset.libraryPage, pager.dataset.libraryPager);
+    }
+    return;
+  }
   const revokeButton = event.target.closest("[data-revoke-import]");
   if (revokeButton) {
     revokeWatchImport(Number(revokeButton.dataset.revokeImport));
@@ -3498,13 +3557,28 @@ document.addEventListener("click", (event) => {
   if (categoryDelete) deleteCategory(categoryDelete.dataset.categoryDelete);
 });
 document.addEventListener("change", (event) => {
-  if (event.target.matches("[data-library-select]")) updateLibrarySelection();
+  if (event.target.matches("[data-library-select]")) {
+    const id = String(event.target.value);
+    if (event.target.checked) state.librarySelection.add(id);
+    else state.librarySelection.delete(id);
+    updateLibrarySelection();
+  }
   if (event.target.matches("[data-group-select]")) {
-    // 组内全选：只影响这一组的地址（收起状态下也能选中，删除时一并生效）。
+    // 组内全选：按整组（含其它分页）生效，不只是当前页能看见的行。
     const groupId = event.target.dataset.groupSelect;
+    const ids = state.libraryGroupIndex.get(groupId) || [];
+    const locked = new Set(
+      (state.library || []).filter((row) => row.builtin_locked).map((row) => String(row.id))
+    );
+    ids.forEach((id) => {
+      if (locked.has(id)) return;
+      if (event.target.checked) state.librarySelection.add(id);
+      else state.librarySelection.delete(id);
+    });
+    // 当前页的复选框直接同步，省一次整表重绘。
     const container = document.querySelector(`[data-library-details="${groupId}"]`);
     if (container) {
-      container.querySelectorAll("[data-library-select]").forEach((checkbox) => {
+      container.querySelectorAll("[data-library-select]:not(:disabled)").forEach((checkbox) => {
         checkbox.checked = event.target.checked;
       });
     }
@@ -3557,10 +3631,16 @@ document.addEventListener("keydown", (event) => {
 });
 const selectAllAddresses = $("#select-all-addresses");
 if (selectAllAddresses) selectAllAddresses.addEventListener("change", () => {
-  document.querySelectorAll("[data-library-select]").forEach((checkbox) => {
+  state.librarySelection.clear();
+  if (selectAllAddresses.checked) {
+    (state.library || [])
+      .filter((row) => !row.builtin_locked)
+      .forEach((row) => state.librarySelection.add(String(row.id)));
+  }
+  document.querySelectorAll("[data-library-select]:not(:disabled)").forEach((checkbox) => {
     checkbox.checked = selectAllAddresses.checked;
   });
-  updateLibrarySelection();
+  renderLibraryList();
 });
 $("#sync-all").addEventListener("click", () => syncCurrentResult("all"));
 $("#sync-label-group").addEventListener("change", () => {
@@ -3611,8 +3691,8 @@ $("#stop-backfill").addEventListener("click", () => {
   renderBackfillProgress("正在停止：当前地址查询结束后就不再继续。");
 });
 $("#delete-selected").addEventListener("click", async () => {
-  const ids = [...document.querySelectorAll("[data-library-select]:checked")]
-    .map((checkbox) => Number(checkbox.value))
+  const ids = [...state.librarySelection]
+    .map((value) => Number(value))
     .filter((id) => Number.isInteger(id) && id > 0);
   if (!ids.length) return;
   const summary = selectionSummary(ids);
@@ -3628,6 +3708,7 @@ $("#delete-selected").addEventListener("click", async () => {
       method: "DELETE",
       body: JSON.stringify({ ids }),
     });
+    state.librarySelection.clear();
     await loadLibrary();
     toast(`已批量删除 ${result.deleted} 条记录。`);
   } catch (error) { toast(error.message, true); }

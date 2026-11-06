@@ -1,7 +1,10 @@
 # 运行环境与本地数据（不要提交，拷贝到别的电脑后由 安装.cmd 重建）
 .venv/
-data/
-logs/
+/data/
+/logs/
+# 随版本发布的预置名单（app/data/ 要进仓库，不能被上面的 /data/ 或通配 data/ 误伤）
+!app/data/
+!app/data/**
 
 # Python
 __pycache__/

@@ -644,3 +644,19 @@ Set-Location G:\bittensor-wallet-link-intel
 - **实测**：修复后同一接口 200，`official_total=1196`、`inserted=0/updated=0/skipped=1196`（已经全在库里，属正常幂等），`synced_at=2026-11-06T12:13:53Z`。
 - **验收**：`pytest -q` = **230 passed**（新增 2 条重试用例）。
 - **遗留**：如果 Taostats 长时间不可达，3 次重试（约 3.6s）后仍会返回 502；界面提示已是原始错误文本，可以按「稍后重试」处理，无需改代码。
+
+## 41. 2026-11-06 0.7.7 交接：远端 405、预置验证者名单、地址库分页、结果地址单行
+
+- **远端「同步验证者失败」不是网络问题，是 405。** 用户在原话里贴的提示是 `Method Not Allowed`，不是 SSL。远端浏览器发的是 **GET** `/api/library/import-validators`，而这个路径会被注册更早的 `@app.delete("/api/library/{row_id}")` / `@app.patch("/api/library/{row_id}")` 抢走匹配（`{row_id}` 没写 `:int`，字符串也能匹配），方法不符 → 405。本地一直发 POST，所以从来没复现过，别再以为是 key 或 TLS。
+  - 修法：① 两个同步接口改 `@app.api_route(..., methods=["POST","GET"])`；② 所有行级动态路由写成 `{row_id:int}`，这样 `/api/library/<单词>` 直接 404，不再误导。新增测试锁死这两条。
+  - 教训：**遇到 405 先怀疑路径被动态路由抢占**，不要顺着前一个 SSL 报错误导。0.7.6 的传输层重试仍然保留（本地确实遇到过 TLS EOF），两者是不同故障。
+- **预置验证者快照怎么维护**：数据在 `app/data/builtin_validators.txt`，一行一个 SS58，`#` 开头为注释；`builtin_addresses.load_validator_snapshot()` 读取，`builtin_entries()` 把它接在人工验证者之后并**按地址去重**（人工优先）。要更新名单：重新同步一次 → 导出 VALIDATOR 分类地址 → 覆盖该文件 → 升版本。因为 `source` 是 `builtin:validator`，这些行会被锁定（不可删除、不可改分类），这正是「预置固定」的含义。
+- **已有库不会被覆盖**：`ensure_builtin_addresses` 只在该行来源不是官方同步（`taostats:`）时改成内置。所以「本机已同步过」的地址保留 `taostats:/v1/validators/active` 来源、仍可删除；「远端从没有过」的地址才会以内置形式插入并锁定。这是有意的：不抹掉真实来源。
+- **性能**：内置条目从 6 条涨到 1201 条，`ensure_builtin_addresses` 原来逐条 `select`，改成进函数时一次 `select(AddressLibrary)` 建字典。启动总耗时没明显变化。
+- **地址库分页的实现要点**：
+  - 每组 50 条（`LIBRARY_GROUP_PAGE_SIZE`），页码存在 `state.libraryGroupPages`（Map，groupId → page）；
+  - 分组还是原来的 `libraryTable()`，只在渲染时 `slice`，**组标题里的条数仍然是整组**，不是当页；
+  - `state.libraryGroupIndex` 每次渲染重建（groupId → 该组全部行 ID），「全选本组」按它跨页选；
+  - **勾选状态迁移到 `state.librarySelection`（Set，存字符串 ID）**：原来靠 DOM 查询，分页后翻页就丢；全选、导出选中、批量删除三处都已改成读这个集合。加新的选中相关功能时不要再去查 `[data-library-select]:checked`。
+- **结果地址单行的坑**：不能给 `.address-main` 整体 `flex-wrap:nowrap`。试过，表格被撑宽 137px（1181 vs 1044，横向滚动条出现）。正确做法是只给 `.related-address-cell .addr-link` 加 `white-space:nowrap; word-break:normal`，让「复制 / 移除 / 角色标签」自己换到下一行。验证方法：量 `.addr-link` 的高度是否小于 `line-height`（17 < 18 即单行）。
+- **验收**：`pytest -q` = 234 passed（新增 4 条）；GET/POST 均 200、未知子路径 404；预置验证者 1194 条 24 页、末页 44、翻页保持展开；结果表 1440/1180/1024 三档地址零折行。

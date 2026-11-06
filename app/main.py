@@ -663,7 +663,7 @@ def dissolve_address_book(name: str, svc: Annotated[LinkService, Depends(service
         raise HTTPException(404, str(exc)) from exc
 
 
-@app.delete("/api/library/{row_id}")
+@app.delete("/api/library/{row_id:int}")
 def delete_address(row_id: int, svc: Annotated[LinkService, Depends(service)]):
     try:
         if not svc.remove_address(row_id):
@@ -673,7 +673,7 @@ def delete_address(row_id: int, svc: Annotated[LinkService, Depends(service)]):
     return {"ok": True}
 
 
-@app.patch("/api/library/{row_id}")
+@app.patch("/api/library/{row_id:int}")
 def update_address_note(
     row_id: int,
     payload: NoteInput,
@@ -685,7 +685,7 @@ def update_address_note(
         raise HTTPException(404, str(exc)) from exc
 
 
-@app.patch("/api/library/{row_id}/label")
+@app.patch("/api/library/{row_id:int}/label")
 def update_address_label(
     row_id: int,
     payload: LabelInput,
@@ -777,7 +777,7 @@ def update_group_categories(
         raise HTTPException(422, str(exc)) from exc
 
 
-@app.patch("/api/library/{row_id}/categories")
+@app.patch("/api/library/{row_id:int}/categories")
 def update_address_categories(
     row_id: int,
     payload: CategoriesInput,
@@ -791,7 +791,7 @@ def update_address_categories(
         raise HTTPException(404, str(exc)) from exc
 
 
-@app.post("/api/library/{row_id}/confirm-exchange")
+@app.post("/api/library/{row_id:int}/confirm-exchange")
 def confirm_exchange(
     row_id: int,
     payload: ExchangeConfirmationInput,
@@ -937,7 +937,7 @@ async def import_library(
         raise HTTPException(422, str(exc)) from exc
 
 
-@app.post("/api/library/import-exchanges")
+@app.api_route("/api/library/import-exchanges", methods=["POST", "GET"])
 def import_exchange_addresses(svc: Annotated[LinkService, Depends(service)]):
     try:
         return svc.sync_exchange_addresses()
@@ -949,7 +949,7 @@ def import_exchange_addresses(svc: Annotated[LinkService, Depends(service)]):
         raise HTTPException(502, str(exc)) from exc
 
 
-@app.post("/api/library/import-validators")
+@app.api_route("/api/library/import-validators", methods=["POST", "GET"])
 def import_validator_addresses(svc: Annotated[LinkService, Depends(service)]):
     """同步 Taostats 当前活跃验证者名单：进库后作为关联终点，不再向下扩展。"""
 

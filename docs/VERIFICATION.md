@@ -1,5 +1,46 @@
 # 验证交付记录
 
+## 0.7.7 验证记录（2026-11-06）
+
+**远端 405 的复现与修复**：
+
+| 请求 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `POST /api/library/import-validators` | 200 | 200 |
+| `GET /api/library/import-validators` | **405 Method Not Allowed** | 200 |
+| `GET /api/library/not-a-real-action` | 405（被 `/api/library/{row_id}` 抢匹配） | **404** |
+
+- 成因：`@app.delete("/api/library/{row_id}")` / `@app.patch(...)` 注册在 `import-validators` 之前，`{row_id}` 是字符串路径参数，`import-validators` 也能匹配上，方法不符就落到 405 分支。远端浏览器发出的是 GET（本地一直 POST），所以本地怎么点都正常。
+- 前端 `syncValidatorLibrary()` 把 `error.message` 原样弹出，于是「Method Not Allowed」被显示成「验证者地址同步失败」。
+
+**预置验证者快照**：
+
+- `app/data/builtin_validators.txt`：1196 行地址（3 行注释），`load_validator_snapshot()` 读出 1196 条。
+- `builtin_entries()` 去重后 **1201** 条（5 交易所 + 1196 验证者，其中 1 个验证者与人工名单重叠）。
+- 在全新库上 `ensure_builtin_addresses()` 写入后，快照地址的 `category=VALIDATOR`、`source=builtin:validator`、`builtin_locked=true`。
+- 现有库（1902 条）启动后：预置验证者分组 1194 条（本机原本已通过 Taostats 同步入过库，来源保留 `taostats:`，不重复插入）。
+
+**地址库分页**（`.probe/check_pager.py`，1440）：
+
+| 项 | 结果 |
+| --- | --- |
+| 组名 / 条数 | 预置验证者 / 1194 |
+| 第 1 页 | 「第 1 / 24 页 · 共 1194 个地址，本页 50 个（每页 50 条）」 |
+| 翻到第 2 页 | 页码变 2/24，首行地址从 `5C4hrfjx…` 变成 `5C4i761Q…`，组仍展开 |
+| 末页 | 「第 24 / 24 页 · 共 1194 个地址，本页 44 个」，下一页按钮禁用 |
+
+**结果地址单行**（`.probe/ui_check_077b.py` + `.probe/diag_overflow.py`）：
+
+| 宽度 | 采样行数 | 折行行数 | 链接高度 / 行高 | 表格横向溢出 |
+| --- | --- | --- | --- | --- |
+| 1440 | 10 | **0** | 17 / 18 | 8（改动前同为 8） |
+| 1180 | 10 | **0** | 17 / 18 | 253（表格固有宽度，原本可横向滚动） |
+| 1024 | 10 | **0** | 17 / 18 | 399（同上） |
+
+- 只对 `.related-address-cell .addr-link` 加 `white-space:nowrap`，没有对整行 `address-main` 加 `nowrap`：试过整行不换行，表格会被撑宽 137px（1181 vs 1044），因此保留按钮换行、只锁地址。
+
+**回归**：`pytest -q` = **234 passed**；`/api/health` 版本 0.7.7（pid 19768）；页面资源戳 `?v=0.7.7`。
+
 ## 0.7.6 验证记录（2026-11-06）
 
 **故障复现与定位**（`POST /api/library/import-validators`）：

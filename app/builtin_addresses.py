@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 BUILTIN_SOURCE_PREFIX = "builtin:"
 
@@ -51,6 +52,28 @@ BUILTIN_VALIDATOR_ADDRESSES: tuple[tuple[str, str], ...] = (
     ("5HK5tp6t2S59DywmHRWPBVJeJ86T61KjurYqeooqj8sREpeN", "人工确认验证者"),
 )
 
+# 预置验证者快照：把一次同步下来的活跃验证者名单随版本发布，出境受限或
+# Taostats 不可达的机器（比如远端只 clone 了代码、没有 API key）也能直接
+# 拿到「查到即终止」的终点集合，不必先联网同步。
+VALIDATOR_SNAPSHOT_PATH = Path(__file__).with_name("data") / "builtin_validators.txt"
+VALIDATOR_SNAPSHOT_LABEL = "预置验证者"
+
+
+def load_validator_snapshot(path: Path | None = None) -> tuple[str, ...]:
+    """读取验证者快照文件（一行一个地址，``#`` 开头为注释）。"""
+
+    target = path or VALIDATOR_SNAPSHOT_PATH
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        return ()
+    addresses: list[str] = []
+    for line in text.splitlines():
+        value = line.split("#", 1)[0].strip()
+        if value:
+            addresses.append(value)
+    return tuple(dict.fromkeys(addresses))
+
 # 人工确认的公共地址（中转、发币池、公共充值地址等）。
 BUILTIN_PUBLIC_ADDRESSES: tuple[tuple[str, str], ...] = ()
 
@@ -64,12 +87,22 @@ def is_builtin_source(source: str | None) -> bool:
 def builtin_entries() -> tuple[BuiltinAddress, ...]:
     """内置名单全量条目（交易所 / 验证者 / 公共地址）。"""
 
+    validator_snapshot = tuple(
+        (address, VALIDATOR_SNAPSHOT_LABEL) for address in load_validator_snapshot()
+    )
     entries: list[BuiltinAddress] = []
+    seen: set[str] = set()
     for addresses, category in (
         (BUILTIN_EXCHANGE_ADDRESSES, "EXCHANGE"),
-        (BUILTIN_VALIDATOR_ADDRESSES, "VALIDATOR"),
+        # 人工确认的验证者排在快照前面：同一地址以人工条目为准。
+        (BUILTIN_VALIDATOR_ADDRESSES + validator_snapshot, "VALIDATOR"),
         (BUILTIN_PUBLIC_ADDRESSES, "PUBLIC"),
     ):
         for address, label in addresses:
-            entries.append(BuiltinAddress(address=address.strip(), category=category, label=label))
+            value = address.strip()
+            # 人工名单和快照可能重叠，去重后再交给写库逻辑，否则会撞唯一索引。
+            if value in seen:
+                continue
+            seen.add(value)
+            entries.append(BuiltinAddress(address=value, category=category, label=label))
     return tuple(entries)
