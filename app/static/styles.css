@@ -129,13 +129,28 @@ button.refresh-result-btn.is-armed:not(:disabled)::after { content:""; position:
 .release-entry p { margin-bottom:0; }
 .app-footer { display:flex; justify-content:center; align-items:center; gap:14px; flex-wrap:wrap; padding:18px 0 0; color:var(--muted); font-size:12px; }
 .footer-release-link { border:0; padding:0; background:transparent; color:var(--accent); font-size:12px; }
-.seed-balance-card { display:flex; justify-content:space-between; align-items:center; gap:18px; margin-bottom:18px; padding:15px 18px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
-.seed-balance-card > div { display:flex; flex-direction:column; gap:5px; }
+.seed-balance-card { display:grid; grid-template-columns:minmax(0,1.6fr) repeat(4,minmax(0,1fr)); align-items:start; gap:18px; margin-bottom:18px; padding:15px 18px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+.seed-balance-card > div { display:flex; flex-direction:column; gap:5px; min-width:0; }
 .seed-balance-card span { color:var(--muted); font-size:12px; }
-.seed-balance-card code { font-size:13px; }
 .seed-balance-card b { font-family:var(--mono); font-size:20px; }
+/* 起始地址是这一块的标题：字号明显大于旁边四个指标，用主题强调色 + 左侧竖条区分 */
+.seed-balance-card .seed-identity { padding-left:11px; border-left:3px solid var(--accent); }
+.seed-balance-card .seed-identity code {
+  font-family:var(--mono); font-size:17px; font-weight:700; line-height:1.35;
+  letter-spacing:.2px; color:var(--accent); word-break:break-all;
+}
+.seed-balance-card .seed-metric b { color:var(--ink); }
+.seed-balance-card .seed-metric small { color:var(--muted); font-size:11px; line-height:1.4; min-height:14px; }
+@media (max-width:1180px) {
+  .seed-balance-card { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .seed-balance-card .seed-identity { grid-column:1/-1; }
+}
+@media (max-width:560px) {
+  .seed-balance-card { grid-template-columns:1fr 1fr; }
+  .seed-balance-card .seed-identity { grid-column:1/-1; }
+  .seed-balance-card .seed-identity code { font-size:15px; }
+}
 @media (max-width:560px) { .release-heading { display:block; } .release-meta { margin-top:7px; } }
-@media (max-width:560px) { .seed-balance-card { align-items:flex-start; flex-direction:column; } }
 
 /* 起始地址与扫描按钮同一行：按钮紧跟输入框，避免在设置区底部反复上下找 */
 .seed-field { display:grid; gap:6px; color:var(--muted); font-size:12px; }
@@ -575,10 +590,6 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 .metrics div, .stats > div, .usage-grid div { align-items:center; text-align:center; }
 .stats b { font-size:23px; }
 .hero { gap:28px; }
-.seed-balance-card { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; }
-.seed-balance-card code { font-family:var(--mono); font-size:12.5px; word-break:break-all; max-width:none; }
-.seed-balance-card > div:last-child { text-align:right; }
-.seed-balance-card b { font-size:21px; }
 
 /* 结果页标题区与工具栏 */
 .result-heading { align-items:center; }
@@ -623,8 +634,6 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
   .source-status { margin-left:0; text-align:left; flex-basis:100%; }
 }
 @media (max-width:560px) {
-  .seed-balance-card { grid-template-columns:1fr; }
-  .seed-balance-card > div:last-child { text-align:left; }
   .control-grid { grid-template-columns:1fr 1fr; }
   .control-grid .wide.seed-field { grid-column:1/-1; }
   .library-top .inline-form { grid-template-columns:1fr; }

@@ -57,8 +57,54 @@ function shortAddr(value) {
   return text.length > 8 ? `${text.slice(0, 4)}…${text.slice(-4)}` : text;
 }
 
-function formatTao(value, suffix = false) {
-  if (value === null || value === undefined || value === "") return "未获取";
+// 起始地址画像：注册日期 / 历史交易次数 / 日均频次 / 余额。
+// 每个值都可能缺失，缺失就写「未获取」并说明原因，不拿 0 顶替。
+function renderSeedProfile(profile, rpcBalance) {
+  const placeholder = "未获取";
+
+  const registered = profile.registered_on || null;
+  $("#seed-result-registered").textContent = registered || placeholder;
+  const registeredNote = $("#seed-result-registered-note");
+  if (registered && profile.registered_on_network) {
+    registeredNote.textContent = `注册网络 ${profile.registered_on_network}`;
+  } else {
+    registeredNote.textContent = registered ? "" : "需要 Taostats API key";
+  }
+
+  const count = Number.isFinite(profile.transfer_count) ? profile.transfer_count : null;
+  $("#seed-result-txcount").textContent = count === null ? placeholder : number(count) + " 笔";
+  const countNote = $("#seed-result-txcount-note");
+  if (profile.transfer_count_scope === "local_index") {
+    countNote.textContent = "仅本地索引内";
+  } else {
+    countNote.textContent = count === null ? "需要 Taostats API key" : "Taostats 全量";
+  }
+
+  const daily = Number.isFinite(profile.daily_frequency) ? profile.daily_frequency : null;
+  $("#seed-result-daily").textContent = daily === null ? placeholder : `${daily} 笔/天`;
+  $("#seed-result-daily-note").textContent =
+    daily === null
+      ? (count === null ? "" : "缺注册日期")
+      : `按注册至今 ${number(profile.active_days)} 天`;
+
+  // 余额优先用「含质押」的总余额，退回 RPC 可用的自由余额。
+  const total = profile.balance_total_tao;
+  const shown = total !== null && total !== undefined ? total : rpcBalance;
+  $("#seed-result-balance").textContent = formatTao(shown, true);
+  const balanceNote = $("#seed-result-balance-note");
+  const parts = [];
+  if (profile.balance_free_tao !== null && profile.balance_free_tao !== undefined) {
+    parts.push(`可用 ${formatTao(profile.balance_free_tao)}`);
+  }
+  if (profile.balance_staked_tao !== null && profile.balance_staked_tao !== undefined) {
+    parts.push(`质押 ${formatTao(profile.balance_staked_tao)}`);
+  }
+  balanceNote.textContent = parts.length
+    ? parts.join(" · ")
+    : (shown === null || shown === undefined ? "未取得余额" : "RPC 可用余额");
+}
+
+function formatTao(value, suffix = false) {  if (value === null || value === undefined || value === "") return "未获取";
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return "未获取";
   const formatted = new Intl.NumberFormat("zh-CN", {
@@ -819,7 +865,7 @@ function renderResult(data) {
   const stakeUsage = data.stake_transfer_count > 0 ? ` · 子网 stake 转移 ${data.stake_transfer_count} 条` : "";
   $("#result-subtitle").textContent = `${data.seed} · 最多 ${data.max_depth} 级 · 来源 ${sourcesLabel}${apiUsage}${stakeUsage} · 数据截止 ${data.data_cutoff_block ? number(data.data_cutoff_block) : "未采集"} 区块`;
   $("#seed-result-address").textContent = data.seed || "-";
-  $("#seed-result-balance").textContent = formatTao(data.seed_balance_tao, true);
+  renderSeedProfile(data.seed_profile || {}, data.seed_balance_tao);
   const paginationBadge = data.data_source === "taostats" && data.pagination_complete === false
     ? '<span class="badge warn">分页未完整</span>' : "";
   const windowBadge = data.provider_window_truncated

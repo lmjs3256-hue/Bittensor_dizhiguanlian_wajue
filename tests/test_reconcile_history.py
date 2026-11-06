@@ -126,6 +126,71 @@ def test_prune_without_edges_uses_path_hops():
     assert stats["related_removed"] == 2
 
 
+def _no_path_payload(related, edges) -> dict:
+    """模拟老记录：关联条目没有 path_transfers，只剩边表可依据。"""
+
+    return {
+        "seed": SEED,
+        "related": [{"address": address, "depth": 1} for address in related],
+        "edges": [_edge(source, target, 1, 100 + index) for index, (source, target) in enumerate(edges)],
+        "warnings": [],
+    }
+
+
+def test_prune_without_paths_drops_terminal_downstream():
+    """回归：终点必须入队，否则「标记终点下游」那段是死代码，一条都剪不掉。"""
+
+    payload = _no_path_payload(
+        [HUB, MIDDLE],
+        [(SEED, HUB), (HUB, MIDDLE)],
+    )
+    pruned, stats = prune_archive_payload(payload, {HUB: ("EXCHANGE",)})
+    assert [item["address"] for item in pruned["related"]] == [HUB]
+    assert stats["related_removed"] == 1
+    assert stats["unverified"] == 0
+    assert stats["blocking"] == {"交易所": 1}
+
+
+def test_prune_without_paths_drops_whole_downstream_chain():
+    """终点下游的整条链都要删，不只是第一层。"""
+
+    payload = _no_path_payload(
+        [HUB, MIDDLE, LEAF],
+        [(SEED, HUB), (HUB, MIDDLE), (MIDDLE, LEAF)],
+    )
+    pruned, stats = prune_archive_payload(payload, {HUB: ("PUBLIC",)})
+    assert [item["address"] for item in pruned["related"]] == [HUB]
+    assert stats["related_removed"] == 2
+    assert stats["unverified"] == 0
+
+
+def test_prune_without_paths_keeps_reachable_side_branch():
+    """删的只限终点下游：绕开终点也能到的一律保留。"""
+
+    payload = _no_path_payload(
+        [HUB, MIDDLE, OTHER],
+        [(SEED, HUB), (HUB, MIDDLE), (SEED, OTHER), (OTHER, MIDDLE)],
+    )
+    pruned, stats = prune_archive_payload(payload, {HUB: ("EXCHANGE",)})
+    # MIDDLE 经 OTHER 也能到达，属于正常线索；只有 HUB 的下游才剪。
+    assert sorted(item["address"] for item in pruned["related"]) == sorted([HUB, MIDDLE, OTHER])
+    assert stats["related_removed"] == 0
+    assert stats["unverified"] == 0
+
+
+def test_prune_counts_unverified_when_graph_does_not_connect():
+    """边表没把这个地址连到起点时，仍然按「无证据不删」处理。"""
+
+    payload = _no_path_payload(
+        [HUB, MIDDLE, OTHER],
+        [(SEED, HUB), (MIDDLE, OTHER)],
+    )
+    pruned, stats = prune_archive_payload(payload, {HUB: ("EXCHANGE",)})
+    assert stats["related_removed"] == 0
+    assert stats["unverified"] == 2
+    assert len(pruned["related"]) == 3
+
+
 def test_marking_public_corrects_existing_archive(svc):
     _database, service = svc
     service.import_rows([{"address": HUB, "category": "群友"}], "manual")

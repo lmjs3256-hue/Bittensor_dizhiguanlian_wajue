@@ -610,3 +610,22 @@ Set-Location G:\bittensor-wallet-link-intel
 - **实测**（真实库 1902 条地址）：当前终点 1214（交易所 17 / 验证者 1196 / 系统 1）；35 条相关快照里 `changed=5`、移除 415 条关联（交易所下游 262、系统 153）、`unverified=180`；样本记录 199 → 9；落库后再预演 `changed=0`。备份留在 `data/wallet_link.before-reconcile-0.7.4.db`（`PRAGMA integrity_check` ok）。
 - **验收**：`tests/test_reconcile_history.py` 11 条 + `tests/test_builtin_addresses.py` 8 条，`pytest -q` = **216 passed**；`.probe/ui_check_074.py` 1440/1180/1024 三档无溢出无重叠、只发一次 `dry_run:true`。
 - **遗留**：`unverified=180` 这批老记录（分轮续查、无路径且边表不连通）只能靠重查补全路径，预演确认框里已单列提示；`data/wallet_link.before-reconcile-0.7.4.db` 是否长期保留待定。
+
+## 39. 2026-11-06 0.7.5 交接：起始地址放大高亮 + 注册日期/交易次数/日均频次/余额
+
+- **需求原话**：「扫描结果位置的起始地址字体放大一点，颜色突出显示。后面加上地址注册日期，历史交易次数，日均交易频次，余额。」
+- **数据源（都实测过，别再猜）**：
+  - `GET https://api.taostats.io/api/account/latest/v1?network=finney&address=…` —— 一次返回 `created_on_date`、`created_on_network`、`balance_free/staked/staked_alpha_as_tao/reserved/total`（都是 **rao 字符串**）、`rank`。这是拿注册日期的唯一现成来源，不用逐块回溯。注意这个端点在 `/api/` 下，和转账用的 `/v1/transfers` 不是同一套前缀。
+  - **历史交易次数** 不用单独接口：转账分页响应里的 `pagination.total_items` 就是该地址的全量笔数。`get_transfer_total()` 用 `limit=1` 只取 1 条数据换这个数字，一次请求搞定。
+  - 余额仍保留 RPC 兜底（`seed_balance_tao`），但界面优先显示 Taostats 的 `balance_total`（含质押），因为 RPC 只给自由余额。
+- **新增代码**：
+  - `taostats.AccountProfile`（frozen dataclass）+ `get_account_profile()` + `get_transfer_total()` + `_rao_to_tao_text()`；`ACCOUNT_LATEST_URL` 常量；`_profile_cache` 走同一个 `CACHE_TTL_SECONDS` 和 `_reserve_request()`。
+  - `LinkService._seed_profile(seed, *, transfer_rows, data_source, include, warnings)`：**纯汇总**，四项指标任何一个失败都只 append warning，不抛异常。`include=False`（停止续查）直接返回空画像，不发请求。
+  - 结果字典新增 `seed_profile`，字段见 `_seed_profile` 的初始 dict（`registered_on` / `registered_on_network` / `balance_*` / `transfer_count` / `active_days` / `daily_frequency` / `transfer_count_scope` / `source`）。
+- **两个易错点**：
+  1. `service.py` 用的是 `from .taostats import get_account_profile, get_transfer_total, is_configured as taostats_is_configured` 直接导入。**方法体里必须写导入的名字**（`get_account_profile(seed)`），写成 `taostats.get_account_profile(seed)` 时 monkeypatch 打在模块上不生效，测试会静默拿到 None（这次就是这么踩的，4 条测试失败才发现）。
+  2. 原 `get_account_profile` 的缓存分支里用 `AccountProfile(**{**cached[1].__dict__, "from_cache": True})`，frozen dataclass 靠 `__dict__` 复制会带上 `_` 之类内部字段时要留意；目前字段都是普通字段，没问题，但加字段后要同步。
+- **「0」和「未获取」必须区分**：`formatTao(0)` 返回 `0.00 TAO`，`formatTao(null)` 返回「未获取」。前端 `renderSeedProfile()` 里每个指标都单独判 `Number.isFinite` / `!== null`，**不能**用 `value || "未获取"`，否则真实的 0 会被吞掉。
+- **界面**：`.seed-balance-card` 从 flex 改成 grid（1440 下 `minmax(0,1.6fr) repeat(4,minmax(0,1fr))`），1180 及以下 `repeat(3,…)`、560 及以下 `1fr 1fr`，地址块 `.seed-identity` 在窄屏 `grid-column:1/-1`。地址 17px/700/`var(--accent)` + 3px 左侧竖条。**注意**：原来第 593 行那组 `.seed-balance-card { grid-template-columns:minmax(0,1fr) auto }` 和第 641 行的 `1fr` 覆盖规则会盖掉新布局，已删除——以后改这个卡片先 grep `seed-balance-card` 把旧规则清干净。
+- **验收**：`tests/test_seed_profile.py` 8 条，`pytest -q` = **228 passed**；真实账户实测 47 288 笔 / 1 468 天 / 32.21 笔每天 / 119 310.99 TAO；`.probe/ui_check_074_profile.py` 四档宽度均不截断、不重叠、零溢出。
+- **遗留**：日均频次用的是「自然天数」而不是「实际活跃天数」（后者需要逐日交易聚合，Taostats 免费档没有现成接口），所以长时间不动的地址会把均值拉低，解读时要说明口径。

@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.7.4">
+  <link rel="stylesheet" href="/static/styles.css?v=0.7.5">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -82,7 +82,13 @@
         <section id="result" class="hidden">
           <div id="result-alert" class="result-alert hidden"></div>
           <div class="result-heading"><div><span class="label">ASSOCIATION RESULT</span><h2>扫描结果</h2><p id="result-subtitle"></p></div><div class="badges" id="result-badges"></div></div>
-          <section class="seed-balance-card"><div><span>起始地址</span><code id="seed-result-address">-</code></div><div><span>当前钱包余额</span><b id="seed-result-balance">未获取</b></div></section>
+          <section class="seed-balance-card">
+            <div class="seed-identity"><span>起始地址</span><code id="seed-result-address">-</code></div>
+            <div class="seed-metric"><span>地址注册日期</span><b id="seed-result-registered">未获取</b><small id="seed-result-registered-note"></small></div>
+            <div class="seed-metric"><span>历史交易次数</span><b id="seed-result-txcount">未获取</b><small id="seed-result-txcount-note"></small></div>
+            <div class="seed-metric"><span>日均交易频次</span><b id="seed-result-daily">未获取</b><small id="seed-result-daily-note"></small></div>
+            <div class="seed-metric"><span>余额（含质押）</span><b id="seed-result-balance">未获取</b><small id="seed-result-balance-note"></small></div>
+          </section>
           <div class="stats stats-three">
             <div><span>关联地址</span><b id="count-related">0</b></div>
             <div><span>截止区块</span><b id="cutoff">-</b></div>
@@ -214,6 +220,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.7.4"></script>
+  <script src="/static/app.js?v=0.7.5"></script>
 </body>
 </html>

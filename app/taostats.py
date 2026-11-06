@@ -7,6 +7,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -16,6 +17,7 @@ API_URL = "https://api.taostats.io/v1/transfers"
 VALIDATORS_ACTIVE_URL = "https://api.taostats.io/v1/validators/active"
 EXCHANGE_ADDRESSES_URL = "https://api.taostats.io/v1/exchange-addresses"
 STAKE_EVENTS_URL = "https://api.taostats.io/v1/subnets/stake-events"
+ACCOUNT_LATEST_URL = "https://api.taostats.io/api/account/latest/v1"
 LOCAL_REQUESTS_PER_MINUTE = 5
 CACHE_TTL_SECONDS = 300
 
@@ -64,12 +66,32 @@ class TransferPage:
         return self.next_page is not None
 
 
+@dataclass(frozen=True)
+class AccountProfile:
+    """起始地址的账户画像：注册日期 + 余额构成。
+
+    Taostats 的 ``/api/account/latest/v1`` 一次返回这些字段，比逐个查区块
+    便宜得多；拿不到时各字段留 None，界面显示「未获取」，绝不猜。
+    """
+
+    created_on_date: str | None = None
+    created_on_network: str | None = None
+    balance_free_tao: str | None = None
+    balance_staked_tao: str | None = None
+    balance_staked_alpha_as_tao: str | None = None
+    balance_reserved_tao: str | None = None
+    balance_total_tao: str | None = None
+    rank: int | None = None
+    from_cache: bool = False
+
+
 _lock = threading.Lock()
 _request_times: deque[float] = deque()
 _cache: dict[tuple[str, int], tuple[float, TransferPage]] = {}
 _stake_cache: dict[tuple[str, int], tuple[float, TransferPage]] = {}
 _validator_cache: tuple[float, frozenset[str]] | None = None
 _exchange_cache: tuple[float, tuple[dict[str, str], ...]] | None = None
+_profile_cache: dict[str, tuple[float, AccountProfile]] = {}
 _key_override: str | None = None
 _key_override_active = False
 
@@ -486,12 +508,132 @@ def get_stake_transfer_page(address: str, page: int = 1) -> TransferPage:
     return result
 
 
+def get_account_profile(address: str) -> AccountProfile:
+    """取账户画像（注册日期 + 余额构成）。
+
+    只读一次 ``/api/account/latest/v1``，走本地缓存；未配置 key、限流、
+    网络失败都按「拿不到」处理（抛 TaostatsError 子类），由调用方降级为
+    「未获取」，不影响主查询。
+    """
+
+    now = time.monotonic()
+    with _lock:
+        cached = _profile_cache.get(address)
+        if cached and now - cached[0] < CACHE_TTL_SECONDS:
+            return AccountProfile(**{**cached[1].__dict__, "from_cache": True})
+        if cached:
+            _profile_cache.pop(address, None)
+
+    api_key = _configured_api_key()
+    if not api_key:
+        raise TaostatsAuthError("未配置 Taostats API key。")
+
+    _reserve_request()
+    try:
+        response = httpx.get(
+            ACCOUNT_LATEST_URL,
+            params={"network": "finney", "address": address},
+            headers={"Authorization": api_key},
+            timeout=20,
+        )
+    except httpx.HTTPError as exc:
+        raise TaostatsUnavailableError(
+            f"Taostats 账户资料请求失败：{exc}", request_made=True
+        ) from exc
+
+    if response.status_code in {401, 403}:
+        raise TaostatsAuthError(
+            "Taostats API key 无效或没有访问权限。",
+            request_made=True,
+            status_code=response.status_code,
+        )
+    if response.status_code == 429:
+        raise TaostatsRateLimitError(
+            "Taostats 返回限流，请稍后重试。",
+            request_made=True,
+            status_code=response.status_code,
+        )
+    if response.status_code >= 400:
+        raise TaostatsUnavailableError(
+            f"Taostats 账户资料接口返回 HTTP {response.status_code}。",
+            request_made=True,
+            status_code=response.status_code,
+        )
+
+    try:
+        payload = response.json()
+        rows = payload["data"]
+        if not isinstance(rows, list) or not rows:
+            raise TypeError("data is empty")
+        row = rows[0]
+        if not isinstance(row, dict):
+            raise TypeError("data[0] is not an object")
+        profile = AccountProfile(
+            created_on_date=_text_or_none(row.get("created_on_date")),
+            created_on_network=_text_or_none(row.get("created_on_network")),
+            balance_free_tao=_rao_to_tao_text(row.get("balance_free")),
+            balance_staked_tao=_rao_to_tao_text(row.get("balance_staked")),
+            balance_staked_alpha_as_tao=_rao_to_tao_text(
+                row.get("balance_staked_alpha_as_tao")
+            ),
+            balance_reserved_tao=_rao_to_tao_text(row.get("balance_reserved")),
+            balance_total_tao=_rao_to_tao_text(row.get("balance_total")),
+            rank=_int_or_none(row.get("rank")),
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        raise TaostatsUnavailableError("Taostats 账户资料响应格式无法识别。") from exc
+
+    with _lock:
+        _profile_cache[address] = (time.monotonic(), profile)
+    return profile
+
+
+def get_transfer_total(address: str) -> tuple[int, bool]:
+    """只取「这个地址共有多少笔转账」（分页的 total_items），不翻页。
+
+    返回 ``(总数, 是否命中缓存)``。limit 取 1 是为了让这一页只带 1 条数据，
+    但服务端仍会给出真实的 total_items，一次请求就够。
+    """
+
+    page = get_transfer_page_query(address=address, page=1, limit=1)
+    return page.total_items, page.from_cache
+
+
+def _text_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _rao_to_tao_text(value: Any) -> str | None:
+    """Rao（整数，1 TAO = 1e9 rao）转成 TAO 十进制字符串；空值返回 None。"""
+
+    if value is None or value == "":
+        return None
+    try:
+        rao = int(value)
+    except (TypeError, ValueError):
+        return None
+    return f"{Decimal(rao) / Decimal(10**9):.9f}".rstrip("0").rstrip(".") or "0"
+
+
 def reset_client_state_for_tests() -> None:
     global _key_override, _key_override_active, _validator_cache, _exchange_cache
     with _lock:
         _request_times.clear()
         _cache.clear()
         _stake_cache.clear()
+        _profile_cache.clear()
         _validator_cache = None
         _exchange_cache = None
         _key_override = None

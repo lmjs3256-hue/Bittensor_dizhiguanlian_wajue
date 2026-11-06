@@ -8,7 +8,7 @@ import re
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -56,10 +56,12 @@ from .taostats import (
     TaostatsAuthError,
     TaostatsRateLimitError,
     TaostatsUnavailableError,
+    get_account_profile,
     get_active_validator_addresses,
     get_exchange_addresses,
     get_stake_transfer_page,
     get_transfer_page,
+    get_transfer_total,
     is_configured as taostats_is_configured,
 )
 from .validation import is_valid_ss58
@@ -515,6 +517,10 @@ def prune_archive_payload(
             reachable.add(neighbor)
             if neighbor in terminal:
                 blocked_by[neighbor] = neighbor
+                # 终点本身留在结果里，但仍要入队：弹出时走上一个分支，
+                # 把它的整片下游标记成「只能经过终点才能到达」。少了这一步，
+                # 上面那个分支永远不会执行，无逐跳路径的老记录就一条也剪不掉。
+                queue.append(neighbor)
                 continue
             queue.append(neighbor)
 
@@ -2670,6 +2676,93 @@ class LinkService:
             self._trim_archives(db)
         return archive_id
 
+    # -- 起始地址画像：注册日期 / 历史交易次数 / 日均频次 / 余额 ------------
+    def _seed_profile(
+        self,
+        seed: str,
+        *,
+        transfer_rows: list[Any],
+        data_source: str,
+        include: bool,
+        warnings: list[str],
+    ) -> dict[str, Any]:
+        """汇总起始地址的四个画像指标，全部来自真实数据源。
+
+        - **注册日期**：Taostats ``/api/account/latest/v1`` 的 ``created_on_date``。
+        - **余额**：同一接口的 ``balance_total``（自由 + 质押 + 预留），
+          比只读 RPC 的可用余额更完整；RPC 余额仍作为兜底。
+        - **历史交易次数**：该地址转账列表的 ``total_items``（服务端给出的真实总量，
+          不受本次翻页多少影响）。
+        - **日均交易频次**：交易次数 ÷ 自注册日到今天的天数，至少按 1 天算。
+
+        每个字段都可能为 None（未配置 key / 限流 / 网络失败），界面显示
+        「未获取」；任何异常都不会打断主查询。
+        """
+
+        profile: dict[str, Any] = {
+            "registered_on": None,
+            "registered_on_network": None,
+            "balance_total_tao": None,
+            "balance_free_tao": None,
+            "balance_staked_tao": None,
+            "transfer_count": None,
+            "active_days": None,
+            "daily_frequency": None,
+            "transfer_count_scope": None,
+            "source": None,
+        }
+        if not include:
+            return profile
+
+        # 注册日期与余额：一次请求同时给到。
+        account = None
+        if taostats_is_configured():
+            try:
+                account = get_account_profile(seed)
+            except Exception as exc:  # noqa: BLE001 - 画像失败不能影响主查询
+                warnings.append(f"起始地址的注册日期与总余额未获取：{exc}")
+        if account is not None:
+            profile.update(
+                registered_on=account.created_on_date,
+                registered_on_network=account.created_on_network,
+                balance_total_tao=account.balance_total_tao,
+                balance_free_tao=account.balance_free_tao,
+                balance_staked_tao=account.balance_staked_tao,
+                source="taostats",
+            )
+
+        # 历史交易次数：本地索引只能数“库里有几笔”，必须标明口径。
+        count: int | None = None
+        scope: str | None = None
+        if data_source == "taostats" and taostats_is_configured():
+            try:
+                count, _cached = get_transfer_total(seed)
+                scope = "taostats"
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"起始地址的历史交易次数未获取：{exc}")
+        if count is None:
+            counted = sum(
+                1
+                for row in transfer_rows
+                if seed in {row.from_address, row.to_address}
+            )
+            if counted:
+                count = counted
+                scope = "local_index"
+        profile["transfer_count"] = count
+        profile["transfer_count_scope"] = scope
+
+        # 日均频次：注册日到今天的自然天数（当天的按 1 天算）。
+        if count is not None and profile["registered_on"]:
+            try:
+                registered = date.fromisoformat(str(profile["registered_on"]))
+                days = max((utcnow().date() - registered).days, 1)
+                profile["active_days"] = days
+                profile["daily_frequency"] = round(count / days, 2)
+            except ValueError:
+                pass
+        return profile
+
     # -- 按最新地址库校正历史结果 ----------------------------------------
     @staticmethod
     def _library_entries(db) -> list[LibraryEntry]:
@@ -3840,9 +3933,20 @@ class LinkService:
                 balances=balances,
                 book_pair_stats=context.book_pair_stats,
             )
+        # 起始地址画像：注册日期 / 余额构成 / 历史转账笔数。这三项只对
+        # seed 取，各占 1 次 Taostats 请求，失败就留空由界面显示「未获取」，
+        # 绝不因为拿不到画像而让主查询失败。
+        seed_profile = self._seed_profile(
+            seed,
+            transfer_rows=transfer_rows,
+            data_source=data_source,
+            include=include_balances,
+            warnings=warnings,
+        )
         result = {
             "seed": report.seed,
             "seed_balance_tao": str(balances[seed]) if balances.get(seed) is not None else None,
+            "seed_profile": seed_profile,
             "max_depth": report.max_depth,
             "data_cutoff_block": report.data_cutoff_block,
             "data_first_block": first_block,
