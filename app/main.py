@@ -22,6 +22,7 @@ from .config import ROOT_DIR, database_path, settings
 from .db import Database, install_seed_books
 from .inputs import InputError
 from .jobs import RelationJobManager
+from .relation_config import DEFAULT_RELATION_DEPTH, MAX_RELATION_DEPTH
 from .validation import is_valid_ss58
 from .service import LinkService, ScanBusyError
 from .taostats import (
@@ -331,6 +332,13 @@ class AddressNoteInput(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
+class ScanThresholdInput(BaseModel):
+    """扫描阈值：单边最低 / 累计最低 TAO，存到本机 settings.json。"""
+
+    min_edge_tao: str = Field(default="1", max_length=32)
+    min_total_tao: str = Field(default="1", max_length=32)
+
+
 class WatchConfigInput(BaseModel):
     """地址库巡检设置：开关、间隔、阈值、是否含代币转移、每日预算。"""
 
@@ -345,7 +353,9 @@ class WatchConfigInput(BaseModel):
 
 class RelationInput(BaseModel):
     seed: str = Field(min_length=1, max_length=64)
-    depth: int = Field(default=3, ge=1, le=3)
+    depth: int = Field(
+        default=DEFAULT_RELATION_DEPTH, ge=1, le=MAX_RELATION_DEPTH
+    )
     min_edge_tao: str = Field(default="1")
     min_total_tao: str = Field(default="1")
     include_incoming: bool = True
@@ -363,7 +373,9 @@ class RelationInput(BaseModel):
 
 class RelationJobInput(BaseModel):
     seed: str = Field(min_length=1, max_length=64)
-    depth: int = Field(default=3, ge=1, le=3)
+    depth: int = Field(
+        default=DEFAULT_RELATION_DEPTH, ge=1, le=MAX_RELATION_DEPTH
+    )
     min_edge_tao: str = Field(default="1")
     min_total_tao: str = Field(default="1")
     include_incoming: bool = True
@@ -532,6 +544,10 @@ def overview(svc: Annotated[LinkService, Depends(service)]):
         "taostats_configured": taostats_is_configured(),
         "taostats_key_storage": settings_store.storage_kind(),
         "api_usage": svc.api_usage_summary(),
+        # 页面初始化时一并带回上次保存的扫描阈值，省一次请求。
+        "scan_thresholds": settings_store.load_scan_thresholds(),
+        "max_depth": MAX_RELATION_DEPTH,
+        "default_depth": DEFAULT_RELATION_DEPTH,
     }
 
 
@@ -563,6 +579,26 @@ def delete_taostats_key():
     clear_taostats_api_key()
     settings_store.clear_api_key()
     return {"configured": False, "storage": ""}
+
+
+@app.get("/api/settings/scan-thresholds")
+def get_scan_thresholds():
+    """上次保存的「单边最低 / 累计最低 TAO」；没保存过返回出厂值 1 / 1。"""
+
+    return settings_store.load_scan_thresholds()
+
+
+@app.post("/api/settings/scan-thresholds")
+def save_scan_thresholds(payload: ScanThresholdInput):
+    """把扫描阈值存到本机 settings.json，下次打开页面自动填回。
+
+    层级放到 4～10 级时，用户通常会把阈值抬到 10 / 50 这种量级；不落盘的话
+    每开一次页面都要重填。非法值不报错，保持上次保存的值并在返回值里体现。
+    """
+
+    return settings_store.save_scan_thresholds(
+        payload.min_edge_tao, payload.min_total_tao
+    )
 
 
 @app.get("/api/library")
@@ -1253,7 +1289,7 @@ def export_relation_history(
     archive_id: int,
     svc: Annotated[LinkService, Depends(service)],
     format: str = Query(default="txt", pattern="^(txt|json)$"),
-    depth: int | None = Query(default=None, ge=1, le=3),
+    depth: int | None = Query(default=None, ge=1, le=MAX_RELATION_DEPTH),
 ):
     try:
         content, media_type, filename = svc.export_relation_history(

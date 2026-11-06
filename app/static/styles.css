@@ -8,7 +8,7 @@
 main { max-width:1320px; width:100%; margin:0 auto; padding:26px clamp(18px,3vw,44px) 72px; } header { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; margin-bottom:22px; } h1 { font-size:clamp(26px,3vw,36px); margin:6px 0 0; letter-spacing:-1.2px; } h2 { margin:7px 0 11px; font-size:24px; } h3 { margin:0 0 9px; } p { color:var(--muted); line-height:1.65; margin:8px 0; } .eyebrow,.label { font-size:10px; letter-spacing:1.6px; color:var(--accent); font-weight:750; } .live-pill { display:flex; gap:8px; align-items:center; border:1px solid var(--line); border-radius:30px; padding:8px 12px; color:var(--muted); font-size:12px; white-space:nowrap; } .dot { width:8px; height:8px; border-radius:50%; background:#c78a19; display:inline-block; } .dot.ok { background:#0b9b72; } .dot.bad { background:var(--danger); }
 .header-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; } .theme-select { display:flex; align-items:center; gap:7px; color:var(--muted); white-space:nowrap; } .theme-select select { width:auto; min-width:138px; padding:8px 28px 8px 11px; border-radius:24px; font-size:12px; } .theme-select select:focus { border-color:var(--accent); }
 .theme-select select option { background:var(--panel); color:var(--ink); }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:23px; margin-bottom:18px; } .hero { display:flex; justify-content:space-between; gap:24px; align-items:center; background:linear-gradient(125deg,var(--panel),var(--accent-soft)); } .hero p { max-width:650px; } .metrics { display:grid; grid-template-columns:repeat(3,minmax(100px,1fr)); gap:20px; min-width:340px; } .metrics div,.stats div { display:flex; flex-direction:column; gap:4px; } .metrics span,.stats span { color:var(--muted); font-size:12px; } .metrics b { font-family:var(--mono); font-size:16px; overflow-wrap:anywhere; } .control-grid { display:grid; grid-template-columns:minmax(320px,1fr) 112px 132px 132px 152px; gap:14px; align-items:end; } .control-grid > label { min-width:0; } .control-grid .seed-field { min-width:0; } label { display:grid; gap:6px; color:var(--muted); font-size:12px; font-weight:500; } input,select { width:100%; padding:11px 12px; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:9px; outline:none; } input:focus,select:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); } .actions,.inline-form { display:flex; align-items:end; gap:10px; margin-top:16px; flex-wrap:wrap; } .inline-form label { min-width:110px; } .inline-form label:last-of-type { flex:1; min-width:190px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:23px; margin-bottom:18px; } .hero { display:flex; justify-content:space-between; gap:24px; align-items:center; background:linear-gradient(125deg,var(--panel),var(--accent-soft)); } .hero p { max-width:650px; } .metrics { display:grid; grid-template-columns:repeat(3,minmax(100px,1fr)); gap:20px; min-width:340px; } .metrics div,.stats div { display:flex; flex-direction:column; gap:4px; } .metrics span,.stats span { color:var(--muted); font-size:12px; } .metrics b { font-family:var(--mono); font-size:16px; overflow-wrap:anywhere; } .control-grid { display:grid; grid-template-columns:minmax(320px,1fr) 112px 132px 132px 152px auto; gap:14px; align-items:end; } .control-grid > label { min-width:0; } .control-grid .seed-field { min-width:0; } label { display:grid; gap:6px; color:var(--muted); font-size:12px; font-weight:500; } input,select { width:100%; padding:11px 12px; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:9px; outline:none; } input:focus,select:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); } .actions,.inline-form { display:flex; align-items:end; gap:10px; margin-top:16px; flex-wrap:wrap; } .inline-form label { min-width:110px; } .inline-form label:last-of-type { flex:1; min-width:190px; }
 button.primary,button.secondary,button.ghost { border-radius:9px; border:1px solid transparent; padding:11px 17px; white-space:nowrap; font-size:13px; } button.primary { background:var(--accent); color:#fff; font-weight:750; } button.secondary { background:var(--accent-soft); color:var(--accent); border-color:var(--accent-soft); font-weight:650; } button.ghost { border-color:var(--line); background:transparent; color:var(--ink); }
 button.primary:hover,button.secondary:hover,button.ghost:hover { filter:brightness(1.04); }
 button:disabled { opacity:.55; cursor:not-allowed; }
@@ -273,7 +273,8 @@ button.path-collapse:focus-visible { outline:2px solid var(--accent); outline-of
 .table-wrap .path-detail thead th.c-amount { width:104px; }
 .table-wrap .path-detail thead th.c-time { width:150px; }
 .table-wrap .path-detail thead th.c-block { width:88px; }
-.table-wrap .path-detail thead th { background:var(--panel); padding:7px 10px; font-size:11px; font-weight:650; }
+/* 明细内部滚动时表头钉住：10 跳的路径滚到第 7 跳还看得见列名。 */
+.table-wrap .path-detail thead th { background:var(--panel); padding:7px 10px; font-size:11px; font-weight:650; position:sticky; top:0; z-index:1; }
 .table-wrap .path-detail thead th:nth-child(n+4) { text-align:right; }
 .table-wrap .path-detail tbody td { padding:7px 10px; vertical-align:middle; border-bottom:1px solid var(--line); font-size:12px; }
 .table-wrap .path-detail tbody tr:last-child td { border-bottom:0; }
@@ -301,7 +302,10 @@ button.path-collapse:focus-visible { outline:2px solid var(--accent); outline-of
 .table-wrap .path-detail td.path-time, .table-wrap .path-detail td.path-block { color:var(--muted); font-size:11px; text-align:right; white-space:nowrap; }
 
 /* 窄屏：明细表保留横向滚动，不把地址压成两行 */
-.path-scroll { overflow-x:auto; }
+/* 层级最高可以到 10 级，一条路径就有 10 跳。给滚动区一个高度上限：
+   2～3 跳时完全放得下、不会出现滚动条；10 跳时明细内部滚动，
+   不会把下面的关联地址列表推出屏幕。 */
+.path-scroll { overflow:auto; max-height:380px; }
 @media (max-width:760px) {
   .path-detail { padding:10px; }
   .path-detail table { min-width:640px; }
@@ -583,7 +587,7 @@ body.license-locked .shell { filter:blur(2px); pointer-events:none; user-select:
 input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font-family:var(--mono); letter-spacing:.3px; }
 
 /* 扫描设置：层级/阈值/方向都是短字段，固定窄宽；起始地址吃掉剩余空间 */
-.control-grid { grid-template-columns:minmax(380px,1fr) 96px 112px 112px 138px; }
+.control-grid { grid-template-columns:minmax(300px,1fr) 96px 112px 112px 138px auto; }
 .control-grid .field-compact { min-width:0; }
 .control-grid .field-compact select,
 .control-grid .field-compact input { text-align:center; text-align-last:center; padding-left:6px; padding-right:6px; }
@@ -592,6 +596,14 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 .seed-field .seed-row button.cta { padding:12px 22px; font-size:15px; min-height:46px; min-width:122px; }
 /* 起始地址是 48 位 SS58，等宽小字 + 窄内边距才能一眼看全 */
 .seed-field .seed-row #seed { font-size:12px; letter-spacing:0; padding-left:10px; padding-right:10px; }
+
+/* 「保存阈值」按钮：跟阈值输入框同一行、底边对齐。
+   层级放到 4 级以上时用户会把单边/累计门槛一起抬高（如 10 / 50），
+   点一次就落盘，下次开页面自动填回，不用每次重填。 */
+.threshold-save { display:flex; align-items:flex-end; }
+.threshold-save button { padding:11px 14px; font-size:12.5px; min-height:42px; white-space:nowrap; }
+.threshold-save button.is-saved { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:700; }
+.threshold-save button.is-dirty { border-color:var(--accent); color:var(--accent); font-weight:650; }
 
 /* 数据源勾选 / 分轮续查 / 密钥状态：一行排开，不再各占一行 */
 .source-row { display:flex; align-items:center; gap:10px 18px; flex-wrap:wrap; padding-bottom:9px; border-bottom:1px dashed var(--line); }
@@ -734,7 +746,7 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 /* ---- 6. 响应式：窄屏改为两行 / 单列 -------------------------------------- */
 @media (max-width:1300px) {
   /* 地址独占一行；四个短字段定宽靠左，剩余空间留白，不再被拉成四个大格子 */
-  .control-grid { grid-template-columns:110px 122px 122px 152px minmax(0,1fr); }
+  .control-grid { grid-template-columns:110px 122px 122px 152px auto minmax(0,1fr); }
   .control-grid .wide.seed-field { grid-column:1/-1; }
   .control-grid .field-compact select,
   .control-grid .field-compact input { text-align:left; text-align-last:auto; }
@@ -758,6 +770,8 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 @media (max-width:560px) {
   .control-grid { grid-template-columns:1fr 1fr; }
   .control-grid .wide.seed-field { grid-column:1/-1; }
+  .threshold-save { grid-column:1/-1; }
+  .threshold-save button { width:100%; flex:1; }
   .library-top .inline-form { grid-template-columns:1fr; }
   .interlink-form { grid-template-columns:1fr 1fr; }
   .interlink-form .interlink-source-field,

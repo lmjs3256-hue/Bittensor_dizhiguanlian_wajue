@@ -397,8 +397,9 @@ def test_history_export_supports_depth_filter(monkeypatch):
                 payload = depth_json.json()
                 assert [item["address"] for item in payload["related"]] == [NEIGHBORS[2]]
 
+                # 层级上限是 10：11 级越界必须拒绝（9 级现在是合法值）。
                 out_of_range = client.get(
-                    f"/api/relations/history/{archive_id}/export?format=txt&depth=9"
+                    f"/api/relations/history/{archive_id}/export?format=txt&depth=11"
                 )
                 assert out_of_range.status_code == 422
         finally:

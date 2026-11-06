@@ -8,6 +8,12 @@ const state = {
   categories: [],
   bookFilter: "",
   depthFilter: "all",
+  // 关联层级上限：默认 3 级，最高 10 级。层级只决定 BFS 向下走多少跳，
+  // 单边门槛、累计门槛、交易所/公共地址截止等规则在每一级都一样。
+  maxDepth: 10,
+  defaultDepth: 3,
+  // 上次保存到本机的单边/累计最低 TAO（后端 settings.json），用于提示是否有改动。
+  savedThresholds: { min_edge_tao: "1", min_total_tao: "1" },
   // 金额筛选：按流入/流出 TAO 过滤掉金额很小的“轻微关联”，只影响显示（和地址 TXT 导出），不重新查询。
   amountFilter: { mode: "off", min: "" },
   taostatsConfigured: null,
@@ -363,10 +369,105 @@ function navigate(view, updateHash = true) {
   }
 }
 
+// ---- 关联层级与扫描阈值（0.8.3） ----------------------------------------
+// 层级上限从后端拿（默认 3、最高 10）。加起来一次，三处层级下拉一起重建：
+// 最大层级 / 导出层级 / 结果表层级筛选 / 历史记录导出层级。
+// 页面里不再写死 1/2/3，否则后端放到 10 级时用户只能选到 3 级。
+function applyDepthOptions(maxDepth, defaultDepth) {
+  const max = Math.min(20, Math.max(1, Number(maxDepth) || 10));
+  const preset = Math.min(max, Math.max(1, Number(defaultDepth) || 3));
+  state.maxDepth = max;
+  state.defaultDepth = preset;
+
+  const main = $("#depth");
+  if (main) {
+    const keep = Number(main.value);
+    main.innerHTML = Array.from({ length: max }, (_, index) => (
+      `<option value="${index + 1}">${index + 1} 级</option>`
+    )).join("");
+    main.value = String(Number.isFinite(keep) && keep >= 1 && keep <= max ? keep : preset);
+  }
+  // 导出层级 / 层级筛选：同样是「全部 + 1..N 级」。
+  document.querySelectorAll("select[data-depth-options]").forEach((select) => {
+    const keep = select.value || "all";
+    const verb = select.dataset.depthLabel || "仅";
+    select.innerHTML = `<option value="all">全部层级</option>` + Array.from(
+      { length: max },
+      (_, index) => `<option value="${index + 1}">${verb} ${index + 1} 级${verb === "仅" ? "关联" : ""}</option>`
+    ).join("");
+    select.value = [...select.options].some((option) => option.value === keep) ? keep : "all";
+  });
+  syncThresholdSaveState();
+}
+
+// 把本机已保存的阈值填回输入框。用户没保存过时后端返回出厂值 1 / 1。
+function applySavedThresholds(values) {
+  const saved = {
+    min_edge_tao: String(values?.min_edge_tao ?? "1"),
+    min_total_tao: String(values?.min_total_tao ?? "1"),
+  };
+  state.savedThresholds = saved;
+  if ($("#min-edge")) $("#min-edge").value = saved.min_edge_tao;
+  if ($("#min-total")) $("#min-total").value = saved.min_total_tao;
+  syncThresholdSaveState();
+}
+
+// 输入框和已保存值不一致时把「保存阈值」标成待保存（描边强调色），
+// 一致时灰下去，用户一眼能看出当前设置有没有落盘。
+function syncThresholdSaveState() {
+  const button = $("#save-thresholds");
+  if (!button) return;
+  const edge = String($("#min-edge")?.value ?? "").trim();
+  const total = String($("#min-total")?.value ?? "").trim();
+  const dirty = edge !== state.savedThresholds.min_edge_tao
+    || total !== state.savedThresholds.min_total_tao;
+  button.classList.toggle("is-dirty", dirty);
+  button.classList.remove("is-saved");
+  button.textContent = dirty ? "保存阈值 *" : "保存阈值";
+  button.title = dirty
+    ? "当前阈值与本机保存的不一致，点一下保存；下次打开页面会自动填回这两个值。"
+    : `当前阈值已保存到本机（单边 ${state.savedThresholds.min_edge_tao} / 累计 ${state.savedThresholds.min_total_tao} TAO）。`;
+}
+
+async function saveScanThresholds() {
+  const button = $("#save-thresholds");
+  if (!button) return;
+  const edge = String($("#min-edge")?.value ?? "").trim();
+  const total = String($("#min-total")?.value ?? "").trim();
+  // 阈值是「单边 / 累计」两把尺，不允许负数；空值沿用上次保存的值。
+  const bad = [edge, total].find((value) => value !== "" && !(Number(value) >= 0));
+  if (bad !== undefined) {
+    toast("阈值只能填非负数字，例如 1、10、0.5。", true);
+    return;
+  }
+  button.disabled = true;
+  try {
+    const data = await api("/api/settings/scan-thresholds", {
+      method: "POST",
+      body: JSON.stringify({ min_edge_tao: edge || "1", min_total_tao: total || "1" }),
+    });
+    applySavedThresholds(data);
+    button.classList.add("is-saved");
+    button.textContent = "已保存";
+    toast(
+      `阈值已保存到本机：单边最低 ${data.min_edge_tao} TAO、累计最低 ${data.min_total_tao} TAO；下次打开页面自动填回。`
+    );
+    window.setTimeout(syncThresholdSaveState, 1800);
+  } catch (error) {
+    toast(`阈值保存失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function loadOverview() {
   try {
     const data = await api("/api/overview");
     const index = data.index;
+    // 层级上限由后端给（默认 3、最高 10）：三处层级下拉都按它生成，
+    // 避免模板里写死 1/2/3 之后，后端放到 10 级页面却选不到。
+    applyDepthOptions(data.max_depth, data.default_depth);
+    applySavedThresholds(data.scan_thresholds);
     $("#health-dot").className = "dot ok";
     $("#health-text").textContent = "扫描服务已连接";
     $("#index-dot").className = "dot ok";
@@ -644,7 +745,7 @@ function relatedTable(rows) {
     // 标记后其下游只经由它连通的地址会在刷新后自动消失。已下结论的地址也保留
     // 改判入口，避免一次误点后无法纠正。
     const exchangeActions = exchangeDecisionControl(row);
-    // 1/2/3 级关联都展示「路径明细」：1 级是一笔直达转账，2/3 级是逐笔链路。
+    // 每一级关联都展示「路径明细」：1 级是一笔直达转账，2 级及以上是逐笔链路。
     const pathButton = (row.path_transfers || []).length >= 1
       ? `<button class="ghost note-save" data-path-toggle="${esc(row.address)}" type="button" title="从起始地址到该地址的逐笔转账记录">路径明细</button>`
       : "";
@@ -1049,6 +1150,12 @@ function renderResult(data) {
   const windowBadge = data.provider_window_truncated
     ? '<span class="badge warn">服务端历史窗口有限</span>' : "";
   $("#result-badges").innerHTML = `<span class="badge ${data.freshness === "LOCAL_INDEX" || data.freshness === "TAOSTATS_INDEX" ? "" : "warn"}">${esc(freshnessLabel(data.freshness, data))}</span><span class="badge">${esc(coverageLabel(data.coverage))}</span>${paginationBadge}${windowBadge}${data.seed_is_in_library ? '<span class="badge warn">起始地址已命中地址库</span>' : ""}`;
+  // 层级筛选沿用上次选择；但如果上次选的是 5 级、这次只扫了 3 级，
+  // 保留「只看 5 级」会让表格空白，看起来像查询失败，所以这时回到全部。
+  const resultDepth = Number(data.max_depth) || state.defaultDepth;
+  if (state.depthFilter !== "all" && Number(state.depthFilter) > resultDepth) {
+    state.depthFilter = "all";
+  }
   $("#related-depth-filter").value = state.depthFilter;
   syncAmountFilterControls();
   $("#cutoff").textContent = data.data_cutoff_block ? number(data.data_cutoff_block) : "-";
@@ -1233,9 +1340,12 @@ async function runRelationJob(payload) {
 
 function scanPayload(seed) {
   const direction = $("#direction").value;
+  // 层级下拉由 /api/overview 返回后才填充；如果用户在返回前就点了扫描，
+  // value 会是空串，Number("") = 0 会被后端 ge=1 拒掉。这里兜底成默认层级。
+  const depth = Number($("#depth").value) || state.defaultDepth;
   return {
     seed,
-    depth: Number($("#depth").value),
+    depth,
     min_edge_tao: $("#min-edge").value,
     min_total_tao: $("#min-total").value,
     include_incoming: direction !== "outgoing",
@@ -3546,6 +3656,23 @@ $("#taostats-api-key").addEventListener("keydown", (event) => {
   if (event.key === "Enter") saveTaostatsKey();
 });
 $("#run-scan").addEventListener("click", () => runRelations(false));
+// 保存阈值：按钮 + 回车，跟 API key 那套交互一致。
+$("#save-thresholds").addEventListener("click", saveScanThresholds);
+["#min-edge", "#min-total"].forEach((selector) => {
+  const input = $(selector);
+  if (!input) return;
+  input.addEventListener("input", syncThresholdSaveState);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") saveScanThresholds();
+  });
+});
+$("#depth").addEventListener("change", () => {
+  const chosen = Number($("#depth").value) || state.defaultDepth;
+  // 4 级以上浅层分支会多出很多，提示一下这两个门槛通常要一起抬。
+  if (chosen >= 4) {
+    toast(`层级已设为 ${chosen} 级：深层多为零星小额往来，建议把「单边最低 / 累计最低 TAO」一起抬高（如 10 / 50），点「保存阈值」下次自动填回。`);
+  }
+});
 $("#copy-seed-address").addEventListener("click", (event) => {
   const full = $("#seed-result-address").dataset.full || "";
   copyAddress(full, event.currentTarget);

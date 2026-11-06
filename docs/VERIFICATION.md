@@ -733,3 +733,30 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
   - `停止.cmd`：解析无误。
 - 编码与换行：三个 `.cmd` 均为 GBK、无 `chcp`、纯 CRLF（启动 40 / 安装 24 / 停止 6 行）。
 - 回归：全量 pytest 通过；`git diff --check` 通过。
+
+## 2026-11-07 0.8.3 十级层级与阈值本地保存验收
+
+### 实现
+- 层级上限收敛到 `app/relation_config.py`：`MAX_RELATION_DEPTH = 10`、`DEFAULT_RELATION_DEPTH = 3`。`discover()`、`RelationInput`、`RelationJobInput`、历史导出 `depth` Query、`export_relation_history()` 全部引用它，不再各自写死 `le=3` / `(1, 2, 3)`。
+- 层级规则不变：第 2 跳及更深必须过单边门槛，最终地址累计过累计门槛，交易所/验证者/公共地址/「系统」查到即截止，路径仍取 BFS 最短跳数。层级只影响 `while queue` 的 `depth >= max_depth` 判断。
+- 三处层级下拉改为按 `/api/overview` 的 `max_depth` 动态生成（`applyDepthOptions()`），模板里不再写死 `1/2/3`。
+- 分轮作业地址护栏按层级放大：`address_cap_for_depth()` = `max(150, depth × 50)`，通过 `payload.max_addresses` 回传。
+- 阈值本地保存：`settings_store.load_scan_thresholds() / save_scan_thresholds()` + `GET/POST /api/settings/scan-thresholds`，值存 `data/settings.json` 的 `scan_thresholds`。`/api/overview` 一并返回，页面加载不发多余请求。
+
+### 本轮实测
+- **层级常量与接口**：`/api/overview` 返回 `max_depth=10 / default_depth=3`；`POST /api/relations` 带 `depth=10` 返回 `max_depth=10`，带 `depth=11` 返回 422。
+- **BFS 深层正确性**（单测 + 真实接口）：造 10 跳链逐级跑，`depth=3/5/10` 分别得到 5 / 9 / 19 个关联，`by_depth` 每层地址数与链路构造完全对应；最深一行的 `path_transfers` 长度等于跳数，首跳 `path_from` 是起始地址、末跳 `path_to` 是该地址。
+- **深层仍受同样的门槛约束**：第 4 跳插一笔 0.01 TAO（低于单边门槛 1）不会进结果；在第 3 跳位置标一个已确认 EXCHANGE，其后地址（`behind-exchange`）不出现，但交易所本身保留。
+- **前端探针**（`.probe/chk_depth_083.py`，1440×1100 真实浏览器）：
+  - `#depth` 选项 = `1..10`，默认选中 `3`；导出层级 / 层级筛选 / 历史导出层级三处都是 11 项（全部 + 1..10），末项文案「仅 10 级关联」。
+  - 出厂状态阈值回填 `1 / 1`；改成 `20 / 100` 后按钮变「保存阈值 *」（`is-dirty`）；点保存后 toast「阈值已保存到本机：单边最低 20 TAO、累计最低 100 TAO」；刷新页面后两个输入框自动填回 `20 / 100`，层级回落默认 `3`。
+  - `scanPayload()` 在层级选 `7` 时提交 `depth:7`，阈值同页面一致。
+  - 布局：1440 宽下层级/阈值/方向/保存按钮同一行（`thresholdRow.spread = 42` 即单个控件高度，无错行），保存按钮 80×42 与输入框底边对齐；900px 窄屏同一行仍不溢出，`pageOverflowX = false`。
+- **真实 Taostats**：`depth=3` 单轮拿 4 个 1 级地址、5 次请求用满；深层要靠分轮作业推进（单轮 5 次请求吃不下 4 级以上）。
+- **地址护栏**：`address_cap_for_depth()` 实测 1–3 级 = 150、4 级 = 200 … 10 级 = 500，单调不减；归档结果的 `job` 里同时记下 `depth` 与 `max_addresses`，事后翻记录能区分「被护栏截停」和「层级本来就只有 3 级」。
+- **真实 6 级分轮作业**（`5Gy8difK…jEbt`，`min_edge=10 / min_total=50`，8 轮 40 次请求）：共 **77 个关联地址**，层级分布 `1级 7 / 2级 4 / 3级 9 / 4级 20 / 5级 37`，最深 5 级地址的 `path_transfers` 完整 5 跳、累计 10000 TAO 判「强」。对比同一地址 3 级单轮只有 4 个 1 级地址，层级提升带来的扩展是真实有效的；作业因触到 8 轮上限而 `capped=true`，剩余 207 个待查请求（说明 6 级要跑透远不止 8 轮）。
+
+### 验收边界与下一步
+- 单轮 `/api/relations` 固定 5 次请求，4 级以上几乎必须开「自动分轮续查」；把层级调高时页面会提示同时抬高两个 TAO 门槛，否则浅层小额会把结果灌满。
+- 本地索引目前只有 1 万条转账、且对手方大多是 `5EYCAe5…` 系统地址，深层在本地索引里走不动（实测 3/5/10 级都只有 1 个 1 级关联）——这是数据覆盖问题，不是层级逻辑问题。
+- 阈值只存"最后一次保存"的一组值，没有按层级分别记忆（例如 3 级记 1/1、8 级记 10/50）。用户需求是「层级高时我会把单边最低提升」，当前做法是手动抬高后保存；要自动分档需要再定义一套映射规则。

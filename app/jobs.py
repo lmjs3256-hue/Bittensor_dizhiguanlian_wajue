@@ -1,6 +1,6 @@
 """分轮关联查询作业。
 
-Taostats 每分钟只允许 5 次请求，一次查询通常查不完三级关联。作业把爬取
+Taostats 每分钟只允许 5 次请求，一次查询通常查不完多层关联。作业把爬取
 状态留在进程内存，间隔一段时间推进一轮，直到队列清空，再统一合成最终
 结果；期间前端轮询进度即可。
 """
@@ -33,7 +33,22 @@ def _env_int(name: str, default: int) -> int:
 DEFAULT_ROUND_INTERVAL_SECONDS = _env_int("BITTENSOR_JOB_INTERVAL_SECONDS", 62)
 DEFAULT_MAX_ROUNDS = _env_int("BITTENSOR_JOB_MAX_ROUNDS", 12)
 DEFAULT_MAX_ADDRESSES = _env_int("BITTENSOR_JOB_MAX_ADDRESSES", 150)
+# 每多一层，地址数量大致按扇出增长。默认 150 是按 3 级估的护栏；
+# 层级放到 4～10 级时如果还卡 150，往往第 4 层没走完就被截停，
+# 用户会误以为是「没有更多关联」。所以按「层级 × 50」放大护栏，
+# 并把实际生效的上限回传给前端显示。环境变量仍是硬覆盖的下限。
+ADDRESSES_PER_DEPTH = _env_int("BITTENSOR_JOB_ADDRESSES_PER_DEPTH", 50)
 JOB_RETENTION_SECONDS = 30 * 60
+
+
+def address_cap_for_depth(depth: int, base: int = DEFAULT_MAX_ADDRESSES) -> int:
+    """按层级放大的地址护栏：3 级仍是 150，10 级放宽到 500。"""
+
+    try:
+        hops = max(1, int(depth))
+    except (TypeError, ValueError):
+        hops = 3
+    return max(base, hops * ADDRESSES_PER_DEPTH)
 
 
 @dataclass
@@ -149,7 +164,7 @@ class RelationJobManager:
             created_at=time.time(),
             round_interval=float(round_interval or self.round_interval),
             max_rounds=int(max_rounds or self.max_rounds),
-            max_addresses=self.max_addresses,
+            max_addresses=address_cap_for_depth(depth, self.max_addresses),
             prefetched_requests=max(0, int(prefetched_requests or 0)),
         )
         with self._lock:
@@ -327,6 +342,8 @@ class RelationJobManager:
                 "requests": job.total_requests,
                 "round_requests": list(job.state.rounds),
                 "stopped": False,
+                "max_addresses": job.max_addresses,
+                "depth": job.context.depth,
             },
         }
         try:
@@ -382,6 +399,10 @@ class RelationJobManager:
             "pending_transfer": state.pending_transfer,
             "pending_stake": state.pending_stake,
             "remaining_requests": state.pending_total,
+            # 层级相关的护栏要一起存进归档：事后翻「查询记录」时能看出
+            # 这次被 150 个地址卡住，还是层级本来就只扫了 3 级。
+            "max_addresses": job.max_addresses,
+            "depth": job.context.depth,
         }
         job.stopped = status == "cancelled"
         job.status = status
@@ -437,6 +458,7 @@ class RelationJobManager:
                 else 0
             ),
             "queued_addresses": len(state.address_depth),
+            "max_addresses": job.max_addresses,
             "remote_records": len(state.records_by_key),
             "next_round_in": next_round_in,
             "next_round_plan": plan,

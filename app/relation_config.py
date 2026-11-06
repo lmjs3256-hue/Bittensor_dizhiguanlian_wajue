@@ -7,6 +7,13 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
+# 关联层级上限与默认值：默认仍按 3 级扫（结果最干净、请求最少），
+# 需要顺藤摸瓜时最高可以放到 10 级。规则（单边门槛、累计门槛、
+# 交易所/公共地址截止、BFS 最短路径）在每一级都一样，层级只决定向下走多少跳。
+MAX_RELATION_DEPTH = 10
+DEFAULT_RELATION_DEPTH = 3
+
+
 @dataclass(frozen=True)
 class LinkPolicy:
     """Controls which transfers become graph edges.

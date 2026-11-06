@@ -149,7 +149,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </tr>
 <tr>
 <td>钱是不是经过中转</td>
-<td>1 级 = 直接转账，2/3 级 = 中间隔了几层中转</td>
+<td>1 级 = 直接转账，2 级及以上 = 中间隔了几层中转（最高 10 级）</td>
 </tr>
 <tr>
 <td>对方是不是交易所</td>
@@ -381,8 +381,8 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </tr>
 <tr>
 <td><strong>最大层级</strong></td>
-<td>3 级</td>
-<td>1 级只查直接转账；3 级会顺着中转再找两层，结果更多也更慢</td>
+<td>3 级（最高 10 级）</td>
+<td>1 级只查直接转账；3 级会顺着中转再找两层，结果更多也更慢。需要顺藤摸瓜时可选 4～10 级，规则完全一样，只是多往下走几层，请求更多、结果更杂，建议同时把两个 TAO 门槛抬高</td>
 </tr>
 <tr>
 <td><strong>单边最低 TAO</strong></td>
@@ -393,6 +393,11 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <td><strong>累计最低 TAO</strong></td>
 <td>1</td>
 <td>最终地址累计金额门槛，通常与上一项保持一致</td>
+</tr>
+<tr>
+<td><strong>保存阈值</strong></td>
+<td>按钮</td>
+<td>把上面两个 TAO 门槛存到本机（<code>data\settings.json</code>），下次打开页面自动填回。层级调到 4 级以上时通常要把门槛一起抬高（如 10 / 50），填好后点一次就不用每次重填</td>
 </tr>
 <tr>
 <td><strong>方向</strong></td>
@@ -482,7 +487,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </tr>
 <tr>
 <td>层级</td>
-<td>1 = 与起始地址直接转账；2/3 = 通过 1 级/2 级地址中转；每一行都可点「路径明细」展开从起始地址到它的逐笔转账（时间、区块、金额）</td>
+<td>1 = 与起始地址直接转账；2 级及以上 = 通过上一级地址中转（最高 10 级）；每一行都可点「路径明细」展开从起始地址到它的逐笔转账（时间、区块、金额）</td>
 </tr>
 <tr>
 <td>关联强度</td>
@@ -598,7 +603,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <h3 id="导出">导出</h3>
 <p>结果出来后，右上角有一个「导出层级」下拉和两个按钮：</p>
 <ul>
-<li><strong>导出层级</strong>：可选<strong>全部层级 / 仅 1 级 / 仅 2 级 / 仅 3 级</strong>——只导出指定层级的关联地址（和结果表「层级筛选」的口径一致）。比如只想要直接往来的 1 级地址，选「仅 1 级关联」再导出即可。</li>
+<li><strong>导出层级</strong>：可选<strong>全部层级 / 仅 1 级 / … / 仅 10 级</strong>——只导出指定层级的关联地址（和结果表「层级筛选」的口径一致）。比如只想要直接往来的 1 级地址，选「仅 1 级关联」再导出即可。</li>
 <li><strong>导出地址 TXT</strong>：每行一个地址，方便直接粘到别的工具。会自动排除<strong>已确认的交易所和验证者地址</strong>，不用你再手动筛；文件名会带层级标记（如 <code>-d2</code> 表示只含 2 级）。</li>
 <li><strong>导出 JSON</strong>：结果快照，包含层级、金额、标签等字段，适合存档或二次处理；同样按所选层级过滤。</li>
 <li>某个层级没有可导出地址时会明确提示，不会静默导出空文件。</li>
@@ -609,7 +614,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <p>在这里可以：</p>
 <ul>
 <li><strong>查看结果</strong>：回到扫描页，展示那次查到的地址，筛选和导出照常可用</li>
-<li><strong>导出地址 / 导出 JSON</strong>：规则和当前结果完全一致，并按工具栏上的「导出层级」下拉分级导出（全部 / 仅 1 级 / 仅 2 级 / 仅 3 级）</li>
+<li><strong>导出地址 / 导出 JSON</strong>：规则和当前结果完全一致，并按工具栏上的「导出层级」下拉分级导出（全部 / 仅 1 级 / … / 仅 10 级）</li>
 <li><strong>同步地址库</strong>：把这次结果的关联地址 + 发起地址一次性写进已知地址库</li>
 <li><strong>删除 / 清空</strong>：删掉不需要的记录</li>
 </ul>

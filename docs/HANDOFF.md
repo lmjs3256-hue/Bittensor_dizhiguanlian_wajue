@@ -737,3 +737,25 @@ Set-Location G:\bittensor-wallet-link-intel
 - **CHANGELOG 标题别用两个 `·`**：`version_info.ENTRY_PATTERN` 是 `^##\s+(version)\s+·\s+(title)\s+·\s+(date)$`，标题里再出现 `·` 会解析失败、`entries[0]["version"]` 变成上一个版本，`test_version` 直接红。用「、」分隔。
 - **验收**：全量 **268 passed**（新增 `tests/test_path_detail_layout.py` 4 条，锁列宽写法与 `--on-accent`）。探针 `.probe/chk_path_082.py`（真实历史结果展开/收起/再展开）、`.probe/chk_path_long_082.py`（注入 6 跳测单行与底部按钮）、`.probe/chk_path_theme_082.py`（亮/深灰主题对比度 + 外层表未受影响）。
 - **Chrome 探针仍然要注意**：`--user-data-dir` 必须绝对路径 + `--disable-extensions`，且每次换端口/换 profile 目录，否则前一次的残留进程会占住目录导致拿不到 `type=page`。
+
+## 47. 2026-11-07 0.8.3 交接：关联层级放到 10 级 + 扫描阈值本地保存
+
+- **用户两条需求**：①「地址关联层级提高到 10 级，默认层级仍然为 3 级……层级提升所有规则都和前面的一样」；②「单边最低和累计最低 TAO 增加本地保存按钮，让挖掘层级数较高时我会把单边最低 TAO 提升」。
+- **层级上限只留一个真源**：`app/relation_config.py` 的 `MAX_RELATION_DEPTH = 10` / `DEFAULT_RELATION_DEPTH = 3`。改层级时**必须**同步检查这五处引用，任何一处漏改都会出现「后端放开了、前端选不到」或「选到了、导出 422」：
+  1. `relation.discover()` 的 `max_depth` 参数与 `if max_depth < 0 or max_depth > MAX_RELATION_DEPTH` 校验；
+  2. `main.RelationInput` / `RelationJobInput` 的 `le=`；
+  3. `main.export_relation_history()` 的 `depth: int | None = Query(...)`；
+  4. `service.export_relation_history()` 里 `1 <= depth <= MAX_RELATION_DEPTH`；
+  5. 前端三处层级下拉——**它们现在由 `applyDepthOptions()` 按 `/api/overview` 的 `max_depth` 动态生成**，模板里只剩空的 `<select data-depth-options>` 壳子。要在模板里加新的层级下拉，给它加 `data-depth-options`（可选 `data-depth-label`）即可自动跟着上限走，**不要再写死 `<option>`**。
+- **规则一致性**：层级只是 BFS 的 `depth >= max_depth` 截止条件，没有为深层另写一套逻辑。第 2 跳及更深仍然要过 `min_edge_tao`，最终地址仍然要过 `min_total_tao`，交易所/验证者/公共地址/「系统」仍然查到即截止（`depth >= 2` 时小额边直接 `continue`，不会成为路径）。测试 `test_deeper_levels_use_the_same_threshold_rules` 和 `test_deeper_levels_stop_at_terminal_addresses` 就是锁这两条的。
+- **一个不显眼但很重要的连带改动**：分轮作业原来固定 `DEFAULT_MAX_ADDRESSES = 150`。层级提到 6 级以上时，第 4 层没走完就会命中「发现地址已超过 150 个上限」，用户会误判成「没有更多关联」。现在 `address_cap_for_depth(depth, base) = max(base, depth × 50)`（3 级仍 150、10 级 500，可用 `BITTENSOR_JOB_ADDRESSES_PER_DEPTH` 调），并在 `payload.max_addresses` 里回传实际生效值。**以后再加层级或改扇出，记得一起看这个护栏。**
+- **阈值保存的关键决策**：
+  - 存在 `data/settings.json` 的 `scan_thresholds`，和 API key 同文件。`settings_store` 的 `_read()` / `_write()` 是整文件读改写，`save_scan_thresholds()` 会先 `_read()` 再写，所以**不会**冲掉 `taostats_api_key` 和 `address_watch`（`test_thresholds_do_not_clobber_api_key` 锁这条）。加新字段照这个模式写。
+  - 用 `Decimal` 规整成字符串，不用 float：`10.00 → 10`、`0.50 → 0.5`。阈值最终要喂给 `LinkPolicy` 的 `Decimal`，走 float 会出现 `0.10000000000000001` 写回页面。
+  - **非法输入用"保持上次值"而不是"回落出厂值"**：用户误触保存时，把辛苦调的 10/50 悄悄改回 1/1 比报错更糟。`_clean_threshold(value, fallback)` 的 `fallback` 传的是 `load_scan_thresholds()` 读到的当前值。
+  - 按钮三态：`""`（与已保存一致）/ `is-dirty`（改过，文案「保存阈值 *」）/ `is-saved`（保存成功，「已保存」，1.8 秒后自动回到 `syncThresholdSaveState()`）。输入框 `input` 事件和回车都接上了。
+- **前端一个边界坑**：层级下拉在 `/api/overview` 返回前是空的，此时点扫描 `Number("") = 0`，后端 `ge=1` 直接 422。`scanPayload()` 现在写 `Number($("#depth").value) || state.defaultDepth` 兜底。`state.defaultDepth` 初始值就是 3，不依赖接口返回。
+- **路径明细支持 10 跳**：`.path-scroll` 从 `overflow-x:auto` 改成 `overflow:auto` + `max-height:380px`，表头 `position:sticky; top:0; z-index:1`。2～3 跳完全放得下不出现滚动条，10 跳在明细内部滚，不会把关联地址列表推出屏幕。
+- **验收**：全量 **293 passed**（新增 `tests/test_depth_and_thresholds.py` 25 条）。原 `tests/test_relation_history.py` 里 `depth=9` 越界断言已改成 `depth=11`（9 级现在是合法值，这条不改会红）。
+- **探针**：`.probe/chk_depth_083.py` —— 检查 `#depth` 选项 1..10 / 默认 3、三处下拉各 11 项、阈值出厂回填、改值后按钮变 `is-dirty`、保存后 toast 与 `is-saved`、刷新后回填、`scanPayload()` 的 depth、1440 与 900 宽的行内对齐与溢出。`.probe/job6_083.py` —— 真实跑 6 级分轮作业。**探针会写真实的 `data/settings.json`**（走的是同一个接口），跑完记得 `POST /api/settings/scan-thresholds {"min_edge_tao":"1","min_total_tao":"1"}` 复原，别把测试值留给用户。
+- **踩过的坑**：验证时用了一个从截图里截断的 45 位地址 `5CQBKcMbMrvGkdDkMgGmFqRhKmZnFqCwHqSPmZqPjyMQ4`，Taostats 一直返回 `HTTP 400 / Invalid SS58 address: Length is bad`，一度以为是限流或接口改动。**先用 `is_valid_ss58()` 确认长度 48 再排查网络**，能省半小时。

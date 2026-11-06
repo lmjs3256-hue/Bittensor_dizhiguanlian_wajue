@@ -8,6 +8,8 @@ from decimal import Decimal
 from typing import Iterable
 
 from .relation_config import (
+    DEFAULT_RELATION_DEPTH,
+    MAX_RELATION_DEPTH,
     Edge,
     LibraryEntry,
     LinkPolicy,
@@ -395,7 +397,7 @@ def discover(
     transfers: Iterable[TransferRecord],
     *,
     library: Iterable[LibraryEntry] = (),
-    max_depth: int = 3,
+    max_depth: int = DEFAULT_RELATION_DEPTH,
     policy: LinkPolicy | None = None,
     data_cutoff_block: int | None = None,
     freshness: str = "UNKNOWN_EXPORT",
@@ -416,8 +418,8 @@ def discover(
     seed = seed.strip()
     if not seed:
         raise ValueError("seed must not be empty")
-    if max_depth < 0 or max_depth > 3:
-        raise ValueError("max_depth must be between 0 and 3")
+    if max_depth < 0 or max_depth > MAX_RELATION_DEPTH:
+        raise ValueError(f"max_depth must be between 0 and {MAX_RELATION_DEPTH}")
     policy = policy or LinkPolicy()
     transfer_rows = _canonical_dedupe(transfers)
     excluded = {address.strip() for address in excluded_addresses if address.strip()}

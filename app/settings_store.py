@@ -18,6 +18,7 @@ import ctypes
 import json
 import os
 import tempfile
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -223,6 +224,71 @@ def save_exchange_sync_state(state: dict[str, Any]) -> bool:
     data["version"] = 1
     data[_EXCHANGE_SYNC_FIELD] = dict(state or {})
     return _write(data)
+
+
+# -- 扫描阈值（单边最低 / 累计最低 TAO） ------------------------------------
+_SCAN_THRESHOLDS_FIELD = "scan_thresholds"
+
+# 默认就是页面出厂值：单边 1、累计 1（TAO）。
+# 把层级放大到 4～10 级时，浅层的零星小额会把结果灌满，用户会把这两个值
+# 抬上去（例如 10 / 50），抬完还要每次重开页面重新填一遍太麻烦，所以给一个
+# 显式的「保存」按钮落盘——只在用户点保存时写，不自动记住输入过程。
+DEFAULT_SCAN_THRESHOLDS: dict[str, Any] = {
+    "min_edge_tao": "1",
+    "min_total_tao": "1",
+}
+
+
+def _clean_threshold(value: Any, fallback: str) -> str:
+    """把阈值规整成十进制字符串；非法或负数一律回落 ``fallback``。
+
+    用字符串而不是 float：阈值要和 ``LinkPolicy`` 的 ``Decimal`` 对齐，
+    走 float 会出现 0.10000000000000001 这种写回页面的脏数字。
+    """
+
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    if not text:
+        return fallback
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return fallback
+    if not number.is_finite() or number < 0:
+        return fallback
+    # 写成十进制普通写法（不带指数），并去掉多余的尾零：10.00 → 10、0.50 → 0.5。
+    return format(number.normalize(), "f")
+
+
+def load_scan_thresholds() -> dict[str, str]:
+    """读取上次保存的单边 / 累计最低 TAO；没保存过就是 1 / 1。"""
+
+    raw = _read().get(_SCAN_THRESHOLDS_FIELD)
+    values = dict(DEFAULT_SCAN_THRESHOLDS)
+    if isinstance(raw, dict):
+        for key in DEFAULT_SCAN_THRESHOLDS:
+            values[key] = _clean_threshold(raw.get(key), DEFAULT_SCAN_THRESHOLDS[key])
+    return values
+
+
+def save_scan_thresholds(min_edge_tao: Any, min_total_tao: Any) -> dict[str, str]:
+    """保存单边 / 累计最低 TAO，返回真正写入的值。
+
+    非法输入（空、非数字、负数）**不覆盖**上次保存的值——用户误触「保存」
+    时应该保持原设置，而不是被悄悄改成出厂值 1 / 1。
+    """
+
+    current = load_scan_thresholds()
+    values = {
+        "min_edge_tao": _clean_threshold(min_edge_tao, current["min_edge_tao"]),
+        "min_total_tao": _clean_threshold(min_total_tao, current["min_total_tao"]),
+    }
+    data = _read()
+    data["version"] = 1
+    data[_SCAN_THRESHOLDS_FIELD] = values
+    _write(data)
+    return values
 
 
 # -- 地址库巡检（自动发现新地址并入库） --------------------------------------

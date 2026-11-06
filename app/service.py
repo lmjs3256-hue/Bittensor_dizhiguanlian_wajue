@@ -50,7 +50,7 @@ from .relation import (
     terminal_addresses,
     terminal_roles,
 )
-from .relation_config import LibraryEntry, LinkPolicy
+from .relation_config import MAX_RELATION_DEPTH, LibraryEntry, LinkPolicy
 from .taostats import (
     LOCAL_REQUESTS_PER_MINUTE,
     TaostatsAuthError,
@@ -611,8 +611,8 @@ def select_exportable_addresses(
 
     已人工确认的交易所地址和验证者地址不导出，避免把公共地址当成待跟进
     钱包继续扩散；疑似交易所（待确认）保留，方便人工核查。
-    ``depth`` 为 1/2/3 时只保留该层级的关联地址（与结果页“层级筛选”口径
-    一致，按地址首次被发现的层级算）；None 表示全部层级。
+    ``depth`` 为 1 到 MAX_RELATION_DEPTH 时只保留该层级的关联地址（与结果页
+    “层级筛选”口径一致，按地址首次被发现的层级算）；None 表示全部层级。
     """
 
     keep: list[str] = []
@@ -3141,13 +3141,15 @@ class LinkService:
     ) -> tuple[str, str, str]:
         """导出历史记录的关联地址（TXT）或完整结果（JSON）。
 
-        ``depth`` 为 1/2/3 时只导出该层级的关联地址；None 导出全部。
+        ``depth`` 为 1 到 MAX_RELATION_DEPTH 时只导出该层级的关联地址；None 导出全部。
         """
 
         if file_format not in {"txt", "json"}:
             raise InputError("导出格式只能是 txt 或 json")
-        if depth is not None and depth not in (1, 2, 3):
-            raise InputError("导出层级只能是 1、2、3 或全部")
+        if depth is not None and not 1 <= int(depth) <= MAX_RELATION_DEPTH:
+            raise InputError(
+                f"导出层级只能是 1 到 {MAX_RELATION_DEPTH} 或全部"
+            )
         row = self._load_archive(archive_id)
         depth_tag = f"-d{depth}" if depth else ""
         if file_format == "json":
@@ -4140,7 +4142,7 @@ class LinkService:
                 (
                     "结果只覆盖本地索引区间和实际采集到的 Balances.Transfer 事件。"
                     if data_source == "local"
-                    else "结果只覆盖 Taostats 本轮成功返回的分页和地址；免费额度或服务端分页窗口可能使三级关系不完整。"
+                    else "结果只覆盖 Taostats 本轮成功返回的分页和地址；免费额度或服务端分页窗口可能使较深层关系不完整。"
                 ),
                 "转账关系只是行为证据，不等于同一地址、同一实体或真实身份。",
                 "质押、子网 swap、代理调用等未纳入自动关联；需要单独建立语义。",
