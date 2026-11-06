@@ -588,3 +588,25 @@ Set-Location G:\bittensor-wallet-link-intel
 - **1 级路径明细**：`relatedTable()` 里按钮条件从 `path_transfers.length > 1` 改成 `>= 1`。后端本来就对 1 级返回 1 跳，只是前端藏了按钮。
 - **前端**：`#sync-validators` 紧跟 `#sync-exchanges`，`syncValidatorLibrary()` 与交易所同步同结构；`updateLibrarySelection()` 的选择器改成 `[data-library-select]:not(:disabled)`，否则内置行（禁用勾选框）会让「全选」永远达不到全部。
 - **验收**：`tests/test_builtin_addresses.py` 8 条；`.probe/ui_check_073.py` 在 1440/1180/1024 三档确认按钮单行、无溢出、内置行锁定、1 级路径可展开；`pytest -q` = **205 passed**。
+
+## 38. 2026-11-06 0.7.4 交接：人工确认地址后回头校正历史查询结果
+
+- **需求原话**：「人工确定交易所地址，验证者地址或者公共地址后，扫描已知地址库和查询记录，对前面地址库和查询结果进行纠正。移除以上三种类型地址产生的无效关联。」
+- **问题的本质**：终点地址是「查到就截止」，但判定发生在查询之后。旧快照里，当时还没被认定成交易所/验证者/公共地址的钱包是被当普通钱包继续往下走的，终点下游那一片全留在结果里。所以不是重查，而是拿新的终点名单去**重剪旧快照**。
+- **核心函数** `service.prune_archive_payload(payload, terminal)`，判定顺序很重要，别改：
+  1. 有逐跳路径时看 `path_transfers[:-1]`——路径前面出现过终点，说明这条关联是从终点继续走出来的，删；终点自己（路径最后一跳落到终点）保留。
+  2. 路径缺失（老记录按分轮续查存的，或早期版本没存路径）才退回用 `edges` 做「遇终点即止」的 BFS：终点整片下游只记进 `blocked_by`、不进可达集。
+  3. **两者都没证据 → 不删**，计入 `unverified`。这条是踩坑换来的：第一版纯靠可达性判断，把 180 条正常线索当噪音删了。
+  4. **边表 `edges` 原样保留**。第一版连边表一起精简过，结果第二次校正时可达图变小、又多删 27 条（不收敛）。现在落库后再预演恒定 `changed=0`。
+- **入口** `reconcile_history(dry_run, addresses=None, archive_ids=None, watch=True)`：
+  - `needle in row.payload` 先粗筛相关快照，避免全库反序列化；
+  - 结果写 `payload.correction = {removed_related, rounds, by_role, at}`（`rounds` 累加），并在 `warnings` 追加「本记录已按当前地址库校正：移除 N 条…」，这样导出和结果页都能看出这条被剪过；
+  - `watch=True` 时同步清理地址库侧：`watch_candidates.trigger_address ∈ terminal` 的行删掉，`auto_import_log` 同条件改 `revoked` 并写原因。**地址本身不动**。
+  - `addresses=[...]` 用于「只针对刚确认的这一个地址」快速校正，`watch=False`（不必每次单个确认都去扫巡检表）。
+- **两套口径必须共用**：`relation.terminal_addresses()` / `terminal_roles()` 抽出来给 `discover()` 和 `prune_archive_payload` 共用，否则「实时查询截止的集合」和「校正用的终点集合」会漂移。终点规则 = EXCHANGE 且 confirmed / VALIDATOR / PUBLIC / 标签或备注含「交易所」（非 rejected）/ 「系统」分类。
+- **触发点**（都是「判定一发生就顺手剪」）：`decide_exchange`、`decide_exchange_address`(confirm)、`decide_public_address`(marked)、`update_library_categories`、`update_library_note`（备注含「交易所」）、`update_library_label`（标签含「交易所」）。返回体统一带 `correction` 字段，前端 `correctionText()` 拼成「已顺带校正 N 条历史结果（移除 M 条无效关联）」。同步交易所/同步验证者名单结束后调 `autoCorrectAfterSync()`（一次带进上千个终点，必须自动剪）。
+- **接口** `POST /api/library/reconcile`，入参 `{dry_run: bool, archive_ids?: number[]}`，返回 `{archives:{scanned, changed, related_changed, related_removed, unverified}, terminal:{count, by_role}, watch:{candidates_removed, auto_imports_revoked}}`。
+- **前端**：地址库清单工具栏 `.library-reconcile-group` 里放 `#reconcile-history`，`reconcileHistory()` 先 `dry_run:true`，`changed=0` 就 toast「历史结果已经是干净的」，否则 `window.confirm` 列出清理量与按角色统计（并单列 unverified 建议重查），确认后才 `dry_run:false`，完成后刷新地址库与历史列表。样式只用 `var(--accent)`（`--accent-ink` 在四套主题里没有定义）。
+- **实测**（真实库 1902 条地址）：当前终点 1214（交易所 17 / 验证者 1196 / 系统 1）；35 条相关快照里 `changed=5`、移除 415 条关联（交易所下游 262、系统 153）、`unverified=180`；样本记录 199 → 9；落库后再预演 `changed=0`。备份留在 `data/wallet_link.before-reconcile-0.7.4.db`（`PRAGMA integrity_check` ok）。
+- **验收**：`tests/test_reconcile_history.py` 11 条 + `tests/test_builtin_addresses.py` 8 条，`pytest -q` = **216 passed**；`.probe/ui_check_074.py` 1440/1180/1024 三档无溢出无重叠、只发一次 `dry_run:true`。
+- **遗留**：`unverified=180` 这批老记录（分轮续查、无路径且边表不连通）只能靠重查补全路径，预演确认框里已单列提示；`data/wallet_link.before-reconcile-0.7.4.db` 是否长期保留待定。

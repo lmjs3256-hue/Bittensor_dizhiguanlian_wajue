@@ -1,5 +1,25 @@
 # 验证交付记录
 
+## 0.7.4 验证记录（2026-11-06）
+
+**剪枝单元测试**（`tests/test_reconcile_history.py`，11 条）：覆盖「路径逐跳判断（终点之后的下游删、终点本身留）」「路径缺失时退回中转图可达性判断」「两者都无证据时不删且计入 `unverified`」「边表原样保留」「`correction` 元信息（轮次累计、按角色统计）」「`watch_candidates` / `auto_import_log` 的清理与撤回」「`dry_run` 不落库」等分支，全部通过。
+
+**真实库全量校正**（`data/wallet_link.db`，1902 条地址）：
+- 校正前统计当前关联终点 **1214 个**：交易所 17 / 验证者 1196 / 系统 1。
+- `POST /api/library/reconcile {dry_run:true}` → 扫到相关归档快照 35 条，其中 `changed=5`、合计 `related_removed=415`（交易所下游 262、系统下游 153）、`unverified=180`（老的分轮续查记录，`path_transfers` 为空且边表不连通，按「无证据不删」原则保留并提示重查）。
+- 单条样本：id=24 的记录关联数 **199 → 9**，`payload.correction` 写入 `removed_related`、`rounds=1`、`by_role`、`at`。
+- 落库后再跑一次预演 → `changed=0`（收敛，不会二次误删）。
+- **收敛性问题的修复过程**：第一版剪枝连边表一起精简，导致第二次校正可达图变小、又多删 27 条（不收敛）；改为**边表原封不动**，只剪可达结果集。另外老记录曾纯靠可达性判断误删 180 条，改为「有证据才删」。
+
+**触发点实测**：`decide_exchange` / `decide_exchange_address`(confirm) / `decide_public_address`(marked) / `update_library_categories` / `update_library_note`（含「交易所」）/ `update_library_label`（含「交易所」）六处返回体都带 `correction`，前端在「已标为交易所 / 已标为公共地址」提示后补一句「已顺带校正 N 条历史结果」；同步交易所 / 同步验证者名单完成后自动跑一次校正（`watch=False`）。
+
+**界面探针**（`.probe/ui_check_074.py`，1440 / 1180 / 1024 三档，输出 `.probe/shots/check-074-<width>.json`）：
+- 地址库清单工具栏新增「校正历史结果」后，三档下按钮排布为 2 行（第一行：撤回上次导入 / 重新导入预置库 / 合并群组 / 格式 / 导出全部 / 导出选中；第二行：校正历史结果 + 删除所选），`barOverflow=0`、`panelOverflow=0`、`tableOverflow=0`、按钮矩形互不重叠（`overlap=false`）；1440 下第二行只有这两个按钮，低频校正动作不占主行。
+- 录入区 4 个按钮（添加地址 / 导入文件 / 同步官方交易所地址 / 同步验证者地址）仍为单行，与 0.7.3 一致。
+- 点击行为：拦截 `fetch` 后点「校正历史结果」，只发出 **1 次** `{"dry_run":true}` 请求，未触发落库；返回 `changed=0` 时走提示分支而非确认框，toast 显示「历史结果已经是干净的：35 条记录里没有交易所/验证者/公共地址下游的无效关联。」，按钮文案与可用状态复原。`changed>0` 的确认分支（`window.confirm` 展示记录数 / 移除条数 / 巡检候选清理 / 自动入库撤回 / unverified 提示 / 当前终点按角色统计）由 0.7.4 落库前那次真实预演（35 条记录、415 条关联）验证。
+
+**回归**：`pytest -q` = **216 passed**；`/api/health` 报 `0.7.4`（pid 30780）；页面资源戳 `?v=0.7.4`；`使用说明.html` 重新生成 **71 316 bytes**。
+
 ## 0.7.3 验证记录（2026-11-06）
 
 **验证者终止关联**（`tests/test_builtin_addresses.py`）：

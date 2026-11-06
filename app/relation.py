@@ -141,6 +141,56 @@ def _entry_has(entry: LibraryEntry, name: str) -> bool:
     return name.upper() in _entry_categories(entry)
 
 
+def terminal_roles(library: Iterable[LibraryEntry]) -> dict[str, tuple[str, ...]]:
+    """哪些地址是「关联终点」以及各自身份（交易所/验证者/公共地址/系统）。
+
+    判定口径（与 discover 完全一致，这里抽出来是为了让历史结果校正
+    复用同一套规则，避免两处写法漂移）：
+
+    - 交易所：``EXCHANGE`` 分类且已人工确认；或人工在标签/备注里写明「交易所」
+      的（未确认的交易所候选不算，避免把候选误当终点剪掉线索）。
+    - 验证者：``VALIDATOR``（人工标记或官方名单同步）。
+    - 公共地址：``PUBLIC``（人工标记或内置固定名单）。
+    - 「系统」分类的地址。
+
+    这些地址本身仍会作为关联地址出现，它自己的收款方/付款方不再进入结果。
+    同一地址可能同时命中多类（例如「大V + EXCHANGE」）。
+    """
+
+    roles: dict[str, set[str]] = {}
+    for entry in library:
+        address = str(getattr(entry, "address", "") or "").strip()
+        if not address:
+            continue
+        categories = _entry_categories(entry)
+        named: set[str] = set()
+        if "EXCHANGE" in categories and entry.exchange_confirmed:
+            named.add("EXCHANGE")
+        if "VALIDATOR" in categories:
+            named.add("VALIDATOR")
+        if "PUBLIC" in categories:
+            named.add("PUBLIC")
+        if not named and not entry.exchange_rejected and (
+            "交易所" in (entry.note or "") or "交易所" in (entry.label or "")
+        ):
+            named.add("EXCHANGE")
+        if (
+            "系统" in (entry.categories or ())
+            or "SYSTEM" in (entry.categories or ())
+            or str(entry.category or "") in {"系统", "SYSTEM"}
+        ):
+            named.add("SYSTEM")
+        if named:
+            roles.setdefault(address, set()).update(named)
+    return {address: tuple(sorted(names)) for address, names in roles.items()}
+
+
+def terminal_addresses(library: Iterable[LibraryEntry]) -> set[str]:
+    """哪些地址是「关联终点」：查到即截止，不再向下扩展其转账。"""
+
+    return set(terminal_roles(library))
+
+
 # 强度档位：4 极强 / 3 强 / 2 中 / 1 弱 / 0 未知。
 _STRENGTH_LEVELS = {4: "极强", 3: "强", 2: "中", 1: "弱", 0: "未知"}
 _STRENGTH_SCORES = {4: 100, 3: 86, 2: 72, 1: 52, 0: 24}
@@ -420,20 +470,8 @@ def discover(
     # 在结果里，但不再向下扩展其转账。
     # 验证者同理：热/冷钱包每天都在押注、解押、子网质押，不截止会把结果
     # 灌满噪音，也白白消耗 Taostats 请求额度。
-    terminal_exchange_addresses = {
-        address
-        for address, entry in library_map.items()
-        if (
-            _entry_has(entry, "EXCHANGE") and entry.exchange_confirmed
-        ) or _entry_has(entry, "VALIDATOR") or _entry_has(entry, "PUBLIC") or (
-            not (_entry_categories(entry) & {"EXCHANGE", "VALIDATOR", "PUBLIC"})
-            and not entry.exchange_rejected
-            and ("交易所" in entry.note or "交易所" in entry.label)
-        ) or (
-            "系统" in entry.categories or "SYSTEM" in entry.categories
-            or entry.category in {"系统", "SYSTEM"}
-        )
-    }
+    # 判定逻辑抽到 terminal_addresses()，历史结果校正复用同一份规则。
+    terminal_exchange_addresses = terminal_addresses(library_map.values())
 
     if seed in excluded:
         return ScanReport(

@@ -2413,9 +2413,10 @@ async function decideExchange(address, decision, button) {
     const pruned = decision === "confirm" ? pruneDownstreamOf(address) : 0;
     renderResult(state.lastResult);
     if (decision === "confirm") {
-      toast(pruned
+      const corrected = correctionText(result.correction);
+      toast((pruned
         ? `已标为交易所：其下游 ${pruned} 个关联地址已从列表隐藏，点「刷新结果」重查后不会再出现。`
-        : "已标为交易所：该地址作为关联终点，刷新后不再向下扩展。", false);
+        : "已标为交易所：该地址作为关联终点，刷新后不再向下扩展。") + corrected, false);
     } else if (decision === "reject") {
       toast("已人工否定该地址；后续扫描不会再将其列为交易所候选。判错可点「改为交易所」。", false);
     } else {
@@ -2460,9 +2461,10 @@ async function decidePublic(address, decision, button) {
     }
     await loadLibrary();
     if (marked) {
-      toast(pruned
+      const corrected = correctionText(result.correction);
+      toast((pruned
         ? `已标为公共地址：其下游 ${pruned} 个关联地址已从列表隐藏，点「刷新结果」重查后不会再展开。`
-        : "已标为公共地址：该地址作为关联终点，刷新后不再向下扩展。", false);
+        : "已标为公共地址：该地址作为关联终点，刷新后不再向下扩展。") + corrected, false);
     } else {
       toast("已取消公共地址标记（原有分类保持不变）。", false);
     }
@@ -2524,13 +2526,99 @@ async function syncExchangeLibrary() {
     if (added.length) parts.push(`新增 ${added.length} 个：${describeExchangeAddresses(added)}`);
     if (locked.length) parts.push(`另有 ${locked.length} 个已有地址补上了官方交易所标记`);
     if (!added.length && !locked.length) parts.push("没有新增官方交易所地址，名单已是最新");
-    toast(`官方交易所同步完成：${parts.join("；")}。名单共 ${data.official_total ?? 0} 个${cacheText}。`);
+    const corrected = added.length || locked.length ? await autoCorrectAfterSync() : "";
+    toast(
+      `官方交易所同步完成：${parts.join("；")}。名单共 ${data.official_total ?? 0} 个${cacheText}。` +
+        corrected
+    );
     if (added.length || locked.length) await api("/api/library/exchange-sync/ack", { method: "POST" });
   } catch (error) {
     toast(`交易所地址同步失败：${error.message}`, true);
   } finally {
     button.disabled = false;
     button.textContent = "同步官方交易所地址";
+  }
+}
+
+// 人工确认交易所/验证者/公共地址后，后端会把历史结果里它的下游关联剪掉，
+// 各接口把这个校正结果放在 correction 字段里返回。
+function correctionText(correction) {
+  const archives = correction && correction.archives;
+  if (!archives || !archives.changed) return "";
+  return `；已顺带校正 ${archives.changed} 条历史结果（移除 ${archives.related_removed} 条无效关联）`;
+}
+
+// 同步名单会一次新增大量关联终点，同步完顺手校正一遍，用户不用再点。
+async function autoCorrectAfterSync() {
+  try {
+    const report = await api("/api/library/reconcile", {
+      method: "POST",
+      body: JSON.stringify({ dry_run: false }),
+    });
+    return correctionText(report);
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function reconcileHistory() {
+  const button = $("#reconcile-history");
+  if (!button) return;
+  const label = button.textContent;
+  button.disabled = true;
+  try {
+    button.textContent = "检查中…";
+    const preview = await api("/api/library/reconcile", {
+      method: "POST",
+      body: JSON.stringify({ dry_run: true }),
+    });
+    const archives = preview.archives || {};
+    if (!archives.changed) {
+      toast(
+        `历史结果已经是干净的：${archives.scanned} 条记录里没有交易所/验证者/公共地址下游的无效关联。`
+      );
+      return;
+    }
+    const roles = (preview.terminal && preview.terminal.by_role) || {};
+    const roleText = Object.entries(roles)
+      .map(([name, count]) => `${name} ${count}`)
+      .join("、");
+    const watch = preview.watch || {};
+    const okay = window.confirm(
+      `将按当前地址库校正 ${archives.changed} 条历史查询结果：\n\n` +
+        `· ${archives.related_changed ?? archives.changed} 条记录的关联被清理：共移除 ${archives.related_removed} 条无效关联（交易所/验证者/公共地址的下游）\n` +
+        `· 巡检候选清理 ${watch.candidates_removed ?? 0} 条、自动入库撤回 ${watch.auto_imports_revoked ?? 0} 条\n\n` +
+        (archives.unverified
+          ? `\n另有 ${archives.unverified} 条关联缺少逐跳路径、无法确认是不是终点下游，已按「不删」处理，建议重查一次。\n`
+          : "") +
+        `当前关联终点：${roleText || "无"}。\n` +
+        `地址库本身不会被修改；校正后历史页的「关联数」会变小，重新导出也是校正后的结果。`
+    );
+    if (!okay) return;
+    button.textContent = "校正中…";
+    const report = await api("/api/library/reconcile", {
+      method: "POST",
+      body: JSON.stringify({ dry_run: false }),
+    });
+    const done = report.archives || {};
+    const cleaned = report.watch || {};
+    await loadLibrary();
+    if (typeof loadHistory === "function") {
+      try {
+        await loadHistory(0);
+      } catch (_error) {
+        /* 历史面板没打开时忽略 */
+      }
+    }
+    toast(
+      `已校正 ${done.changed} 条历史结果：移除 ${done.related_removed} 条由交易所/验证者/公共地址产生的无效关联；` +
+        `巡检候选清理 ${cleaned.candidates_removed} 条，自动入库撤回 ${cleaned.auto_imports_revoked} 条。`
+    );
+  } catch (error) {
+    toast(`校正历史结果失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
   }
 }
 
@@ -2548,9 +2636,11 @@ async function syncValidatorLibrary() {
     if (added.length) parts.push(`新增 ${added.length} 个验证者地址`);
     if (locked.length) parts.push(`${locked.length} 个已有地址补上了验证者标记`);
     if (!added.length && !locked.length) parts.push("没有新增验证者地址，名单已是最新");
+    const corrected = await autoCorrectAfterSync();
     toast(
       `验证者同步完成：${parts.join("；")}。名单共 ${data.official_total ?? 0} 个${cacheText}。` +
-      "这些地址会作为关联终点，查到即终止，不再向下扩展。"
+      "这些地址会作为关联终点，查到即终止，不再向下扩展。" +
+      corrected
     );
   } catch (error) {
     toast(`验证者地址同步失败：${error.message}`, true);
@@ -3247,6 +3337,7 @@ $("#choose-file").addEventListener("click", () => $("#library-file").click());
 $("#library-file").addEventListener("change", (event) => { if (event.target.files[0]) uploadLibrary(event.target.files[0]); });
 $("#sync-exchanges").addEventListener("click", syncExchangeLibrary);
 $("#sync-validators").addEventListener("click", syncValidatorLibrary);
+$("#reconcile-history").addEventListener("click", reconcileHistory);
 $("#watch-save").addEventListener("click", saveWatchConfig);
 $("#watch-run").addEventListener("click", runWatchNow);
 $("#watch-logs-toggle").addEventListener("click", toggleWatchLogs);

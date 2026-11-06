@@ -409,6 +409,15 @@ class PublicAddressInput(BaseModel):
     marked: bool = True
 
 
+class ReconcileInput(BaseModel):
+    """按当前地址库校正历史结果（交易所/验证者/公共地址产生的下游关联）。"""
+
+    # 只预演、不落库：界面先给用户看「会移除多少条」再确认。
+    dry_run: bool = False
+    # 留空 = 校正全部历史记录；指定则只处理这几条。
+    archive_ids: list[int] | None = Field(default=None, max_length=500)
+
+
 class LicenseActivateInput(BaseModel):
     token: str = Field(min_length=10, max_length=4000)
 
@@ -823,6 +832,24 @@ def mark_public_address(
         return svc.decide_public_address(payload.address, payload.marked)
     except InputError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/library/reconcile")
+def reconcile_history(
+    payload: ReconcileInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """按当前地址库校正历史查询结果。
+
+    交易所/验证者/公共地址是「关联终点」：查到即截止。但以前查询时这些地址
+    还没被确认，工具把它们当普通钱包继续往下走，结果里就混进一大片下游噪音。
+    人工确认（或官方名单同步）之后调用这里，用同一套口径重剪一遍历史快照。
+    """
+
+    return svc.reconcile_history(
+        dry_run=payload.dry_run,
+        archive_ids=payload.archive_ids,
+    )
 
 
 @app.post("/api/library/group-addresses")

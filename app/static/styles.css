@@ -688,8 +688,14 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 
 /* 工具栏分组：导出三个控件 / 全选+删除 各自成组，换行时不会被拆散 */
 .library-actions .library-export-group,
+.library-actions .library-reconcile-group,
 .library-actions .library-danger-group {
   display:flex; align-items:center; gap:7px;
+}
+/* 校正按钮是低频维护动作：比主按钮弱，但比普通次要按钮显眼一点。 */
+.library-actions .library-reconcile-group #reconcile-history {
+  white-space:nowrap;
+  border-color:var(--accent);
 }
 .library-actions .library-danger-group { margin-left:auto; }
 .library-actions .library-danger-group #delete-selected { white-space:nowrap; }

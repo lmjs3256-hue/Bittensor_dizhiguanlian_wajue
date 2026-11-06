@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ from .db import (
     AddressBook,
     AddressCategory,
     AddressLibrary,
+    AutoImportLog,
     BookPairStat,
     ChainCursor,
     Database,
@@ -29,6 +31,7 @@ from .db import (
     ScanLock,
     SYSTEM_CLASSIFICATION,
     Transfer,
+    WatchCandidate,
     install_seed_books,
     iso_utc,
     seed_book_status,
@@ -41,7 +44,12 @@ from . import interlink
 from . import settings_store
 from .builtin_addresses import BUILTIN_SOURCE_PREFIX, builtin_entries, is_builtin_source
 from .inputs import InputError, parse_plain_addresses, read_addresses
-from .relation import discover, exchange_balance_candidates
+from .relation import (
+    discover,
+    exchange_balance_candidates,
+    terminal_addresses,
+    terminal_roles,
+)
 from .relation_config import LibraryEntry, LinkPolicy
 from .taostats import (
     LOCAL_REQUESTS_PER_MINUTE,
@@ -392,6 +400,197 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
         "builtin_locked": is_builtin_row(row),
         "created_at": iso_utc(row.created_at),
         "updated_at": iso_utc(row.updated_at),
+    }
+
+
+ROLE_LABELS = {
+    "EXCHANGE": "交易所",
+    "VALIDATOR": "验证者",
+    "PUBLIC": "公共地址",
+    "SYSTEM": "系统地址",
+}
+
+
+def _path_hops(item: dict[str, Any]) -> list[tuple[str, str]]:
+    """把一条关联记录的路径拆成 [(起点, 终点), …]。"""
+
+    hops: list[tuple[str, str]] = []
+    for step in item.get("path_transfers") or ():
+        if not isinstance(step, dict):
+            continue
+        hops.append(
+            (
+                str(step.get("path_from") or step.get("from_address") or ""),
+                str(step.get("path_to") or step.get("to_address") or ""),
+            )
+        )
+    return hops
+
+
+def blocking_terminal(
+    item: dict[str, Any], terminal: dict[str, tuple[str, ...]]
+) -> str | None:
+    """这条关联是「终点的下游」吗？是的话返回挡路的那个终点地址。
+
+    路径最后一跳的终点就是关联地址本身：终点出现在前面任何一跳，说明这条
+    线索是从终点继续往下走出来的，属于无效关联。
+    """
+
+    hops = _path_hops(item)
+    if not hops:
+        return None
+    address = str(item.get("address") or "")
+    for source, target in hops[:-1]:
+        for candidate in (source, target):
+            if candidate and candidate != address and candidate in terminal:
+                return candidate
+    return None
+
+
+def prune_archive_payload(
+    payload: dict[str, Any],
+    terminal: dict[str, tuple[str, ...]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """按当前地址库裁剪一份历史结果快照，返回 (新快照, 统计)。
+
+    和实时查询同一套口径：从起始地址出发、遇到关联终点就不再往下走，
+    凡是要经过终点才能到达的地址都是噪音，连同它的边一起移除。终点自己
+    仍然保留（它是有价值的关联地址）。
+
+    边表本身不改：它是这次查询真实发生过的转账记录，也是可达性判断的依据，
+    删掉会让下一次校正算出更小的图，越剪越多（不收敛）。
+    """
+
+    seed = str(payload.get("seed") or "")
+    related = [item for item in (payload.get("related") or []) if isinstance(item, dict)]
+    edges = [edge for edge in (payload.get("edges") or []) if isinstance(edge, dict)]
+    if not seed:
+        return payload, {
+            "related_before": len(related),
+            "related_after": len(related),
+            "related_removed": 0,
+            "blocking": {},
+            "removed_addresses": [],
+        }
+
+    # 1) 有没有只能经过终点才到达的地址：用边表做一次「遇终点即止」的遍历。
+    adjacency: dict[str, list[str]] = defaultdict(list)
+    if edges:
+        for edge in edges:
+            source = str(edge.get("from_address") or "")
+            target = str(edge.get("to_address") or "")
+            if not source or not target or source == target:
+                continue
+            adjacency[source].append(target)
+            adjacency[target].append(source)
+    else:
+        # 边表被省略（超大结果只存路径）时，退化成用路径还原一张最小的中转图。
+        for item in related:
+            for source, target in _path_hops(item):
+                if not source or not target or source == target:
+                    continue
+                adjacency[source].append(target)
+                adjacency[target].append(source)
+    reachable = {seed}
+    blocked_by: dict[str, str] = {}
+    queue: deque[str] = deque([seed])
+    while queue:
+        current = queue.popleft()
+        if current != seed and current in terminal:
+            # 终点本身留在结果里，但它的邻居不再往外走。整片下游只做标记、
+            # 不进可达集合，这样报告能说清「是哪个终点把它们带进来的」。
+            stack = [n for n in adjacency.get(current, ()) if n not in reachable]
+            marked: set[str] = set()
+            while stack:
+                node = stack.pop()
+                if node in marked or node in reachable:
+                    continue
+                marked.add(node)
+                blocked_by.setdefault(node, current)
+                stack.extend(adjacency.get(node, ()))
+            continue
+        for neighbor in adjacency.get(current, ()):  # pragma: no branch
+            if neighbor in reachable:
+                continue
+            reachable.add(neighbor)
+            if neighbor in terminal:
+                blocked_by[neighbor] = neighbor
+                continue
+            queue.append(neighbor)
+
+    removed_addresses: list[str] = []
+    removed_roles: dict[str, int] = {}
+    unverified = 0
+    kept_related: list[dict[str, Any]] = []
+    for item in related:
+        address = str(item.get("address") or "")
+        if not address or address == seed:
+            continue
+        blocker = blocking_terminal(item, terminal)
+        if blocker is None and address not in reachable:
+            # 老记录（分轮续查 / 早期版本）没有逐跳路径，只能靠中转图判断。
+            blocker = blocked_by.get(address)
+        if blocker is None:
+            # 没有确凿证据就不删：宁可漏掉几条噪音，也不能把正常线索剪掉。
+            # 中转账没连通又有可能是终点下游的（老记录缺逐跳路径），单独计数，
+            # 让报告提示用户重查一次。
+            if address not in reachable:
+                unverified += 1
+            kept_related.append(item)
+            continue
+        removed_addresses.append(address)
+        for name in terminal.get(blocker) or ("UNKNOWN",):
+            removed_roles[name] = removed_roles.get(name, 0) + 1
+
+    # 边表保持原样：它是这次查询真实发生过的转账事实，也是上面判断可达性的
+    # 依据。删掉边会让下一次校正算出更小的可达图，越剪越多（不收敛）。
+    if not removed_addresses:
+        return payload, {
+            "related_before": len(related),
+            "related_after": len(related),
+            "related_removed": 0,
+            "unverified": unverified,
+            "blocking": {},
+            "removed_addresses": [],
+        }
+
+    pruned = dict(payload)
+    pruned["related"] = kept_related
+    previous = payload.get("correction") or {}
+    pruned["correction"] = {
+        "first_corrected_at": previous.get("first_corrected_at")
+        or iso_utc(utcnow()),
+        "corrected_at": iso_utc(utcnow()),
+        "removed_related": int(previous.get("removed_related") or 0) + len(removed_addresses),
+        "rounds": int(previous.get("rounds") or 0) + 1,
+        "by_role": {
+            ROLE_LABELS.get(name, name): count
+            for name, count in sorted(removed_roles.items())
+        },
+        "note": (
+            "人工确认交易所/验证者/公共地址后，已按当前地址库重新校正："
+            "这些地址的下游关联（无效关联）已移除。"
+        ),
+    }
+    if removed_addresses:
+        warnings = list(pruned.get("warnings") or [])
+        note = (
+            f"本记录已按当前地址库校正：移除 {len(removed_addresses)} 条由交易所/"
+            f"验证者/公共地址产生的下游关联。"
+        )
+        if note not in warnings:
+            warnings.append(note)
+        pruned["warnings"] = warnings
+    return pruned, {
+        "related_before": len(related),
+        "related_after": len(kept_related),
+        "related_removed": len(removed_addresses),
+        "unverified": unverified,
+        "blocking": {
+            ROLE_LABELS.get(name, name): count
+            for name, count in sorted(removed_roles.items())
+        },
+        "removed_addresses": removed_addresses,
     }
 
 
@@ -874,7 +1073,15 @@ class LinkService:
             if current is None:
                 raise InputError("address not found")
             current.note = note.strip()
-            return {"saved": True, "item": address_dict(current)}
+            payload = {"saved": True, "item": address_dict(current)}
+            changed_address = current.address
+            changed_note = current.note
+        # 备注里写明「交易所」也会让这个地址变成关联终点（查询时查到即截止）。
+        if "交易所" in changed_note:
+            payload["correction"] = self.reconcile_history(
+                addresses=[changed_address], watch=False
+            )
+        return payload
 
     def update_library_label(self, row_id: int, label: str) -> dict[str, Any]:
         """人工改名；传空字符串表示恢复默认（地址后四位）。"""
@@ -885,7 +1092,14 @@ class LinkService:
             if current is None:
                 raise InputError("address not found")
             current.label = value
-            return {"saved": True, "item": address_dict(current)}
+            payload = {"saved": True, "item": address_dict(current)}
+            changed_address = current.address
+        # 标签里写明「交易所」同样是关联终点，历史结果需要跟着校正。
+        if "交易所" in value:
+            payload["correction"] = self.reconcile_history(
+                addresses=[changed_address], watch=False
+            )
+        return payload
 
     def rename_label_group(self, old_label: str, new_label: str) -> dict[str, Any]:
         """整组改名：把同一个标签组下的地址一起改成新名字。"""
@@ -1237,7 +1451,13 @@ class LinkService:
                 self._ensure_category(db, name)
             current.category = values[0]
             current.categories = encode_categories(values)
-            return {"saved": True, "item": address_dict(current)}
+            payload = {"saved": True, "item": address_dict(current)}
+            changed_address = current.address
+        # 分类可能带出「交易所/验证者/公共地址」的备注口径，改完顺手校正一次。
+        payload["correction"] = self.reconcile_history(
+            addresses=[changed_address], watch=False
+        )
+        return payload
 
     def update_group_categories(
         self,
@@ -1311,7 +1531,15 @@ class LinkService:
                 raise InputError("交易所状态只能是 confirm、reject 或 reset")
             current.exchange_confirmed = decision == "confirm"
             current.exchange_rejected = decision == "reject"
-            return {"saved": True, "item": address_dict(current)}
+            payload = {"saved": True, "item": address_dict(current)}
+            changed_address = current.address
+        # 确认为交易所 = 新增一个关联终点：把以前从该地址继续展开出来的
+        # 下游关联从历史结果里剪掉（只重扫提到过这个地址的快照，很快）。
+        if decision == "confirm":
+            payload["correction"] = self.reconcile_history(
+                addresses=[changed_address], watch=False
+            )
+        return payload
 
     def confirm_exchange(self, row_id: int, confirmed: bool = True) -> dict[str, Any]:
         # Backward-compatible endpoint behavior: false clears a prior
@@ -1381,7 +1609,10 @@ class LinkService:
                     )
                 current.exchange_confirmed = decision == "confirm"
                 current.exchange_rejected = decision == "reject"
-            return {"saved": True, "item": address_dict(current)}
+            payload = {"saved": True, "item": address_dict(current)}
+        if decision == "confirm":
+            payload["correction"] = self.reconcile_history(addresses=[address], watch=False)
+        return payload
 
     def confirm_exchange_address(self, address: str, label: str = "") -> dict[str, Any]:
         return self.decide_exchange_address(address, "confirm", label)
@@ -1433,7 +1664,11 @@ class LinkService:
                     row.category = DEFAULT_CATEGORY
                     remaining = [DEFAULT_CATEGORY, *remaining]
                 row.categories = encode_categories(remaining or [DEFAULT_CATEGORY])
-            return {"saved": True, "item": address_dict(row), "marked": bool(marked)}
+            payload = {"saved": True, "item": address_dict(row), "marked": bool(marked)}
+        # 标记为公共地址同样新增一个关联终点，历史结果里它的下游就是噪音。
+        if marked:
+            payload["correction"] = self.reconcile_history(addresses=[address], watch=False)
+        return payload
 
     def ensure_builtin_addresses(self) -> dict[str, Any]:
         """把内置固定名单（交易所/验证者/公共地址）幂等写进地址库。
@@ -2435,6 +2670,194 @@ class LinkService:
             self._trim_archives(db)
         return archive_id
 
+    # -- 按最新地址库校正历史结果 ----------------------------------------
+    @staticmethod
+    def _library_entries(db) -> list[LibraryEntry]:
+        """把地址库读成关联引擎用的条目（只传人工命名，避免角色名被后四位覆盖）。"""
+
+        return [
+            LibraryEntry(
+                address=row.address,
+                label=row.label.strip(),
+                category=row.category,
+                note=row.note,
+                source=row.source,
+                exchange_confirmed=bool(row.exchange_confirmed),
+                exchange_rejected=bool(row.exchange_rejected),
+                categories=tuple(row_categories(row)),
+                book=(row.book or ""),
+            )
+            for row in db.scalars(select(AddressLibrary)).all()
+        ]
+
+    def terminal_role_map(self) -> dict[str, tuple[str, ...]]:
+        """当前地址库里的关联终点及身份（交易所/验证者/公共地址/系统）。"""
+
+        with self.database.session() as db:
+            return terminal_roles(self._library_entries(db))
+
+    def reconcile_history(
+        self,
+        *,
+        dry_run: bool = False,
+        addresses: Iterable[str] | None = None,
+        archive_ids: Iterable[int] | None = None,
+        watch: bool = True,
+    ) -> dict[str, Any]:
+        """按当前地址库回头校正历史结果与巡检产物。
+
+        场景：某个地址事后才被人工确认为交易所/验证者/公共地址（或官方名单
+        同步进来）。之前的查询因为在当时不认识它，把它当成普通钱包继续往下
+        扩展，结果里就多出一整片「交易所下游」的无效关联。这里用与实时查询
+        完全相同的口径重跑一遍剪枝，把这些地址去掉。
+
+        ``addresses`` 只用来快速筛出「快照里提到过这些地址」的历史记录，
+        避免每次确认一个地址都把全库历史解析一遍（自动触发时传）；
+        不传就是全量校正（手动点按钮时用）。
+        ``dry_run`` 只统计不落库，界面先预演给用户看数量。
+        """
+
+        terminal = self.terminal_role_map()
+        role_counts: dict[str, int] = {}
+        for names in terminal.values():
+            for name in names:
+                role_counts[ROLE_LABELS.get(name, name)] = (
+                    role_counts.get(ROLE_LABELS.get(name, name), 0) + 1
+                )
+        summary: dict[str, Any] = {
+            "ok": True,
+            "dry_run": bool(dry_run),
+            "terminal": {
+                "total": len(terminal),
+                "by_role": role_counts,
+            },
+            "archives": {
+                "scanned": 0,
+                "changed": 0,
+                "related_changed": 0,
+                "related_removed": 0,
+                # 缺少逐跳路径、无法确认是不是终点下游的条数（建议重查）。
+                "unverified": 0,
+            },
+            "watch": {"candidates_removed": 0, "auto_imports_revoked": 0},
+            "details": [],
+            "samples": [],
+        }
+        if not terminal:
+            return summary
+
+        wanted_ids = {int(value) for value in (archive_ids or ()) if int(value) > 0}
+        # 只在快照里出现过「新确认地址」的历史记录才需要重扫（instr 区分大小写，
+        # SS58 是 base58，大小写敏感）。
+        needles = [value.strip() for value in (addresses or ()) if value.strip()]
+
+        with self.database.session() as db:
+            stmt = select(RelationArchive).order_by(RelationArchive.id.desc())
+            if wanted_ids:
+                stmt = stmt.where(RelationArchive.id.in_(wanted_ids))
+            rows = db.scalars(stmt).all()
+            if needles:
+                rows = [
+                    row
+                    for row in rows
+                    if any(needle in (row.payload or "") for needle in needles)
+                ]
+            for row in rows:
+                summary["archives"]["scanned"] += 1
+                try:
+                    payload = json.loads(row.payload) if row.payload else None
+                except ValueError:
+                    payload = None
+                if not isinstance(payload, dict):
+                    continue
+                pruned, stats = prune_archive_payload(payload, terminal)
+                summary["archives"]["unverified"] += int(stats.get("unverified") or 0)
+                if not stats["related_removed"]:
+                    continue
+                summary["archives"]["changed"] += 1
+                if stats["related_removed"]:
+                    summary["archives"]["related_changed"] += 1
+                summary["archives"]["related_removed"] += stats["related_removed"]
+                if len(summary["details"]) < 100:
+                    summary["details"].append(
+                        {
+                            "id": row.id,
+                            "seed": row.seed,
+                            "related_before": stats["related_before"],
+                            "related_after": stats["related_after"],
+                            "removed": stats["related_removed"],
+                            "by_role": stats["blocking"],
+                        }
+                    )
+                for address in stats["removed_addresses"]:
+                    if len(summary["samples"]) >= 200:
+                        break
+                    if address not in summary["samples"]:
+                        summary["samples"].append(address)
+                if dry_run:
+                    continue
+                row.payload = json.dumps(pruned, ensure_ascii=False)
+                row.related_count = len(pruned.get("related") or [])
+
+            if watch:
+                summary["watch"] = self._reconcile_watch(db, terminal, dry_run=dry_run)
+            if not dry_run:
+                db.flush()
+        return summary
+
+    def _reconcile_watch(
+        self,
+        db,
+        terminal: dict[str, tuple[str, ...]],
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """地址库侧的纠正：由终点地址触发出来的巡检候选与自动入库流水。
+
+        这两张表是「自动入库」的中间产物：巡检看到某个库里的地址和 X 有大额
+        往来，就把 X 攒成候选、达标后写进地址库。如果那个库里的地址本身就是
+        交易所/验证者/公共地址，这些往来全是噪音，不该再自动入库。
+        """
+
+        result: dict[str, Any] = {
+            "candidates_removed": 0,
+            "auto_imports_revoked": 0,
+            "addresses": [],
+        }
+        candidates = [
+            row
+            for row in db.scalars(select(WatchCandidate)).all()
+            if row.trigger_address in terminal
+        ]
+        logs = [
+            row
+            for row in db.scalars(
+                select(AutoImportLog).where(AutoImportLog.status == "active")
+            ).all()
+            if row.trigger_address in terminal
+        ]
+        result["candidates_removed"] = len(candidates)
+        result["auto_imports_revoked"] = len(logs)
+        addresses: list[str] = []
+        for row in candidates:
+            if row.address not in addresses:
+                addresses.append(row.address)
+        for row in logs:
+            if row.address not in addresses:
+                addresses.append(row.address)
+        result["addresses"] = addresses[:200]
+        if dry_run:
+            return result
+        for row in candidates:
+            db.delete(row)
+        note = "已按地址库校正：触发地址被判定为交易所/验证者/公共地址，这条自动入库线索不再有效"
+        for row in logs:
+            row.status = "revoked"
+            row.revoked_at = utcnow()
+            if note not in (row.reason or ""):
+                row.reason = f"{row.reason}｜{note}" if row.reason else note
+        return result
+
     @staticmethod
     def _trim_archives(db) -> None:
         """按条数和总体积淘汰最旧的记录，避免历史页把数据库撑爆。"""
@@ -2947,22 +3370,9 @@ class LinkService:
         )
         warnings: list[str] = []
         with self.database.session() as db:
-            library = [
-                LibraryEntry(
-                    address=row.address,
-                    # 只传人工命名的标签；默认标签是地址后四位，拿它当“角色名”
-                    # 会把“交易所地址”这类角色覆盖成 jEbt 之类的短码。
-                    label=row.label.strip(),
-                    category=row.category,
-                    note=row.note,
-                    source=row.source,
-                    exchange_confirmed=bool(row.exchange_confirmed),
-                    exchange_rejected=bool(row.exchange_rejected),
-                    categories=tuple(row_categories(row)),
-                    book=(row.book or ""),
-                )
-                for row in db.scalars(select(AddressLibrary)).all()
-            ]
+            # 只传人工命名的标签；默认标签是地址后四位，拿它当“角色名”
+            # 会把“交易所地址”这类角色覆盖成 jEbt 之类的短码。
+            library = self._library_entries(db)
             pair_stats = {
                 (row.book_a, row.book_b): Decimal(row.total_tao or 0)
                 for row in db.scalars(select(BookPairStat)).all()
