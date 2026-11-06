@@ -1,5 +1,47 @@
 # 验证交付记录
 
+## 0.7.0 验证记录（2026-11-06）
+
+**后端**（`tests/test_watch.py`，11 例）：
+- 基线：首次巡检只写 `watch_state.last_block`，历史对手方不灌进候选表；第二次巡检只取 `block > baseline` 的边。
+- 阈值：单笔 ≥ N 命中、与该地址累计 ≥ N 命中、两者都不满足时不入库。
+- 多库归属：同一对手方在两个库都有流水时取累计金额最大的库；后到更高累计时改判 `book` 并更新同一条 active 日志（不新增第二条）。
+- 撤回：删除自动写入地址 + 拉黑，再次巡检不再自动入库；已在库地址不重复写入。
+- 库间规模：`book_pair_stats` 按方向累计；关联强度分档（弱/中/强/极强）、3 笔升档、≥2 跳降档、交易所优先排序各有用例。
+
+**界面**（`.probe/ui_check_0700.py`）：
+- 巡检面板渲染出状态文案、阈值（30）、间隔、每日预算；点「入库日志」后 `#watch-log-panel` 取消 `hidden` 并显示条数。
+- 结果表表头含「关联强度」列，首行该列渲染 `.strength-badge`，`title` 带计算依据；`#related` 无 JS 报错。
+
+**回归**：`pytest -q` = **191 passed**；`node --check app/static/app.js` 通过。
+
+## 0.6.29 验证记录（2026-11-06）
+
+**后端**（`tests/test_timezone_display.py`，4 例）：
+- `db.iso_utc()` 对 naive 时间补 `+00:00`、对已带 tz 的时间不重复加；`to_beijing()` 换算正确。
+- 查询记录归档摘要里的时间带时区；地址库 `created_at` / `updated_at` 输出带时区。
+- 失败查询也会产生一条归档记录（含 `job` 字段：rounds / requests / stopped）。
+
+**界面**（`.probe/ui_check_0629.py`）：
+- 查询记录「完成时间（北京）」列显示的时与后端 UTC + 8 一致；地址库时间、本地索引任务时间同样按北京时间渲染，浏览器时区改动不影响结果。
+
+**回归**：`pytest -q` = **180 passed**；`node --check app/static/app.js` 通过。
+
+## 0.6.28 验证记录（2026-11-06）
+
+**后端**（`tests/test_official_exchange_lock.py`，9 例）：
+- 官方来源地址：`decide_exchange` / `decide_exchange_address` 拒绝改判并返回原因，人工来源地址可正常改判。
+- 只增不改：二次同步不改原主分类、名称、备注、所属库，只追加 `EXCHANGE` 并锁定；名单中消失的地址不被删除。
+- 多分类下 `大V + EXCHANGE` 被识别为已确认交易所，可用于关联终点/过滤/导出排除。
+- 导入、备份还原、往「人工确认/否定交易所」组移地址都动不了官方地址。
+- `GET /api/library/exchange-sync` 返回条数/最近同步/待提示新增地址，`ack` 后待提示清空。
+
+**界面**（`.probe/ui_check_0628.py`、`.probe/ui_check_0628_notice.py`）：
+- 官方地址行只显示「官方交易所 · 不可改判」，无「改为否定 / 重置」按钮；人工确认行仍可改判。
+- 「同步官方交易所地址」下方显示官方条数与最近同步时间；开机自动同步的新增地址提示只弹一次，`ack` 后刷新不再出现。
+
+**回归**：`pytest -q` = **176 passed**；`node --check app/static/app.js` 通过。
+
 ## 0.6.23 验证记录（2026-11-05）
 
 **后端**（`tests/test_merge_groups.py`，6 例）：

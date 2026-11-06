@@ -467,3 +467,61 @@ Set-Location G:\bittensor-wallet-link-intel
 - 副作用与取舍：GitHub 网页预览这三个 `.cmd` 会显示乱码（GBK 不是 UTF-8），但文件本身功能正常。
   如果以后要改内容，务必用支持 GBK 的编辑器另存，不要用只认 UTF-8 的工具直接覆盖。
 - 静态资源戳升至 `v=0.6.32`。
+
+## 32. 2026-11-06 0.6.28 交接：官方交易所默认导入、只增不改、判定锁定
+
+- **需求**：同步来的官方交易所不能改判；官方名单默认导入；同步只在出现新地址时增加，并提示新增了哪个地址。
+- **锁定**：`EXCHANGE` 分类本身不足以区分来源，新增判定来源标记——`source` 以 `taostats:` 开头（或 `exchange_locked=true`）视为官方来源。
+  前端 `isOfficialExchangeRow()` 命中后只渲染「官方交易所 · 不可改判」，不再给「改为否定 / 重置」按钮。
+- **服务端同样生效**（不能靠前端挡）：`decide_exchange`、`decide_exchange_address`、`update_library_categories`，
+  以及文件导入、备份还原、往「人工确认/否定交易所」组移地址，全部拒绝改动官方地址的分类与判定，接口返回明确原因。
+- **只增不改**：名单里没见过的地址才新增；已在库的地址保留原主分类、名称、备注、所属地址库，只把 `EXCHANGE` 追加进多分类并锁定
+  （官方名单为准，之前的人工否定会被纠正）；名单里消失的地址不删除。
+- **开机同步**：`_auto_sync_exchanges()` 在 `lifespan` 里跑一次，30 分钟内不重复请求，需要已保存 Taostats key；
+  运行期间不自动发请求。`AUTO_EXCHANGE_SYNC_ENABLED=False` 可整体关闭。
+- **新增地址提示**：同步结果写入 `data/settings.json` 的 `exchange_sync` 字段（条数、最近同步时间、待提示的新增地址），
+  前端只弹一次，`POST /api/library/exchange-sync/ack` 确认后不再重复。新增接口 `GET /api/library/exchange-sync`。
+- **身份判定口径变了**：交易所判定从「只看主分类」改为「看全部分类」，`大V + EXCHANGE` 这种组合也算已确认交易所
+  （影响关联终点、过滤、导出排除，`relation.py` / `service.py` 同步调整）。
+- 测试：新增 `tests/test_official_exchange_lock.py`（9 例），全量 **176 passed**。
+
+## 33. 2026-11-06 0.6.29 交接：时间统一北京时间，失败查询也留档
+
+- **时区 bug 根因**：库里存的是 UTC naive（`2026-11-05T08:30:15`），`isoformat()` 不带 tz，浏览器按本地时间解析 → 记录比实际早 8 小时，
+  用户看到的是「记录对不上」。不是写入错，是读出来少了时区标记。
+- **修法**：后端统一走 `db.iso_utc()`（naive 视为 UTC，输出带 `+00:00`）；前端所有时间统一走 `bjTime()`，
+  用 `Intl.DateTimeFormat` 固定 `Asia/Shanghai`，不管浏览器时区在哪都显示北京时间（`historyTime()` 转调它）。
+- 覆盖位置：查询记录完成时间、地址库创建/更新时间、导入批次时间、本地索引任务时间、两地址关联明细、关联路径每一跳、官方交易所最近同步。
+  列头统一标注「（北京）」。查询记录的时间语义是**本次查询结束时刻**，列头由「时间」改为「完成时间（北京）」。
+- **失败查询也归档**：原来只在成功/停止时写记录，失败就消失，导致记录条数与实际操作次数对不上；现在异常分支也落库，
+  `jobs.py` 补齐 `job` 字段（rounds / requests / stopped），点「查看结果」提示失败原因。
+- 导出历史地址的 TXT 文件名日期改用北京时间（原来用 UTC 日期，凌晨 0–8 点会显示成前一天）。
+- 测试：新增 `tests/test_timezone_display.py`（4 例），全量 **180 passed**。
+
+## 34. 2026-11-06 0.7.0 交接：地址库巡检自动入库、关联强度分级、本地索引自动扫描
+
+- **本地索引定期自动扫描**：`_local_scan_scheduler()` 每 `LOCAL_AUTO_SCAN_SECONDS=300` 扫 `LOCAL_AUTO_SCAN_BLOCKS=16` 块，不耗 Taostats 额度；
+  与手动扫描共用同一把 SQLite 扫描锁，不会并发。只补「启动之后」的新块，关机缺口不自动补。
+- **巡检（`app/watch.py`，新）**：
+  - 表：`watch_state`（每地址基线）、`watch_candidates`（候选累计）、`auto_import_log`（入库日志）、`book_pair_stats`（库间规模）、`watch_runs`（轮次）。
+  - **基线机制**：首次检查只写 `WatchState.last_block`，不灌历史对手方；之后只用 `block > baseline` 的边。否则第一次跑就会把整个历史关系灌进库。
+  - 阈值：单笔 ≥ N 或与该地址累计 ≥ N 任一命中，默认 30 TAO。归属库取 `(cumulative_tao, tx_count)` 最大者；
+    后到更高累计会自动改判 `book` 并更新同一条 active 日志（不是插两条）。
+  - 跳过：交易所、验证者、「系统」分类；自动入库的地址默认不追踪（`follow_auto_imported=False`）。
+  - 预算：`daily_budget` 默认 700 次/天，`_today_requests()` 汇总当天所有 run 的实际请求数；一轮跑不完下次接着跑（`last_checked_at` 轮转 + `before=run.started_at`，天然收敛）。
+  - 调度：`_watch_scheduler()` 每 `WATCH_TICK_SECONDS=30` 调 `tick(1)`，约 4 请求/分钟，卡在 Taostats 5 次/分钟限速内。
+  - 撤回：删掉自动写入的地址并把地址拉进 `WatchState` 黑名单，之后不再自动入库。
+- **关联强度**：`LinkPolicy` 新增 `medium_tao=30 / strong_tao=100 / extreme_tao=1000`；`_strength_for()` 按累计金额分档，
+  `tx_count>=3` 升一档（极强封顶），`depth>=2` 降一档，库间规模同档内 +8 分微调（不改档位）。
+  `RelatedAddress` 增加 `strength / strength_score / strength_reason`，前端悬停看依据；老归档没有 strength 字段时由 `fallbackStrength()` 现算。
+- **排序改为**「是否交易所 → 关联强度 → 层级 → 累计金额 → 地址」，交易所（官方 + 人工确认）永远第一。
+- **坑**：`policy.to_dict()` 里的 `Decimal` 进 `json.dumps` 会抛 `Object of type Decimal is not JSON serializable`，
+  被 jobs 吞成 warning（归档静默失败）。新增阈值字段一律 `str()` 化。
+- 新增接口：`GET /api/watch/status`、`POST /api/watch/config`、`POST /api/watch/run`、`GET /api/library/auto-import-log`、
+  `POST /api/library/auto-import-log/{id}/revoke`、`POST /api/library/auto-import-log/revoke-address`。
+- 配置持久化：`settings_store.DEFAULT_WATCH_CONFIG`（enabled / interval_minutes=1440 / threshold_tao=30 / include_stake / daily_budget=700 / auto_import / follow_auto_imported）。
+- 测试：`tests/test_watch.py`（11 例），全量 **191 passed**。静态资源戳升至 `v=0.7.0`。
+- **做不到的**：巡检不是实时监控（690 个地址一轮约 690~1380 次请求，受每天 700 次预算约束，跨天续跑）；
+  库间规模只统计本机已抓数据，不是链上全量；子网代币转移的覆盖度受 Taostats 端点粒度限制。
+- **文档同步（同版本补提交）**：`README.md` 版本号升到 0.7.0、「已实现」列表重排为 1–41（0.7.0 三条落在 39–41）；
+  `docs/DESIGN_FEASIBILITY.md` 文档版本与实现状态同步；本章与第 32、33 章补齐；`docs/VERIFICATION.md` 补 0.6.28 / 0.6.29 / 0.7.0 验证记录。
