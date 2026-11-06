@@ -39,6 +39,7 @@ from .db import (
 from . import license as license_mod
 from . import interlink
 from . import settings_store
+from .builtin_addresses import BUILTIN_SOURCE_PREFIX, builtin_entries, is_builtin_source
 from .inputs import InputError, parse_plain_addresses, read_addresses
 from .relation import discover, exchange_balance_candidates
 from .relation_config import LibraryEntry, LinkPolicy
@@ -104,12 +105,20 @@ MAX_BOOK_ADDRESSES = 5000
 OFFICIAL_EXCHANGE_SOURCE = "taostats:/v1/exchange-addresses"
 OFFICIAL_EXCHANGE_SOURCE_PREFIX = "taostats:"
 OFFICIAL_EXCHANGE_LABEL = "官方交易所"
+# 官方验证者名单（Taostats /v1/validators/active）：同步进库后作为验证者，
+# 查询时和人工标记的验证者一样是关联终点。
+OFFICIAL_VALIDATOR_SOURCE = "taostats:/v1/validators/active"
+# 结论固定、不接受人工改判的来源：官方同步 + 内置固定名单。
+LOCKED_SOURCE_PREFIXES = (OFFICIAL_EXCHANGE_SOURCE_PREFIX, BUILTIN_SOURCE_PREFIX)
 
 
 def is_official_exchange_source(source: str | None) -> bool:
-    """来源是否为官方交易所名单同步（这类记录的交易所结论不允许人工改判）。"""
+    """来源是否为「结论固定」的名单（官方同步 / 内置固定）。
 
-    return str(source or "").strip().startswith(OFFICIAL_EXCHANGE_SOURCE_PREFIX)
+    这类记录的交易所结论不允许人工改判，删除和改分类也会被拒绝。
+    """
+
+    return str(source or "").strip().startswith(LOCKED_SOURCE_PREFIXES)
 
 
 def row_has_category(row: AddressLibrary, name: str) -> bool:
@@ -127,6 +136,22 @@ def is_official_exchange_row(row: AddressLibrary) -> bool:
     return is_official_exchange_source(getattr(row, "source", "")) and row_has_category(
         row, "EXCHANGE"
     )
+
+
+def is_builtin_row(row: AddressLibrary) -> bool:
+    """是否为内置固定名单地址（不能删除、不能改分类）。"""
+
+    return is_builtin_source(getattr(row, "source", ""))
+
+
+def locked_row_message(row: AddressLibrary) -> str:
+    """固定名单记录的拒绝提示；不是固定名单返回空串。"""
+
+    if is_builtin_row(row):
+        return "该地址来自内置固定名单（交易所/验证者/公共地址），分类与判定都已固定，不能人工修改"
+    if is_official_exchange_row(row):
+        return "该地址来自官方交易所名单（系统同步），分类与判定都已固定，不能人工修改"
+    return ""
 
 
 def normalize_category(value: str | None, *, allow_system: bool = True) -> str:
@@ -363,6 +388,8 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
         # 官方名单同步来的交易所：判定固定，界面不给改判入口，接口也会拒绝。
         "exchange_locked": official,
         "exchange_source": "official" if official else "",
+        # 内置固定名单（随版本预置的交易所/验证者/公共地址）：不能删除、不能改分类。
+        "builtin_locked": is_builtin_row(row),
         "created_at": iso_utc(row.created_at),
         "updated_at": iso_utc(row.updated_at),
     }
@@ -1203,10 +1230,9 @@ class LinkService:
             current = db.get(AddressLibrary, row_id)
             if current is None:
                 raise InputError("address not found")
-            if is_official_exchange_row(current):
-                raise InputError(
-                    "该地址来自官方交易所名单（系统同步），分类与判定都已固定，不能人工修改"
-                )
+            lock_message = locked_row_message(current)
+            if lock_message:
+                raise InputError(lock_message)
             for name in values:
                 self._ensure_category(db, name)
             current.category = values[0]
@@ -1377,6 +1403,10 @@ class LinkService:
             )
             if row is None and not marked:
                 return {"saved": True, "item": None, "marked": False}
+            if row is not None and not marked and is_builtin_row(row):
+                raise InputError(
+                    "该地址来自内置固定名单（公共地址），不能取消标记"
+                )
             if row is None:
                 row = AddressLibrary(
                     address=address,
@@ -1404,6 +1434,84 @@ class LinkService:
                     remaining = [DEFAULT_CATEGORY, *remaining]
                 row.categories = encode_categories(remaining or [DEFAULT_CATEGORY])
             return {"saved": True, "item": address_dict(row), "marked": bool(marked)}
+
+    def ensure_builtin_addresses(self) -> dict[str, Any]:
+        """把内置固定名单（交易所/验证者/公共地址）幂等写进地址库。
+
+        规则和官方名单同步一致，但来源是随版本发布的常量：
+
+        - 库里没有的地址 → 新建一条系统分类记录，交易所直接锁定为已确认；
+        - 库里已有的地址 → 保留主分类、名称、备注、所属地址库，只把系统
+          分类补进多分类；内置来源优先于人工来源，但不覆盖官方同步标记；
+        - 只补不删：名单调整后，旧地址仍留在库里，避免误删用户整理的数据。
+
+        每次启动调用一次即可，重复调用不会产生重复行。
+        """
+
+        inserted: list[dict[str, str]] = []
+        locked: list[dict[str, str]] = []
+        skipped = 0
+        with self.database.session() as db:
+            for item in builtin_entries():
+                address = item.address.strip()
+                if not is_valid_ss58(address):
+                    skipped += 1
+                    continue
+                current = db.scalar(
+                    select(AddressLibrary).where(AddressLibrary.address == address)
+                )
+                if current is None:
+                    db.add(
+                        AddressLibrary(
+                            address=address,
+                            label=item.label,
+                            category=item.category,
+                            categories=encode_categories([item.category]),
+                            note="",
+                            source=item.source,
+                            exchange_confirmed=item.category == "EXCHANGE",
+                            exchange_rejected=False,
+                        )
+                    )
+                    inserted.append({"address": address, "label": item.label})
+                    continue
+                changed = False
+                if not row_has_category(current, item.category):
+                    # 主分类留给用户维护（比如「大V」「rrik」），系统身份追加到多分类。
+                    current.categories = encode_categories(
+                        [*row_categories(current), item.category]
+                    )
+                    changed = True
+                # 官方同步标记保持不动，其余来源改成内置（锁定删除与改分类）。
+                if not str(current.source or "").strip().startswith(
+                    OFFICIAL_EXCHANGE_SOURCE_PREFIX
+                ) and current.source != item.source:
+                    current.source = item.source
+                    changed = True
+                if item.category == "EXCHANGE" and (
+                    not current.exchange_confirmed or current.exchange_rejected
+                ):
+                    current.exchange_confirmed = True
+                    current.exchange_rejected = False
+                    changed = True
+                if not current.label.strip():
+                    current.label = item.label
+                    changed = True
+                if changed:
+                    locked.append(
+                        {
+                            "address": address,
+                            "label": current.label.strip() or item.label,
+                        }
+                    )
+        return {
+            "inserted": len(inserted),
+            "updated": len(locked),
+            "skipped": skipped,
+            "total": len(inserted) + len(locked),
+            "inserted_addresses": inserted,
+            "updated_addresses": locked,
+        }
 
     def sync_exchange_addresses(self) -> dict[str, Any]:
         """把官方交易所名单导进地址库（只增不改人工内容）。
@@ -1527,6 +1635,103 @@ class LinkService:
             }
         )
         return result
+
+    def sync_validator_addresses(self) -> dict[str, Any]:
+        """把 Taostats 当前活跃验证者名单同步进地址库（只增不改人工内容）。
+
+        验证者的热钱包/冷钱包会和押注、解押、子网质押产生海量流水，一次
+        查询很容易被它们的转账噪音灌满，所以同步进来后和人工标记的验证者
+        一样：查到即作为关联终点，不再向下扩展。
+
+        规则与官方交易所同步一致：新地址建 VALIDATOR 记录；已有地址保留
+        主分类、名称、备注，只把「VALIDATOR」补进多分类；名单里消失的地址
+        不删除。
+        """
+
+        try:
+            addresses, from_cache = get_active_validator_addresses()
+        except (TaostatsAuthError, TaostatsRateLimitError, TaostatsUnavailableError) as exc:
+            if getattr(exc, "request_made", False):
+                self.database.record_api_request(
+                    "/v1/validators/active",
+                    status_code=getattr(exc, "status_code", None),
+                    success=False,
+                )
+            raise
+        if not from_cache:
+            self.database.record_api_request("/v1/validators/active", success=True)
+
+        raw = {(str(value or "").strip()) for value in addresses}
+        valid = sorted(value for value in raw if value and is_valid_ss58(value))
+        invalid_count = len([value for value in raw if value]) - len(valid)
+        source = OFFICIAL_VALIDATOR_SOURCE
+
+        inserted_addresses: list[dict[str, str]] = []
+        locked_addresses: list[dict[str, str]] = []
+        skipped = 0
+        with self.database.session() as db:
+            existing: dict[str, AddressLibrary] = {}
+            for index in range(0, len(valid), 400):
+                chunk = valid[index : index + 400]
+                for row in db.scalars(
+                    select(AddressLibrary).where(AddressLibrary.address.in_(chunk))
+                ).all():
+                    existing[row.address] = row
+            for address in valid:
+                current = existing.get(address)
+                if current is None:
+                    db.add(
+                        AddressLibrary(
+                            address=address,
+                            label="",
+                            category="VALIDATOR",
+                            categories=encode_categories(["VALIDATOR"]),
+                            note="",
+                            source=source,
+                            exchange_confirmed=False,
+                            exchange_rejected=False,
+                        )
+                    )
+                    inserted_addresses.append(
+                        {
+                            "address": address,
+                            "label": default_address_label(address),
+                        }
+                    )
+                    continue
+                changed = False
+                if not row_has_category(current, "VALIDATOR"):
+                    current.categories = encode_categories(
+                        [*row_categories(current), "VALIDATOR"]
+                    )
+                    changed = True
+                # 官方交易所 / 内置来源更「固定」，不覆盖它们的 source。
+                if not str(current.source or "").strip().startswith(LOCKED_SOURCE_PREFIXES):
+                    current.source = source
+                    changed = True
+                if changed:
+                    locked_addresses.append(
+                        {
+                            "address": address,
+                            "label": current.label.strip()
+                            or default_address_label(address),
+                        }
+                    )
+                else:
+                    skipped += 1
+        synced_at = utcnow().isoformat()
+        return {
+            "inserted": len(inserted_addresses),
+            "updated": len(locked_addresses),
+            "skipped": skipped,
+            "inserted_addresses": inserted_addresses,
+            "locked_addresses": locked_addresses,
+            "official_total": len(valid),
+            "invalid_count": invalid_count,
+            "from_cache": from_cache,
+            "source": source,
+            "synced_at": synced_at,
+        }
 
     def exchange_sync_status(self) -> dict[str, Any]:
         """官方交易所名单的同步状态：总条数、最近一次同步与待提示的新增地址。"""
@@ -2149,7 +2354,11 @@ class LinkService:
 
         book_name = self._clean_book_name(name)
         with self.database.session() as db:
-            rows = self._book_rows(db, book_name)
+            book_rows = self._book_rows(db, book_name)
+            # 内置固定名单（如人工确认交易所）只是恰好归在这个库里，不能跟着
+            # 解散一起删掉，否则下次启动又会补回来，用户会以为删除失败。
+            rows = [row for row in book_rows if not is_builtin_row(row)]
+            kept_builtin = len(book_rows) - len(rows)
             registry = db.scalar(select(AddressBook).where(AddressBook.name == book_name))
             if not rows and registry is None:
                 raise InputError("地址库不存在")
@@ -2174,6 +2383,8 @@ class LinkService:
             "dissolved": True,
             "name": book_name,
             "deleted": len(snapshots),
+            # 内置固定名单留在库里，不算删除。
+            "kept_builtin": kept_builtin,
             # 兼容旧前端字段：解散不再保留地址。
             "addresses_kept": 0,
         }
@@ -2534,6 +2745,10 @@ class LinkService:
             row = db.get(AddressLibrary, row_id)
             if row is None:
                 return False
+            if is_builtin_row(row):
+                raise InputError(
+                    "该地址来自内置固定名单（交易所/验证者/公共地址），不能删除"
+                )
             db.delete(row)
             return True
 
@@ -2545,6 +2760,12 @@ class LinkService:
             return int(
                 db.query(AddressLibrary)
                 .filter(AddressLibrary.id.in_(ids))
+                # 内置固定名单不参与批量删除（它们会在下次启动自动补回）。
+                .filter(
+                    ~func.coalesce(AddressLibrary.source, "").startswith(
+                        BUILTIN_SOURCE_PREFIX
+                    )
+                )
                 .delete(synchronize_session=False)
             )
 

@@ -569,3 +569,22 @@ Set-Location G:\bittensor-wallet-link-intel
 - **前端**：结果行 `.library-decision-cell` 里「交易所结论 + 公共地址按钮」竖排；地址库行分类单元格里两个控件并排。`decidePublic()` 只在 `#result` 面板可见时才 `renderResult()`，否则在地址库页点按钮会被跳回结果页。
 - **样式**：`.public-tag` 用主题变量 `--warn / --warn-soft`（不要再写死 `#b4761a`，深色主题下会看不清）。
 - **验收**：`.probe/ui_check_072.py`（导出按钮文案/禁用态随勾选变化、`#filter-publics` 存在、每行都有「标为公共地址」）；接口层实测 707 库里勾 2 条导出就是 2 条、文件名 `-selected-2`；`pytest -q` = **197 passed**（新增 `tests/test_public_address.py` 6 条）。
+
+## 37. 2026-11-06 0.7.3 交接：验证者终止关联、同步验证者名单、内置固定名单
+
+- **需求原话**：「已知地址库同步官方交易所地址边上增加一个同步验证者地址，验证者地址一样需要终止关联。比如 `5HK5…REpeN` 就是验证者地址，出现很多无效关联。人工确定的交易所地址和验证者地址，公共地址都要在今后的版本里直接预置固定。」（附 5 个交易所地址 + 1 个验证者地址）
+- **终止规则**：`relation.discover()` 的 `terminal_exchange_addresses` 加 `_entry_has(entry, "VALIDATOR")`；`_role_for_address()` 本来就有 VALIDATOR 分支，不用改。`exchange_balance_candidates()` 原来用 `entry.category == "VALIDATOR"` 只看主分类，改成 `_entry_has()`，否则「大V + VALIDATOR」会漏。
+  - **验证者不再参与「待确认交易所」余额探测**，也顺手把 PUBLIC 一起排除了。
+  - 注意：`filter_validators`（勾选后连本人一起排除）保持原样，两道开关互不替代：**终止 = 不展开下游，过滤 = 连本人也不显示**。
+- **同步验证者**：`LinkService.sync_validator_addresses()` 复用 `taostats.get_active_validator_addresses()`（返回 set，无名称），插入 `category=VALIDATOR`、`source=taostats:/v1/validators/active`；已有地址保留主分类/名称/备注，只追加 VALIDATOR。接口 `POST /api/library/import-validators`，401/429/502 与交易所同步一致。
+  - **真实账户一次会新增约 1200 条**（Taostats 名单同时含每个子网的验证者 hotkey 和 coldkey）。这是预期量级，不是 bug；地址库清单会折叠成「验证者（系统）· 未命名」一组，巡检也跳过验证者，不会多花请求额度。
+  - `source` 只在当前来源不是 `taostats:` / `builtin:` 时才改写，避免把已锁定的交易所来源冲掉。
+- **内置固定名单**：新增 `app/builtin_addresses.py`，三个元组 + `BuiltinAddress`（`source = builtin:<category>`）。`LinkService.ensure_builtin_addresses()` 在 `main.lifespan` 里调用（`BUILTIN_ADDRESSES_ENABLED`），幂等 upsert：只补分类/来源/交易所确认，不删不改用户内容。
+  - **新增地址只需在元组里加一行**，不用改数据库、不用改同步逻辑；公共地址元组已预留。
+  - `is_official_exchange_source()` 的前缀从 `taostats:` 扩展为 `("taostats:", "builtin:")`（`LOCKED_SOURCE_PREFIXES`），于是 `exchange_locked`、`decide_exchange`、`update_library_categories` 这些既有保护自动覆盖内置记录；新增 `is_builtin_row()` / `locked_row_message()` 用于「内置验证者/公共地址」这种非交易所行的拒绝提示。
+  - 删除保护三处：`remove_address()` 抛 `InputError`（接口 409）、`remove_addresses()` 用 `~coalesce(source,"").startswith("builtin:")` 过滤、`dissolve_address_book()` 跳过并返回 `kept_builtin`。
+  - `decide_public_address(..., marked=False)` 对内置行拒绝取消；`address_dict()` 下发 `builtin_locked`，前端据此禁用勾选框/删除按钮、显示「内置固定」。
+  - `relation.py` 里 `exchange_locked` 的前缀判断也要同步加 `builtin:`，否则结果页会给出可改判按钮。
+- **1 级路径明细**：`relatedTable()` 里按钮条件从 `path_transfers.length > 1` 改成 `>= 1`。后端本来就对 1 级返回 1 跳，只是前端藏了按钮。
+- **前端**：`#sync-validators` 紧跟 `#sync-exchanges`，`syncValidatorLibrary()` 与交易所同步同结构；`updateLibrarySelection()` 的选择器改成 `[data-library-select]:not(:disabled)`，否则内置行（禁用勾选框）会让「全选」永远达不到全部。
+- **验收**：`tests/test_builtin_addresses.py` 8 条；`.probe/ui_check_073.py` 在 1440/1180/1024 三档确认按钮单行、无溢出、内置行锁定、1 级路径可展开；`pytest -q` = **205 passed**。

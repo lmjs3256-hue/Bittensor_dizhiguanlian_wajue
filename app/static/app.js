@@ -349,7 +349,7 @@ async function clearTaostatsKey() {
 function isOfficialExchangeRow(row) {
   if (row && row.exchange_locked) return true;
   const source = String((row && (row.library_source || row.source)) || "");
-  return source.startsWith("taostats:");
+  return source.startsWith("taostats:") || source.startsWith("builtin:");
 }
 
 // 交易所身份可能追加在多分类里（例如「大V + EXCHANGE」），不只看主分类。
@@ -360,6 +360,9 @@ function isLibraryExchangeRow(row) {
 }
 
 function librarySourceCell(row) {
+  if (row.builtin_locked) {
+    return `<span class="tag" title="来源：${esc(row.source || "")}（随版本预置，不能删除或改分类）">内置固定</span>`;
+  }
   if (row.exchange_locked) {
     return `<span class="tag" title="来源：${esc(row.source || "")}">官方交易所名单</span>`;
   }
@@ -376,7 +379,8 @@ function exchangeDecisionControl(row) {
   // 官方名单同步来的地址判定固定：放在最前面判断，避免“大V + EXCHANGE”
   // 这种主分类不是 EXCHANGE 的地址漏出“标为交易所”按钮。
   if (isOfficialExchangeRow(row)) {
-    return `<div class="exchange-decision"><span class="tag" title="来自官方交易所名单（系统同步），判定固定，不能人工改判">官方交易所 · 不可改判</span></div>`;
+    const builtin = String(row.library_source || row.source || "").startsWith("builtin:");
+    return `<div class="exchange-decision"><span class="tag" title="${builtin ? "来自内置固定名单（随版本预置），判定固定，不能人工改判" : "来自官方交易所名单（系统同步），判定固定，不能人工改判"}">${builtin ? "内置固定" : "官方交易所"} · 不可改判</span></div>`;
   }
   const btn = (decision, text, title, css = "ghost") =>
     `<button class="${css} note-save" data-exchange-decision="${decision}" data-address="${address}" title="${esc(title)}" type="button">${text}</button>`;
@@ -446,8 +450,8 @@ function relatedTable(rows) {
     // 标记后其下游只经由它连通的地址会在刷新后自动消失。已下结论的地址也保留
     // 改判入口，避免一次误点后无法纠正。
     const exchangeActions = exchangeDecisionControl(row);
-    // 2/3 级关联：展示「路径明细」按钮，展开从起始地址到该地址的逐笔转账。
-    const pathButton = (row.path_transfers || []).length > 1
+    // 1/2/3 级关联都展示「路径明细」：1 级是一笔直达转账，2/3 级是逐笔链路。
+    const pathButton = (row.path_transfers || []).length >= 1
       ? `<button class="ghost note-save" data-path-toggle="${esc(row.address)}" type="button" title="从起始地址到该地址的逐笔转账记录">路径明细</button>`
       : "";
     const removeButton = `<button class="ghost copy-address remove-relation" data-remove-relation="${esc(row.address)}" title="确认非同一人？移除后点「刷新结果」，这条线索的下游地址也会一并消失" type="button">移除关联</button>`;
@@ -1178,13 +1182,17 @@ function libraryRowsTable(rows) {
     const exchangeControl = !isLibraryExchangeRow(row)
       ? ""
       : row.exchange_locked
-        ? `<div class="exchange-confirm-control"><span class="tag" title="来自官方交易所名单（系统同步），判定固定，不能人工改判">官方交易所 · 不可改判</span></div>`
+        ? `<div class="exchange-confirm-control"><span class="tag" title="${row.builtin_locked ? "来自内置固定名单（随版本预置），判定固定，不能人工改判" : "来自官方交易所名单（系统同步），判定固定，不能人工改判"}">${row.builtin_locked ? "内置固定" : "官方交易所"} · 不可改判</span></div>`
         : row.exchange_confirmed
           ? `<div class="exchange-confirm-control"><span class="tag">已人工确认</span><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" title="判错了？改成否定，该地址不再进入交易所过滤" type="button">改为否定</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" title="清除人工结论，回到待确认" type="button">重置</button></div>`
           : row.exchange_rejected
             ? `<div class="exchange-confirm-control"><span class="tag warn">已人工否定</span><button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" title="判错了？改成确认为交易所" type="button">改为交易所</button><button class="ghost note-save" data-library-exchange-decision="reset" data-row-id="${row.id}" title="清除人工结论，回到待确认" type="button">重置</button></div>`
             : `<div class="exchange-confirm-control"><span class="tag warn">待人工确认</span><button class="secondary note-save" data-library-exchange-decision="confirm" data-row-id="${row.id}" type="button">确认交易所</button><button class="ghost note-save" data-library-exchange-decision="reject" data-row-id="${row.id}" type="button">否定交易所</button></div>`;
-    const publicControl = `<div class="public-confirm-control">${isLibraryPublicRow(row)
+    const publicControl = row.builtin_locked
+      ? isLibraryPublicRow(row)
+        ? `<div class="public-confirm-control"><span class="tag public-tag" title="内置固定名单：公共地址，查询时查到即终止">公共地址（内置）</span></div>`
+        : ""
+      : `<div class="public-confirm-control">${isLibraryPublicRow(row)
       ? `<span class="tag public-tag" title="人工标记的公共地址：查询时作为关联终点，查到即截止">公共地址</span><button class="ghost note-save" data-public-decision="unmark" data-address="${esc(row.address)}" title="取消公共地址标记：只移除 PUBLIC 分类，不影响原有分类" type="button">取消公共标记</button>`
       : `<button class="ghost note-save" data-public-decision="mark" data-address="${esc(row.address)}" title="公共地址（中转、发币池、公共充值地址等）会和大量不确定钱包往来；标记后查询时作为关联终点，查到即截止" type="button">标为公共地址</button>`}</div>`;
     const bookCell = row.book ? `<span class="tag">${esc(row.book)}</span>` : "-";
@@ -1200,13 +1208,15 @@ function libraryRowsTable(rows) {
     // 分类是「组」的属性：单条地址不单独改分类，改分类在组标题上做。
     const editorRow = "";
     return `<tr>
-      <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"></td>
+      <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"${row.builtin_locked ? ' disabled title="内置固定名单地址，不能批量删除"' : ""}></td>
       <td class="mono address library-address-cell"><div class="address-main">${addressLink(row.address, row.address)}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button></div></td>
       <td class="library-label-cell">${labelCell}</td>
       <td><div class="category-chips">${chips}</div>${exchangeControl}${publicControl}</td>
       <td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td>
       <td>${bookCell}</td><td>${librarySourceCell(row)}</td>
-      <td><button class="danger" data-delete-address="${row.id}" type="button">删除</button></td>
+      <td>${row.builtin_locked
+        ? '<button class="danger" disabled title="内置固定名单地址（随版本预置），不能删除">内置锁定</button>'
+        : `<button class="danger" data-delete-address="${row.id}" type="button">删除</button>`}</td>
     </tr>${editorRow}`;
   }).join("");
   // 包一层 .table-wrap：列多时（地址 + 复制按钮）可横向滚动，避免名称/来源被挤成竖排。
@@ -1297,7 +1307,8 @@ function libraryTable(rows) {
 }
 
 function updateLibrarySelection() {
-  const checkboxes = [...document.querySelectorAll("[data-library-select]")];
+  // 内置固定名单的复选框是禁用的：选中/全选只统计可删除的行。
+  const checkboxes = [...document.querySelectorAll("[data-library-select]:not(:disabled)")];
   const selected = checkboxes.filter((checkbox) => checkbox.checked).length;
   const button = $("#delete-selected");
   button.disabled = selected === 0;
@@ -1320,7 +1331,7 @@ function updateLibrarySelection() {
   // 每个标签组自己的「全选本组」：全选 / 部分选中（半选）/ 未选。
   document.querySelectorAll("[data-library-details]").forEach((container) => {
     const groupId = container.dataset.libraryDetails;
-    const boxes = [...container.querySelectorAll("[data-library-select]")];
+    const boxes = [...container.querySelectorAll("[data-library-select]:not(:disabled)")];
     const checked = boxes.filter((checkbox) => checkbox.checked).length;
     const toggle = document.querySelector(`[data-group-select="${groupId}"]`);
     if (toggle) {
@@ -2523,6 +2534,32 @@ async function syncExchangeLibrary() {
   }
 }
 
+async function syncValidatorLibrary() {
+  const button = $("#sync-validators");
+  button.disabled = true;
+  button.textContent = "同步中…";
+  try {
+    const data = await api("/api/library/import-validators", { method: "POST" });
+    await loadLibrary();
+    const added = data.inserted_addresses || [];
+    const locked = data.locked_addresses || [];
+    const cacheText = data.from_cache ? "（使用 5 分钟内缓存）" : "";
+    const parts = [];
+    if (added.length) parts.push(`新增 ${added.length} 个验证者地址`);
+    if (locked.length) parts.push(`${locked.length} 个已有地址补上了验证者标记`);
+    if (!added.length && !locked.length) parts.push("没有新增验证者地址，名单已是最新");
+    toast(
+      `验证者同步完成：${parts.join("；")}。名单共 ${data.official_total ?? 0} 个${cacheText}。` +
+      "这些地址会作为关联终点，查到即终止，不再向下扩展。"
+    );
+  } catch (error) {
+    toast(`验证者地址同步失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "同步验证者地址";
+  }
+}
+
 // -- 地址库巡检 / 自动入库 ---------------------------------------------------
 const WATCH_RUN_LABEL = {
   running: "进行中",
@@ -3209,6 +3246,7 @@ $("#add-address").addEventListener("click", addAddress);
 $("#choose-file").addEventListener("click", () => $("#library-file").click());
 $("#library-file").addEventListener("change", (event) => { if (event.target.files[0]) uploadLibrary(event.target.files[0]); });
 $("#sync-exchanges").addEventListener("click", syncExchangeLibrary);
+$("#sync-validators").addEventListener("click", syncValidatorLibrary);
 $("#watch-save").addEventListener("click", saveWatchConfig);
 $("#watch-run").addEventListener("click", runWatchNow);
 $("#watch-logs-toggle").addEventListener("click", toggleWatchLogs);

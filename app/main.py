@@ -43,6 +43,8 @@ VERSION_INFO = read_version_info()
 SEED_BOOKS_ENABLED = True
 # 官方交易所名单默认导入：每次启动在后台静默同步一次（有 key 才发请求）。
 AUTO_EXCHANGE_SYNC_ENABLED = True
+# 内置固定名单（人工确认的交易所/验证者/公共地址）：每次启动幂等写入地址库。
+BUILTIN_ADDRESSES_ENABLED = True
 # 地址库巡检：调度器每 30 秒推进一个地址（≈每地址 1~2 次请求，卡在 5 次/分钟以内）。
 WATCH_TICK_SECONDS = 30
 # 本地索引定期自动扫描：默认每 5 分钟扫 16 个新块，不消耗 API 额度。
@@ -70,6 +72,13 @@ async def lifespan(_app: FastAPI):
             install_seed_books(DATABASE)
     except Exception as exc:  # noqa: BLE001 - 预置库导入失败不应拦住服务启动
         print(f"[seed_books] 预置地址库导入失败：{exc}", file=sys.stderr)
+    # 内置固定名单（人工确认的交易所/验证者/公共地址）：每次启动幂等补进
+    # 地址库，升级后新增的地址自动生效，不依赖 Taostats 是否配置了 key。
+    try:
+        if BUILTIN_ADDRESSES_ENABLED:
+            SERVICE.ensure_builtin_addresses()
+    except Exception as exc:  # noqa: BLE001 - 内置名单写入失败不应拦住服务启动
+        print(f"[builtin] 内置固定名单写入失败：{exc}", file=sys.stderr)
     # 上次保存过 Taostats key 就自动装回内存，避免每次重启都要重填。
     if not taostats_is_configured():
         saved_key = settings_store.load_api_key()
@@ -647,8 +656,11 @@ def dissolve_address_book(name: str, svc: Annotated[LinkService, Depends(service
 
 @app.delete("/api/library/{row_id}")
 def delete_address(row_id: int, svc: Annotated[LinkService, Depends(service)]):
-    if not svc.remove_address(row_id):
-        raise HTTPException(404, "address not found")
+    try:
+        if not svc.remove_address(row_id):
+            raise HTTPException(404, "address not found")
+    except InputError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {"ok": True}
 
 
@@ -902,6 +914,20 @@ async def import_library(
 def import_exchange_addresses(svc: Annotated[LinkService, Depends(service)]):
     try:
         return svc.sync_exchange_addresses()
+    except TaostatsAuthError as exc:
+        raise HTTPException(401, str(exc)) from exc
+    except TaostatsRateLimitError as exc:
+        raise HTTPException(429, str(exc)) from exc
+    except TaostatsUnavailableError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/api/library/import-validators")
+def import_validator_addresses(svc: Annotated[LinkService, Depends(service)]):
+    """同步 Taostats 当前活跃验证者名单：进库后作为关联终点，不再向下扩展。"""
+
+    try:
+        return svc.sync_validator_addresses()
     except TaostatsAuthError as exc:
         raise HTTPException(401, str(exc)) from exc
     except TaostatsRateLimitError as exc:

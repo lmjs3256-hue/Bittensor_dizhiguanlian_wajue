@@ -70,7 +70,8 @@ def exchange_balance_candidates(
         if entry and (
             entry.exchange_confirmed
             or entry.exchange_rejected
-            or entry.category == "VALIDATOR"
+            or _entry_has(entry, "VALIDATOR")
+            or _entry_has(entry, "PUBLIC")
         ):
             continue
         recent, counterparties, gross_tao = _recent_activity_for_exchange(address, records)
@@ -413,17 +414,18 @@ def discover(
                 book=getattr(entry, "book", "") or "",
             )
 
-    # 关联终点：已人工确认的交易所地址、人工在标签/备注里写明「交易所」的
-    # 地址、人工标记的公共地址（PUBLIC），以及被分到「系统」分类的地址。
-    # 它们仍会作为关联地址出现在结果里，但不再向下扩展其转账。
-    # 公共地址和交易所同性质：会和大量不确定钱包产生往来，不截止就会把
-    # 结果灌满噪音，也白白消耗 Taostats 请求额度。
+    # 关联终点：已人工确认的交易所地址、验证者地址（人工标记或官方名单
+    # 同步）、人工在标签/备注里写明「交易所」的地址、人工标记的公共地址
+    # （PUBLIC），以及被分到「系统」分类的地址。它们仍会作为关联地址出现
+    # 在结果里，但不再向下扩展其转账。
+    # 验证者同理：热/冷钱包每天都在押注、解押、子网质押，不截止会把结果
+    # 灌满噪音，也白白消耗 Taostats 请求额度。
     terminal_exchange_addresses = {
         address
         for address, entry in library_map.items()
         if (
             _entry_has(entry, "EXCHANGE") and entry.exchange_confirmed
-        ) or _entry_has(entry, "PUBLIC") or (
+        ) or _entry_has(entry, "VALIDATOR") or _entry_has(entry, "PUBLIC") or (
             not (_entry_categories(entry) & {"EXCHANGE", "VALIDATOR", "PUBLIC"})
             and not entry.exchange_rejected
             and ("交易所" in entry.note or "交易所" in entry.label)
@@ -647,7 +649,7 @@ def discover(
                 exchange_rejected=entry.exchange_rejected if entry else False,
                 exchange_locked=bool(
                     entry
-                    and str(entry.source or "").startswith("taostats:")
+                    and str(entry.source or "").startswith(("taostats:", "builtin:"))
                     and _entry_has(entry, "EXCHANGE")
                 ),
                 stake_transfer_count=sum(

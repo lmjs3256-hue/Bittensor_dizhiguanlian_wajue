@@ -1,5 +1,29 @@
 # 验证交付记录
 
+## 0.7.3 验证记录（2026-11-06）
+
+**验证者终止关联**（`tests/test_builtin_addresses.py`）：
+- 内置验证者 `5HK5…REpeN` 与人工同步来源（`taostats:/v1/validators/active` + 多分类 VALIDATOR）两种情况都验证过：`SEED → 验证者 → DOWNSTREAM` 结构下，验证者保留在结果里、`DOWNSTREAM` 不出现；验证者行 `address_role` 为「人工确认验证者」。
+- `exchange_balance_candidates` 的验证者判断从「只看主分类」改成读全部分类，`大V + VALIDATOR` 这种组合不会再被当成交易所候选去查余额。
+
+**同步验证者地址**（真实 Taostats 账户实测）：
+- `POST /api/library/import-validators` → `inserted=1194`、`updated=1`（内置验证者补上官方分类）、`skipped=1`；返回体含新增地址明细与 `official_total`，与交易所同步同结构。
+- 第二次同步（5 分钟进程缓存内）不再新增：`inserted=0`、`updated=0`、`skipped=2`，`from_cache=true`。
+- 库内总计 708 → 1902 条；新增记录 `category=VALIDATOR`、`source=taostats:/v1/validators/active`，名称留空显示地址后四位，地址库清单折叠在「验证者（系统）· 未命名」一组里。
+
+**内置固定名单**（`app/builtin_addresses.py`，真实库启动实测）：
+- 启动后 `source like 'builtin:%'` 共 6 条：5 个交易所（`builtin:exchange`）+ 1 个验证者（`builtin:validator`）。
+- 已存在的人工交易所（4 条）沿用原记录、来源改为 `builtin:exchange`；`5FV99…` 原本是「大V / rrik 自建库」，写入后主分类与名称保留，多分类变成 `["大V","EXCHANGE"]`，`builtin_locked=true`。
+- 重复启动（`ensure_builtin_addresses` 第二次调用）`inserted=0 / updated=0`，不产生重复行。
+- 锁定行为：单条删除抛 `InputError`（接口 409）；批量删除自动跳过内置行（测试里 3 条地址批量删只删掉 2 条普通地址）；解散地址库保留内置行；改分类、改判交易所、取消公共标记均被拒绝。
+
+**界面探针**（`.probe/ui_check_073.py`，1440 / 1180 / 1024 三档）：
+- 地址库录入区 4 个按钮（添加地址 / 导入文件 / 同步官方交易所地址 / 同步验证者地址）在 1440、1180、1024 下都是**同一行**（`buttonRows=1`），容器 `panelOverflow=0`、表格 `tableOverflow=0`。
+- 地址库清单里 6 行显示「内置锁定」禁用按钮与「内置固定」来源标签，6 个勾选框全部禁用（不参与批量删除/选中导出）。
+- 结果页 1 级关联行现在有「路径明细」按钮（`depth1WithButton=1 / depth1=1`），点击后展开 1 行路径表，标题为「从起始地址 … 到 … 的关联路径（共 1 笔转账，按路径顺序）」。
+
+**回归**：`pytest -q` = **205 passed**；`/api/health` 报 `0.7.3`，页面资源戳 `?v=0.7.3`；`tools/build_usage_html.py` 重新生成 `使用说明.html`（68 956 bytes）。
+
 ## 0.7.2 验证记录（2026-11-06）
 
 **地址库导出范围**（接口层，本机 707 条地址实测）：

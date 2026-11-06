@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.7.2">
+  <link rel="stylesheet" href="/static/styles.css?v=0.7.3">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -117,7 +117,7 @@
       <div id="view-library" class="hidden">
         <section class="panel library-top">
           <div><span class="label">KNOWN ADDRESS LIBRARY</span><h2>地址库</h2><p>分类记录这个地址“是谁”：预置「大V / 群友 / 其他 / 系统」，可自行新增（例如项目方、做市商）。同一个地址可以同时属于多个分类，明细里点「改分类」随时调整；「系统」分类和交易所一样可以过滤，查到即作为关联终点不再向下扩展。EXCHANGE（交易所）和 VALIDATOR（验证者）是系统专用分类，只由“确认交易所”操作或官方名单产生，不参与人工选分类。官方交易所名单默认导入（每次启动后台同步一次），同步只新增没见过的地址，并提示新增了哪个；官方来源的交易所判定固定，不能改判，只有你自己判定/标记的交易所才能随时改回来。</p></div>
-          <div class="inline-form"><label>名称<input id="lib-label" placeholder="留空用地址后四位"></label><label>分类<select id="lib-category" data-category-select aria-label="地址分类"></select></label><label>地址<input id="lib-address" placeholder="SS58 地址" spellcheck="false"></label><label>备注<input id="lib-note" placeholder="可选备注"></label><div class="lib-form-actions"><button class="secondary" id="add-address">添加地址</button><button class="primary" id="choose-file">导入文件</button><button class="secondary" id="sync-exchanges">同步官方交易所地址</button></div><input type="file" id="library-file" accept=".txt,.csv,.json" hidden></div>
+          <div class="inline-form"><label>名称<input id="lib-label" placeholder="留空用地址后四位"></label><label>分类<select id="lib-category" data-category-select aria-label="地址分类"></select></label><label>地址<input id="lib-address" placeholder="SS58 地址" spellcheck="false"></label><label>备注<input id="lib-note" placeholder="可选备注"></label><div class="lib-form-actions"><button class="secondary" id="add-address">添加地址</button><button class="primary" id="choose-file">导入文件</button><button class="secondary" id="sync-exchanges">同步官方交易所地址</button><button class="secondary" id="sync-validators">同步验证者地址</button></div><input type="file" id="library-file" accept=".txt,.csv,.json" hidden></div>
           <small id="exchange-sync-status" class="library-hint">官方交易所：读取中…</small>
         </section>
         <section class="panel watch-panel">
@@ -214,6 +214,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.7.2"></script>
+  <script src="/static/app.js?v=0.7.3"></script>
 </body>
 </html>
