@@ -525,3 +525,27 @@ Set-Location G:\bittensor-wallet-link-intel
   库间规模只统计本机已抓数据，不是链上全量；子网代币转移的覆盖度受 Taostats 端点粒度限制。
 - **文档同步（同版本补提交）**：`README.md` 版本号升到 0.7.0、「已实现」列表重排为 1–41（0.7.0 三条落在 39–41）；
   `docs/DESIGN_FEASIBILITY.md` 文档版本与实现状态同步；本章与第 32、33 章补齐；`docs/VERIFICATION.md` 补 0.6.28 / 0.6.29 / 0.7.0 验证记录。
+
+## 35. 2026-11-06 0.7.1 交接：全站排版优化（左栏固定 / 字段按内容宽 / 主操作放大）
+
+- **需求原话**：左边列表不随页面滚动；组件宽度按最适合字段宽度调整、字段尽量居中；重要按钮和人工操作位置要突出、放大；
+  举例：扫描页起始地址显示不全，而最大层级/单边最低/累计最低的输入框太浪费空间；按此思路所有页面都优化。
+- **左栏固定**：`.shell` 用 `grid-template-columns:238px minmax(0,1fr)` + `.sidebar { position:sticky; top:0; height:100vh; overflow-y:auto }`。
+  注意 sticky 生效前提是侧栏本身不是滚动容器、且父级 grid 行高足够；`≤950px` 仍沿顶部横条（原规则保留，`height:auto` 覆盖）。
+- **扫描区**：`grid-template-columns:minmax(380px,1fr) 96px 112px 112px 138px`。`#seed` 用 12px 等宽字体、左右 padding 10px，
+  1440 宽下输入框 390px，48 位 SS58 刚好完整。`≤1300px` 时 `grid-template-columns:110px 122px 122px 152px minmax(0,1fr)`
+  且 `.wide.seed-field` 占满整行——四个短字段定宽靠左，剩余空间留白，**不要再改回 `repeat(4,1fr)`**（那会把它们重新拉成大格子）。
+- **表格定宽**：关联结果 `#related > table`（注意 `#related` 自身就是 `.table-wrap`，选择器不要写成 `#related > .table-wrap > table`）；
+  9 列在 1440px 内容区（1051px）下刚好放下。为放下做过三件事：收窄 `th/td` 左右 padding 到 10px、备注列 textarea 限宽 118px、
+  地址列 min-width 220px。改任一列宽后必须用 `.probe/measure_forms.py` 复量，`scroll` 应为 0。
+- **数字居中口径**：`.table-wrap thead th, tbody td { text-align:center }`，再单独把地址列（td.address）、备注列、名称列改回 left；
+  表头跟内容对齐一致。数值输入框统一 `text-align:center`（按 `inputmode` 选中），扫描区 select 居中（`text-align-last` 也要设）。
+- **主操作 `.cta`**：独立变量 `--cta-top/bottom/edge/ink/glow`（四套主题各一份，别直接用 `--accent`：深色主题的 accent 是浅色，
+  白字会看不清）。目前用在 `#run-scan`、`#sync-all`、`#create-book`、`#run-interlink`、`#watch-run`、`#start-backfill`。
+  新增主操作按钮时优先挂 `.cta`，不要另写一套渐变。
+- **表单重排**：地址库录入改 grid（4 字段一行 + `.lib-form-actions` 单独一行右对齐，HTML 里新包了这层 div）；
+  巡检/检索/同步/新建库/导出统一「控件左、按钮右」；`≤950px` 全部转 1–2 列。
+- **已知取舍**：`≤1180px` 三张表开始横滚（9 列表格信息量摆在那，不强压到看不清）；420px 下页面本身不横向溢出。
+- **验收**：`.probe/measure_forms.py`（新）在 1440/1180/1024/760/420 五档量容器宽度、行数、表格列宽、页面 `overflowX` 与元素越界，
+  结果存 `.probe/shots/forms-*.json`；`.probe/measure_layout.py` 量侧栏 `position` 与滚动后的 `top`（应恒为 0）。
+  全量 `pytest -q` = **191 passed**（纯前端改动，后端未动）；`node --check app/static/app.js` 通过。
