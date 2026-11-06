@@ -26,12 +26,18 @@ from sqlalchemy import and_, or_, select
 
 from . import taostats
 from .db import AddressLibrary, Transfer
+from .relation_config import DEFAULT_RELATION_DEPTH, MAX_RELATION_DEPTH
 
 RAO_PER_TAO = 1_000_000_000
 # 与 taostats.LOCAL_REQUESTS_PER_MINUTE 对齐；单次检索最多花这么多次请求。
 DEFAULT_REQUEST_BUDGET = taostats.LOCAL_REQUESTS_PER_MINUTE
-# 找 2 跳以上时，从第一层邻居里挑多少个"最像中转"的地址继续查。
+# 每一层从当前候选里挑多少个"最像中转"的地址继续往下查。
 MAX_INTERMEDIATES = 3
+# 一次最多返回几条链路。
+MAX_PATHS = 3
+# 翻页上限与关联层级用同一个天花板：层级是「最多走几跳」，翻页上限也就是
+# 「最多往回翻几页」，两者都跟 MAX_RELATION_DEPTH 对齐，避免一个放开一个没放。
+MAX_PAGES = MAX_RELATION_DEPTH
 
 
 @dataclass
@@ -48,8 +54,8 @@ class InterlinkQuery:
     source: str
     members: list[Member]
     mode: str = "address"  # "address" | "group"
-    max_hops: int = 3
-    max_pages: int = 3
+    max_hops: int = DEFAULT_RELATION_DEPTH
+    max_pages: int = DEFAULT_RELATION_DEPTH
     min_tao: float = 0.0
     use_local: bool = True
     use_taostats: bool = True
@@ -368,7 +374,7 @@ def search(database: Any, query: InterlinkQuery) -> dict[str, Any]:
 
             # 3) 没有直连时找中间地址（只在"地址 × 地址"模式下有意义）
             if not transactions and query.max_hops >= 2:
-                paths, path_notes, path_truncated = _search_paths(
+                paths, path_notes, path_truncated = _walk_paths(
                     fetcher, source, targets[0], query
                 )
                 notes.extend(path_notes)
@@ -416,87 +422,213 @@ def search(database: Any, query: InterlinkQuery) -> dict[str, Any]:
     }
 
 
-def _search_paths(
-    fetcher: _Fetcher, source: str, target: str, query: InterlinkQuery
+def _oriented_step(
+    forward_txs: list[dict[str, Any]],
+    backward_txs: list[dict[str, Any]],
+    node: str,
+    next_node: str,
+) -> dict[str, Any] | None:
+    """取 ``node → next_node`` 这一跳的代表性转账（优先金额最大的正向那笔）。
+
+    双向搜索时两边的取数方向相反：从 source 出发那一岸 ``node`` 是当前地址；
+    从 target 出发那一岸反过来，``next_node`` 才在邻居堆的键上。所以两堆都传进来，
+    先找「钱真的从 node 流向 next_node」的记录，再退回反向记录。
+    """
+
+    for bucket in (forward_txs, backward_txs):
+        for tx in bucket:
+            if tx.get("from") == node and tx.get("to") == next_node:
+                return tx
+    for bucket in (forward_txs, backward_txs):
+        for tx in bucket:
+            if tx.get("from") == next_node and tx.get("to") == node:
+                return tx
+    return _best(list(forward_txs) + list(backward_txs))
+
+
+@dataclass
+class _Side:
+    """双向搜索里的一岸：带深度的待展开队列 + 父指针。
+
+    队列里每个元素是 ``(地址, 距离起点的跳数)``，所以不需要再用额外的层级状态
+    去推「当前在第几层」——以前那套 ``depth`` / ``advance()`` 在两岸交替推进时
+    很容易把深度算错。
+    """
+
+    start: str
+    limit: int
+    layers: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    parent: dict[str, str] = field(default_factory=dict)
+    dist: dict[str, int] = field(default_factory=dict)
+    queue: list[tuple[str, int]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.queue = [(self.start, 0)]
+        self.dist = {self.start: 0}
+
+    def can_step(self, fetcher: _Fetcher) -> bool:
+        return bool(self.queue) and fetcher.requests < fetcher.budget
+
+    def step(self, fetcher: _Fetcher, query: InterlinkQuery) -> bool:
+        """展开队首一个地址；返回是否真的发了请求。"""
+
+        if not self.can_step(fetcher):
+            return False
+        address, distance = self.queue.pop(0)
+        neighbors = _neighbors(fetcher, address, pages=1, min_tao=query.min_tao)
+        if not neighbors:
+            return True
+        self.layers[address] = dict(neighbors)
+        if distance >= self.limit:
+            return True
+        ranked = sorted(
+            neighbors,
+            key=lambda item: sum(abs(tx["amount_tao"]) for tx in neighbors[item]),
+            reverse=True,
+        )
+        for candidate in ranked[:MAX_INTERMEDIATES]:
+            if candidate in self.dist:
+                continue
+            self.dist[candidate] = distance + 1
+            self.parent[candidate] = address
+            self.queue.append((candidate, distance + 1))
+        return True
+
+    @property
+    def deepest(self) -> int:
+        return max(self.dist.values(), default=0)
+
+
+def _walk_paths(
+    fetcher: _Fetcher,
+    source: str,
+    target: str,
+    query: InterlinkQuery,
 ) -> tuple[list[dict[str, Any]], list[str], bool]:
-    """A 与 B 没有直接转账时，用双方邻居找 1–2 跳链路。"""
+    """从两端同时向外展开，找 ``source → … → target`` 的链路。
+
+    原来是「1 跳查共同对手方、2 跳再从邻居里挑中转」两段硬编码，最多只能到 3 跳。
+    改成双向分层 BFS 后任意深度都是同一套代码：两岸各展开一半层数，在中间相遇，
+    再沿父指针回溯完整节点序列与逐跳转账。加层级不用再补一段「4 跳怎么写」。
+
+    两岸**交替**展开而不是一侧走到底：Taostats 每分钟只给 5 次请求，一侧吃光预算
+    之后另一侧就再也取不到数据，会误报「没找到通路」。
+    """
+
     notes: list[str] = []
-    paths: list[dict[str, Any]] = []
+    max_hops = max(1, int(query.max_hops or DEFAULT_RELATION_DEPTH))
     if fetcher.requests >= fetcher.budget:
-        return paths, ["请求预算已用完，没能继续找中间地址；稍后再点一次检索。"], True
+        return [], ["请求预算已用完，没能继续找中间地址；等一分钟或再点一次检索。"], True
 
-    left = _neighbors(fetcher, source, pages=1, min_tao=query.min_tao)
-    right = _neighbors(fetcher, target, pages=1, min_tao=query.min_tao)
-    if not left or not right:
-        notes.append("没能取到双方转账流水，无法拼链路（可能是请求预算或限速）。")
-        return paths, notes, True
+    left_limit = max(1, (max_hops + 1) // 2)
+    right_limit = max(1, max_hops - left_limit)
+    left = _Side(source, left_limit)
+    right = _Side(target, right_limit)
 
-    # 1 跳：共同对手方
-    shared = [address for address in left if address in right and address not in (source, target)]
-    shared.sort(key=lambda address: len(left[address]) + len(right[address]), reverse=True)
-    for middle in shared[:MAX_INTERMEDIATES]:
-        step_one = _best(left[middle])
-        step_two = _best(right[middle])
-        if not step_one or not step_two:
-            continue
-        if step_one["direction"] == "out" and step_two["direction"] == "in":
-            first, second = step_one, step_two
-        elif step_one["direction"] == "in" and step_two["direction"] == "out":
-            first, second = step_two, step_one
+    # 两岸交替各发一次请求：Taostats 只给 5 次/分钟，一侧走到底会把预算吃光，
+    # 另一侧连一页都取不到，于是误报「没找到通路」。
+    while left.can_step(fetcher) or right.can_step(fetcher):
+        for side in (left, right):
+            if not side.can_step(fetcher):
+                continue
+            side.step(fetcher, query)
+
+    truncated = fetcher.requests >= fetcher.budget
+    if not left.layers or not right.layers:
+        if truncated:
+            notes.append(
+                "本次请求预算只够展开一侧，没能拼链路；等一分钟再点一次「开始检索」，"
+                "已取到的分页会缓存 5 分钟、不重复计费，会接着往更深处走。"
+            )
         else:
-            first, second = step_one, step_two
-        paths.append(
-            {
-                "hops": 2,
-                "nodes": [source, middle, target],
-                "steps": [first, second],
-                "via": middle,
-                "evidence": len(left.get(middle, [])) + len(right.get(middle, [])),
-            }
-        )
+            notes.append("没能取到双方转账流水，无法拼链路（可能是限速）。")
+        return [], notes, True
 
-    if paths or query.max_hops < 3:
-        return paths, notes, False
+    left_depth = left.dist
+    right_depth = right.dist
 
-    # 2 跳：从 source 的邻居里挑几个"中转嫌疑"最大的，再各自展开一页找 target 的邻居
-    candidates = [
+    # 两岸相遇：同一个地址两侧都出现过，且两侧深度之和不超过 max_hops。
+    meetings = [
         address
-        for address in left
-        if address not in (source, target) and address not in shared
+        for address in left_depth
+        if address in right_depth
+        and address not in (source, target)
+        and left_depth[address] + right_depth[address] <= max_hops
     ]
-    candidates.sort(
-        key=lambda address: sum(abs(tx["amount_tao"]) for tx in left[address]), reverse=True
-    )
-    depth_two_truncated = False
-    for middle in candidates[:MAX_INTERMEDIATES]:
-        if fetcher.requests >= fetcher.budget:
-            depth_two_truncated = True
-            break
-        hops = _neighbors(fetcher, middle, pages=1, min_tao=query.min_tao)
-        common = [address for address in hops if address in right and address not in (source, target)]
-        if not common:
+    meetings.sort(key=lambda item: (left_depth[item] + right_depth[item], -left_depth[item]))
+
+    if not meetings:
+        reached = max(left.deepest, right.deepest)
+        if truncated:
+            notes.append(
+                f"本次预算只展开到约 {reached} 跳，还没遇到共同地址；"
+                "已取到的分页会缓存 5 分钟，再点一次「开始检索」会接着往更深处走。"
+            )
+        else:
+            notes.append(
+                f"在已取的流水范围内没找到 {max_hops} 跳以内的通路（各方只翻了最近一页），"
+                "可以调大「翻页上限」或降低「最低 TAO」再试。"
+            )
+        return [], notes, truncated
+
+    def chain_to(side: _Side, end: str) -> list[str]:
+        chain = [end]
+        current = end
+        guard = 0
+        while current != side.start and guard <= max_hops + 1:
+            current = side.parent.get(current, "")
+            if not current:
+                return []
+            chain.append(current)
+            guard += 1
+        chain.reverse()
+        return chain if chain and chain[0] == side.start else []
+
+    paths: list[dict[str, Any]] = []
+    for meeting in meetings[:MAX_PATHS]:
+        left_chain = chain_to(left, meeting)
+        right_chain = chain_to(right, meeting)
+        if not left_chain or not right_chain:
             continue
-        common.sort(key=lambda address: len(hops[address]), reverse=True)
-        bridge = common[0]
-        step_one = _best(left[middle])
-        step_two = _best(hops[bridge])
-        step_three = _best(right[bridge])
-        if not step_one or not step_two or not step_three:
+        nodes = left_chain + list(reversed(right_chain))[1:]
+        if nodes[0] != source or nodes[-1] != target:
             continue
+        if len(nodes) - 1 > max_hops:
+            continue
+
+        steps: list[dict[str, Any]] = []
+        for position in range(len(nodes) - 1):
+            current, following = nodes[position], nodes[position + 1]
+            forward = left.layers.get(current, {}).get(following) or left.layers.get(
+                following, {}
+            ).get(current, [])
+            backward = right.layers.get(current, {}).get(following) or right.layers.get(
+                following, {}
+            ).get(current, [])
+            step = _oriented_step(forward, backward, current, following)
+            if step is None:
+                steps = []
+                break
+            steps.append(step)
+        if len(steps) != len(nodes) - 1:
+            continue
+
         paths.append(
             {
-                "hops": 3,
-                "nodes": [source, middle, bridge, target],
-                "steps": [step_one, step_two, step_three],
-                "via": middle,
-                "evidence": len(left.get(middle, [])) + len(hops.get(bridge, [])) + len(right.get(bridge, [])),
+                "hops": len(nodes) - 1,
+                "nodes": nodes,
+                "steps": steps,
+                "via": nodes[1] if len(nodes) > 2 else "",
+                "evidence": sum(len(txs) for txs in left.layers.values())
+                + sum(len(txs) for txs in right.layers.values()),
             }
         )
-        if len(paths) >= MAX_INTERMEDIATES:
-            break
 
-    if depth_two_truncated:
-        notes.append("找 2 跳链路时请求预算用完，可能有更远的链路没查到。")
     if not paths:
-        notes.append("在已取的流水范围内没有找到共同对手方（只覆盖了双方最近一页转账）。")
-    return paths, notes, depth_two_truncated
+        notes.append("找到了两岸的公共地址，但凑不齐逐跳明细；换组地址或调低「最低 TAO」再试。")
+    elif truncated:
+        notes.append(
+            f"找到 {len(paths)} 条通路；本次预算已用完，更短或更远的链路可能还没查到，"
+            "再点一次「开始检索」可以在缓存基础上继续。"
+        )
+    return paths, notes, truncated

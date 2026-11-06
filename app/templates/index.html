@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.3">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.4">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -179,9 +179,9 @@
             <label>比什么<select id="interlink-mode" aria-label="检索方式"><option value="group" selected>和地址库比</option><option value="address">和另一个地址比</option></select></label>
             <label id="interlink-group-field">地址库 / 标签组<select id="interlink-group" aria-label="选择要对比的地址库"></select></label>
             <label id="interlink-target-field" class="hidden">地址 B<input id="interlink-target" placeholder="SS58 地址" autocomplete="off" spellcheck="false" aria-label="第二个地址"></label>
-            <label>最多跳数<select id="interlink-hops" aria-label="最多经过几个中间地址"><option value="2">中间 1 个地址</option><option value="3" selected>中间最多 2 个地址</option></select></label>
+            <label>最多跳数<select id="interlink-hops" data-hop-options aria-label="最多经过几个中间地址"><option value="2">中间 1 个地址</option><option value="3" selected>中间最多 2 个地址</option></select></label>
             <label>最低 TAO<input id="interlink-min-tao" value="0" inputmode="decimal" aria-label="最低转账金额"></label>
-            <label>翻页上限<input id="interlink-max-pages" type="number" min="1" max="20" value="3" inputmode="numeric" aria-label="Taostats 最多翻几页"></label>
+            <label>翻页上限<input id="interlink-max-pages" type="number" min="1" max="10" value="3" inputmode="numeric" aria-label="Taostats 最多翻几页"></label>
             <button class="primary cta interlink-run" id="run-interlink" type="button">开始检索</button>
           </div>
           <small class="interlink-hint" id="interlink-hint">数据来源：本地索引 + Taostats（from / to 精确匹配）。Taostats 有本机限速（5 次请求 / 分钟），预算用完会先返回已查到的部分，等一分钟再点一次可以接着查。</small>
@@ -229,6 +229,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.3"></script>
+  <script src="/static/app.js?v=0.8.4"></script>
 </body>
 </html>

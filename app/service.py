@@ -50,7 +50,12 @@ from .relation import (
     terminal_addresses,
     terminal_roles,
 )
-from .relation_config import MAX_RELATION_DEPTH, LibraryEntry, LinkPolicy
+from .relation_config import (
+    DEFAULT_RELATION_DEPTH,
+    MAX_RELATION_DEPTH,
+    LibraryEntry,
+    LinkPolicy,
+)
 from .taostats import (
     LOCAL_REQUESTS_PER_MINUTE,
     TaostatsAuthError,
@@ -2164,8 +2169,8 @@ class LinkService:
         target: str = "",
         group_kind: str = "",
         group_name: str = "",
-        max_hops: int = 3,
-        max_pages: int = 3,
+        max_hops: int = DEFAULT_RELATION_DEPTH,
+        max_pages: int = DEFAULT_RELATION_DEPTH,
         min_tao: float = 0.0,
         use_local: bool = True,
         use_taostats: bool = True,
@@ -2203,8 +2208,8 @@ class LinkService:
             source=source,
             members=members,
             mode=mode,
-            max_hops=max(1, min(3, int(max_hops or 3))),
-            max_pages=max(1, min(20, int(max_pages or 3))),
+            max_hops=max(1, min(MAX_RELATION_DEPTH, int(max_hops or DEFAULT_RELATION_DEPTH))),
+            max_pages=max(1, min(interlink.MAX_PAGES, int(max_pages or DEFAULT_RELATION_DEPTH))),
             min_tao=max(0.0, float(min_tao or 0.0)),
             use_local=bool(use_local),
             use_taostats=bool(use_taostats),

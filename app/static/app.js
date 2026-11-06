@@ -397,6 +397,26 @@ function applyDepthOptions(maxDepth, defaultDepth) {
     ).join("");
     select.value = [...select.options].some((option) => option.value === keep) ? keep : "all";
   });
+  // 地址库关联明细检索的「最多跳数」「翻页上限」跟关联层级同一个天花板：
+  // 层级放到 10 级，这里也就能选到 10 跳 / 10 页，不再是死写的 2/3 和 20。
+  const hops = $("#interlink-hops");
+  if (hops) {
+    const keep = Number(hops.value);
+    hops.innerHTML = Array.from(
+      { length: max - 1 },
+      (_, index) => {
+        const value = index + 2;
+        return `<option value="${value}">中间最多 ${value - 1} 个地址</option>`;
+      }
+    ).join("");
+    hops.value = String(Number.isFinite(keep) && keep >= 2 && keep <= max ? keep : Math.min(preset, max));
+  }
+  const pages = $("#interlink-max-pages");
+  if (pages) {
+    pages.max = String(max);
+    const keep = Number(pages.value);
+    pages.value = String(Number.isFinite(keep) && keep >= 1 && keep <= max ? keep : Math.min(preset, max));
+  }
   syncThresholdSaveState();
 }
 
@@ -1951,8 +1971,8 @@ async function runInterlink() {
   }
   const payload = {
     source,
-    max_hops: Number($("#interlink-hops").value) || 3,
-    max_pages: Math.min(20, Math.max(1, Number($("#interlink-max-pages").value) || 3)),
+    max_hops: Math.min(state.maxDepth, Math.max(2, Number($("#interlink-hops").value) || state.defaultDepth)),
+    max_pages: Math.min(state.maxDepth, Math.max(1, Number($("#interlink-max-pages").value) || state.defaultDepth)),
     min_tao: Math.max(0, Number($("#interlink-min-tao").value) || 0),
     use_local: true,
     use_taostats: true,

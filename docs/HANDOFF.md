@@ -759,3 +759,21 @@ Set-Location G:\bittensor-wallet-link-intel
 - **验收**：全量 **293 passed**（新增 `tests/test_depth_and_thresholds.py` 25 条）。原 `tests/test_relation_history.py` 里 `depth=9` 越界断言已改成 `depth=11`（9 级现在是合法值，这条不改会红）。
 - **探针**：`.probe/chk_depth_083.py` —— 检查 `#depth` 选项 1..10 / 默认 3、三处下拉各 11 项、阈值出厂回填、改值后按钮变 `is-dirty`、保存后 toast 与 `is-saved`、刷新后回填、`scanPayload()` 的 depth、1440 与 900 宽的行内对齐与溢出。`.probe/job6_083.py` —— 真实跑 6 级分轮作业。**探针会写真实的 `data/settings.json`**（走的是同一个接口），跑完记得 `POST /api/settings/scan-thresholds {"min_edge_tao":"1","min_total_tao":"1"}` 复原，别把测试值留给用户。
 - **踩过的坑**：验证时用了一个从截图里截断的 45 位地址 `5CQBKcMbMrvGkdDkMgGmFqRhKmZnFqCwHqSPmZqPjyMQ4`，Taostats 一直返回 `HTTP 400 / Invalid SS58 address: Length is bad`，一度以为是限流或接口改动。**先用 `is_valid_ss58()` 确认长度 48 再排查网络**，能省半小时。
+
+## 48. 2026-11-07 0.8.4 交接：关联明细检索的跳数 / 翻页上限跟层级对齐
+
+- **用户需求**：「已知地址库的地址关联明细检索，最多跳数和翻页上限要和最大层级一致。」即 0.8.3 把关联层级放到 10 级之后，地址库页那个检索面板还卡在 3 跳 / 20 页。
+- **改之前必须先知道的事**：`interlink.py` 的路径搜索**不是**通用 BFS。原 `_search_paths()` 只写了两段——「1 跳查共同对手方」和「2 跳从邻居里挑中转」，最后一段还有 `if paths or query.max_hops < 3: return`。也就是说**光把 `le=3` 改成 `le=10` 是没用的**，4 跳以上永远返回空。所以这次是先把搜索重写成 `_walk_paths()`（双向分层 BFS），再放开参数。以后谁要再动跳数上限，先确认搜索本身是否支持那个深度。
+- **上限的真源**：`interlink.MAX_PAGES = MAX_RELATION_DEPTH`（写在 `interlink.py` 顶部，注释已说明为什么两个数要绑一起）。`InterlinkQuery` 两个字段的默认值都用 `DEFAULT_RELATION_DEPTH`。三处同步点漏一个就会「参数收下了但没用」：
+  1. `main.InterlinkInput` 的 `max_hops` / `max_pages`（`ge=1, le=MAX_RELATION_DEPTH`）；
+  2. `service.interlink_search()` 里的 `max(1, min(MAX_RELATION_DEPTH, …))`（这是第二道夹子，绕过接口直调 service 也拦得住）；
+  3. 前端 `applyDepthOptions()` 里生成 `#interlink-hops` 选项和写 `#interlink-max-pages` 的 `max`。模板里只留 `data-hop-options` 的空壳，**不要再写死 `<option value="2">`**。
+- **跳数下拉从 2 起不是笔误**：1 跳意味着起始地址和对方地址直接相连，那就是「直连」而不是「链路」，所以选项是 `2..10`，文案「中间最多 N-1 个地址」。默认值取 `min(preset, max)`，`preset` 就是层级默认值 3。
+- **双向 BFS 的两个坑**（都在代码注释里写了，别改回去）：
+  1. **两岸必须交替发请求**。第一版是 `expand(source)` 走完再 `expand(target)`，而 `_Fetcher` 预算固定 5 次/分钟 —— 左岸在第 4 跳就把额度吃光，右岸 `layers` 是空的，于是 `if not left_layers or not right_layers` 直接返回「没能取到双方转账流水」。表现是 4 跳以上 100% 失败，但**看起来像数据不够**。改成 `for side in (left, right)` 交替后 5 次预算能稳定展开到 3 跳。
+  2. **逐跳方向要按 `from`/`to` 校正**（`_oriented_step`）。从 target 侧回溯出来的那一半，邻居堆是按 target 视角建的，直接取 `_best()` 会把箭头画反。现在两个方向各传一堆，优先取 `from == 当前节点` 的那笔。
+- **`_Side` 的深度跟踪用 `(地址, 距离)` 队列**，不要用「当前层号 + advance()」那套。中间试过一版 `depth` / `advance()` 的写法，在两岸交替推进时层号会算错，深路径回溯会断。现在 `dist` 在入队时就定死，`deepest` 直接取 `max(dist.values())`。
+- **提示语是被测试锁住的**：「已取到的分页会缓存 5 分钟…再点一次会接着往深处走」不是安慰话，`test_second_pass_uses_cache_and_finishes` 会跑 4 轮验证 8 跳链路真的能凑出来（第 3 轮），并且断言第一轮 `cache_hits == 0`、最后一轮 `cache_hits > 0`。**如果以后改了缓存策略或预算逻辑，这条会红，别直接删断言。**
+- **测试里造数据要带旁支**：`build_chain(hops)` 的 `branches` 参数。纯链在 5 次预算内就能走完（每层只有 1 个候选），测不出「预算不足」分支；`branches=2` 才是真实地址的样子。我第一次写这条测试就是因为用了纯链而失败，误以为实现有问题。
+- **验收**：全量 **310 passed**（新增 `tests/test_interlink_depth.py` 17 条）。前端探针 `.probe/chk_interlink_depth_084.py`。**探针要注意 `#view-library` 默认 `hidden`**，不先 `classList.remove("hidden")` 量出来全是 0×0 —— 这个坑 0.8.2 踩过一次，这次又踩了。
+- **遗留**：`--headless=new` 下探针里 `#interlink-group-field` 因为切到了地址模式而被隐藏，尺寸为 0 属预期，不是布局 bug。要量组模式得把 `#interlink-mode` 改回 `group` 再量。

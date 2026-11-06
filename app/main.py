@@ -320,8 +320,8 @@ class InterlinkInput(BaseModel):
     target: str = Field(default="", max_length=64)
     group_kind: str = Field(default="", max_length=8)
     group_name: str = Field(default="", max_length=160)
-    max_hops: int = Field(default=3, ge=1, le=3)
-    max_pages: int = Field(default=3, ge=1, le=20)
+    max_hops: int = Field(default=DEFAULT_RELATION_DEPTH, ge=1, le=MAX_RELATION_DEPTH)
+    max_pages: int = Field(default=DEFAULT_RELATION_DEPTH, ge=1, le=MAX_RELATION_DEPTH)
     min_tao: float = Field(default=0.0, ge=0)
     use_local: bool = True
     use_taostats: bool = True
