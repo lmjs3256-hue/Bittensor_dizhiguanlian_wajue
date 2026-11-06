@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""起始地址画像：注册日期 / 历史交易次数 / 日均频次 / 余额。"""
+"""起始地址画像：注册日期 / 质押操作次数 / 日均频次 / 余额。"""
 
 from datetime import date, timedelta
 
@@ -62,14 +62,16 @@ def test_profile_combines_account_and_transfer_total(monkeypatch):
             balance_total_tao="17137.24",
         ),
     )
-    monkeypatch.setattr(service_module, "get_transfer_total", lambda address: (1000, False))
+    monkeypatch.setattr(service_module, "get_stake_event_total", lambda address: (1000, False))
 
     profile = _profile(monkeypatch)
 
     assert profile["registered_on"] == "2025-09-17"
     assert profile["registered_on_network"] == "finney"
+    assert profile["stake_event_count"] == 1000
+    assert profile["stake_event_scope"] == "taostats"
+    # 兼容字段与主字段同值，避免读到 None。
     assert profile["transfer_count"] == 1000
-    assert profile["transfer_count_scope"] == "taostats"
     assert profile["balance_total_tao"] == "17137.24"
     assert profile["source"] == "taostats"
     # 日均频次 = 笔数 / 注册至今的天数，天数至少按 1 天算。
@@ -99,7 +101,7 @@ def test_profile_swallows_api_failures(monkeypatch):
         raise taostats.TaostatsRateLimitError("限流", request_made=True)
 
     monkeypatch.setattr(service_module, "get_account_profile", boom)
-    monkeypatch.setattr(service_module, "get_transfer_total", boom)
+    monkeypatch.setattr(service_module, "get_stake_event_total", boom)
     warnings: list[str] = []
 
     profile = _profile(monkeypatch, warnings=warnings)
@@ -107,7 +109,7 @@ def test_profile_swallows_api_failures(monkeypatch):
     assert profile["registered_on"] is None
     assert profile["transfer_count"] is None
     assert any("注册日期" in item for item in warnings)
-    assert any("交易次数" in item for item in warnings)
+    assert any("质押操作次数" in item for item in warnings)
 
 
 def test_profile_falls_back_to_local_count(monkeypatch):
@@ -118,8 +120,8 @@ def test_profile_falls_back_to_local_count(monkeypatch):
 
     profile = _profile(monkeypatch, transfer_rows=rows, data_source="local")
 
-    assert profile["transfer_count"] == 2
-    assert profile["transfer_count_scope"] == "local_index"
+    assert profile["stake_event_count"] == 2
+    assert profile["stake_event_scope"] == "local_index"
     # 没有注册日期就算不出日均频次。
     assert profile["daily_frequency"] is None
 
@@ -140,7 +142,7 @@ def test_profile_respects_include_flag(monkeypatch):
 
 
 def test_profile_handles_bad_registration_date(monkeypatch):
-    """注册日期格式异常时只跳过日均频次，不影响交易次数。"""
+    """注册日期格式异常时只跳过日均频次，不影响质押操作次数。"""
 
     monkeypatch.setattr(service_module, "taostats_is_configured", lambda: True)
     monkeypatch.setattr(
@@ -148,11 +150,11 @@ def test_profile_handles_bad_registration_date(monkeypatch):
         "get_account_profile",
         lambda address: taostats.AccountProfile(created_on_date="N/A"),
     )
-    monkeypatch.setattr(service_module, "get_transfer_total", lambda address: (50, False))
+    monkeypatch.setattr(service_module, "get_stake_event_total", lambda address: (50, False))
 
     profile = _profile(monkeypatch)
 
-    assert profile["transfer_count"] == 50
+    assert profile["stake_event_count"] == 50
     assert profile["daily_frequency"] is None
     assert profile["active_days"] is None
 
@@ -167,9 +169,104 @@ def test_profile_daily_frequency_uses_one_day_floor(monkeypatch):
         "get_account_profile",
         lambda address: taostats.AccountProfile(created_on_date=today),
     )
-    monkeypatch.setattr(service_module, "get_transfer_total", lambda address: (7, False))
+    monkeypatch.setattr(service_module, "get_stake_event_total", lambda address: (7, False))
 
     profile = _profile(monkeypatch)
 
     assert profile["active_days"] == 1
     assert profile["daily_frequency"] == 7.0
+
+
+# -- 质押操作次数：走 /v1/subnets/stake-events 的 action=all -----------------
+
+STAKE_URL = taostats.STAKE_EVENTS_URL
+
+
+def _stake_response(total_items, status=200):
+    import httpx
+
+    return httpx.Response(
+        status,
+        json={"data": [], "pagination": {"total_items": total_items, "per_page": 1}},
+        request=httpx.Request("GET", STAKE_URL),
+    )
+
+
+def test_stake_event_total_requests_action_all_with_limit_one(monkeypatch):
+    """必须用 action=all + limit=1：一次请求拿到 stake+unstake 的真实总量。"""
+
+    monkeypatch.setenv("TAOSTATS_API_KEY", "test-key")
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs.get("params")))
+        return _stake_response(906)
+
+    monkeypatch.setattr(taostats.httpx, "get", fake_get)
+
+    total, cached = taostats.get_stake_event_total(SEED)
+
+    assert total == 906
+    assert cached is False
+    assert len(calls) == 1
+    url, params = calls[0]
+    assert url == STAKE_URL
+    assert params["coldkey"] == SEED
+    assert params["action"] == "all"
+    # 只要分页里的 total_items，不必真取数据行。
+    assert params["limit"] == 1
+    assert params["page"] == 1
+    # 不能带 is_transfer，那会把「质押转移」也算进口径。
+    assert "is_transfer" not in params
+
+
+def test_stake_event_total_is_cached(monkeypatch):
+    monkeypatch.setenv("TAOSTATS_API_KEY", "test-key")
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(1)
+        return _stake_response(12)
+
+    monkeypatch.setattr(taostats.httpx, "get", fake_get)
+
+    first, cached_first = taostats.get_stake_event_total(SEED)
+    second, cached_second = taostats.get_stake_event_total(SEED)
+
+    assert (first, cached_first) == (12, False)
+    assert (second, cached_second) == (12, True)
+    assert len(calls) == 1
+
+
+def test_stake_event_total_raises_on_rate_limit(monkeypatch):
+    monkeypatch.setenv("TAOSTATS_API_KEY", "test-key")
+    monkeypatch.setattr(taostats.httpx, "get", lambda *a, **k: _stake_response(0, status=429))
+
+    with pytest.raises(taostats.TaostatsRateLimitError):
+        taostats.get_stake_event_total(SEED)
+
+
+def test_stake_event_total_requires_key(monkeypatch):
+    monkeypatch.delenv("TAOSTATS_API_KEY", raising=False)
+
+    with pytest.raises(taostats.TaostatsAuthError):
+        taostats.get_stake_event_total(SEED)
+
+
+def test_profile_stake_count_and_frequency(monkeypatch):
+    """质押 475 + 解质押 431 = 906 次，日均 = 906 / 天数。"""
+
+    monkeypatch.setattr(service_module, "taostats_is_configured", lambda: True)
+    monkeypatch.setattr(
+        service_module,
+        "get_account_profile",
+        lambda address: taostats.AccountProfile(created_on_date="2025-09-17"),
+    )
+    monkeypatch.setattr(service_module, "get_stake_event_total", lambda address: (906, False))
+
+    profile = _profile(monkeypatch)
+
+    assert profile["stake_event_count"] == 906
+    assert profile["stake_event_scope"] == "taostats"
+    days = max((date.today() - date(2025, 9, 17)).days, 1)
+    assert profile["daily_frequency"] == round(906 / days, 2)

@@ -1,5 +1,22 @@
 # 验证交付记录
 
+## 0.8.0 验证记录（2026-11-06）
+
+**需求：起始地址的「历史交易」「日均频次」不算转账笔数，改为统计子网质押买卖次数（质押与解质押都算）**
+
+- 现状核查：原实现走 `get_transfer_page_query(limit=1)` 取 `pagination.total_items`，统计的是转账笔数，口径确实不对。
+- 接口探测（真实 API key，按本地 5 次/分钟限速节奏）：
+  - `action` 的合法值实测为 `stake` / `unstake` / `all`（传 `Stake`/`Unstake` 报 `unknown variant`）。
+  - 地址 `5CCo5n…TFX`：`all=906`、`stake=475`、`unstake=431` → **475 + 431 = 906** 精确相等。
+  - 地址 `5CQBKc…MQ4`：`all=9466`、`stake=5302`、`unstake=4164` → **5302 + 4164 = 9466** 精确相等。
+  - 明细拉取 200 行确认：`action` 只有 `stake`/`unstake` 两种，`is_transfer` 全为 `False`；带 `is_transfer=true` 时 `total_items` 会变小（906 → 1），说明**不能带该参数**，否则会漏掉正常质押。
+  - `limit=1` 与 `limit=200` 返回的 `total_items` 一致，一次请求即可拿到全量。
+- 实现：新增 `taostats.get_stake_event_total(address)`，请求 `{coldkey, action: "all", page: 1, limit: 1}`，只读 `pagination.total_items`；独立缓存 `_stake_total_cache`（TTL 同 `CACHE_TTL_SECONDS`），并纳入 `reset_client_state_for_tests()`。
+- 服务层：`_seed_profile` 改调 `get_stake_event_total`，新增 `stake_event_count` / `stake_event_scope`；`transfer_count` / `transfer_count_scope` 保留且同值，避免旧前端读到 `None`；warning 文案改为「质押操作次数未获取」。
+- 真实端到端（`POST /api/relations`，seed `5CQBKc8nXsmgDyR4L8daUY1Xq2evTNhLaNNJoAsp68hWjMQ4`，depth 1）：`stake_event_count=9466`、`stake_event_scope=taostats`、注册 `2026-03-27 / finney`、`active_days=224`、`daily_frequency=42.26`（9466 ÷ 224 = 42.259…）、余额 `37.481755491`（可用 12.462866208 + 质押 25.018889283）。
+- UI 三态（CDP，1440px）：正常态显示「质押次数 9,466 次 / 质押 + 解质押」「日均频次 42.26 次/天 / 按 224 天算」；本地索引态显示「67 次 / 本地索引无质押事件，改为转账笔数」；缺失态显示「未获取 / 需要 Taostats API key」。四行 `dtR=74`（余额行 52）右值统一 `bR=207`，`overlap=false`、`ovf=false`、`cardOv=false`、`pageOv=false`。
+- 回归：**251 passed**（新增 `tests/test_seed_profile.py` 5 条：请求参数校验、缓存命中、429 限流、无 key 鉴权、画像汇总与日均）。
+
 ## 0.7.9 验证记录（2026-11-06）
 
 **需求：起始地址画像（地址 / 注册日期 / 历史交易 / 日均频次 / 余额）移到左侧栏空白处，地址只显示头尾 4 位并加复制按钮**

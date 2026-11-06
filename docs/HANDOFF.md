@@ -689,3 +689,16 @@ Set-Location G:\bittensor-wallet-link-intel
 - **踩坑**：一开始把地址写成 `white-space:nowrap; overflow:hidden; text-overflow:ellipsis` —— 但现在地址本身已经截成 `5Hiv…N8kS`（12 字符），13px 下宽约 78px，永远不触发省略号，**保留这两行是给超短侧栏兜底的**，别以为没生效就删掉。
 - **验收**：1440/1180/1080 三档 `fitsSidebar=true`、零横向溢出；复制回显「已复制」且写入剪贴板的 URL 为完整 48 位；900px 搬进 slot 变两列，回到 1440 自动搬回；深灰主题下 `cardBg rgb(41,43,47)` + 数值 `rgb(226,226,222)` 可读。全量 **246 passed**（纯前端改动，后端无变化）。
 - **给下一任**：改这块只动 `app/static/{app.js,styles.css}` 与 `app/templates/index.html`，**改完必须升 `VERSION` 并同步 `?v=` 资源戳**（`styles.css?v=` / `app.js?v=`），否则远端浏览器拿缓存看不到改动；0.7.8 起的自动重启只解决 Python 进程，静态资源还是靠这个戳。
+
+## 44. 2026-11-06 0.8.0 交接：质押次数口径替换转账笔数
+
+- **需求**：起始地址的「历史交易」「日均频次」不该数转账笔数，要数**子网质押买卖次数，质押和解质押都算**。
+- **接口事实（实测，别再猜）**：`GET /v1/subnets/stake-events` 的 `action` 合法值只有 `stake` / `unstake` / `all`（大写会报 `unknown variant`，错误信息里直接把这三个值列出来）。`action=all` 的 `total_items` **精确等于** `stake + unstake`：地址 `5CCo5n…TFX` 906 = 475 + 431，地址 `5CQBKc…MQ4` 9466 = 5302 + 4164。
+- **千万别加 `is_transfer=true`**：那是「质押转移」（coldkey→coldkey 转 stake），加了会把正常质押过滤掉——同一地址 `is_transfer=true` 只有 1 条，`action=all` 是 906 条。原代码 `get_stake_transfer_page` 里带这个参数是为了找**转账边**，跟计数是两回事。
+- **一次请求拿全量**：`limit=1` 与 `limit=200` 的 `total_items` 完全一致，所以计数用 `{coldkey, action:"all", page:1, limit:1}`，只读 `pagination.total_items`，不翻页。
+- **实现落点**：`app/taostats.py` 新增 `get_stake_event_total(address) -> (int, bool)`，独立缓存 `_stake_total_cache`（别复用 `_stake_cache`，那个 key 是 `(address, page)`，会互相污染），并记得在 `reset_client_state_for_tests()` 里 `clear()`，否则测试之间串数据。`_request_get` + `_reserve_request` 的现成模式照抄，401/429/5xx 分别抛 `TaostatsAuthError` / `TaostatsRateLimitError` / `TaostatsUnavailableError`。
+- **字段命名**：新增 `stake_event_count` / `stake_event_scope`。**`transfer_count` 保留但改成同值**——前端老版本读 `profile.transfer_count`，直接删会显示「未获取」。前端 `renderSeedProfile` 优先读 `stake_event_count`，回退 `transfer_count`。
+- **文案**：标签「历史交易」→「质押次数」；单位「笔」→「次」；副行「Taostats 全量」→「质押 + 解质押」，「按注册至今 N 天」→「按 N 天算」（原来那句在 205px 侧栏里太长）；本地索引态副行写「本地索引无质押事件，改为转账笔数」——**不要只写「仅本地索引内」**，用户会以为那也是质押数。
+- **验证数据**：真实接口 `9266` 那类大数照实显示，别截断；本机实测 `5CQBKc…MQ4` = 9466 次 / 224 天 / 42.26 次/天。
+- **踩坑**：探测接口时连发会被本地限速（5 次/分钟）挡住，`429` 不是接口坏了。间隔 13–14 秒再发，或直接 `sleep 60`。另外**测试用的地址必须是真实存在的 SS58**，随便编的会返回 `coldkey is not a valid SS58 address`（400），别误判成参数错误。
+- **验收**：**251 passed**（`tests/test_seed_profile.py` +5 条：参数必须 `action=all&limit=1` 且不含 `is_transfer`、缓存第二次不发请求、429 抛限流、无 key 抛鉴权、汇总与日均）。UI 三态（正常 / 本地索引 / 缺失）文案与对齐均正确，1440px 零溢出。

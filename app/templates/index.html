@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.7.9">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.0">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -46,7 +46,7 @@
         </div>
         <dl class="side-seed-metrics">
           <div><dt>注册日期</dt><dd><b id="seed-result-registered">未获取</b><small id="seed-result-registered-note"></small></dd></div>
-          <div><dt>历史交易</dt><dd><b id="seed-result-txcount">未获取</b><small id="seed-result-txcount-note"></small></dd></div>
+          <div><dt>质押次数</dt><dd><b id="seed-result-txcount">未获取</b><small id="seed-result-txcount-note"></small></dd></div>
           <div><dt>日均频次</dt><dd><b id="seed-result-daily">未获取</b><small id="seed-result-daily-note"></small></dd></div>
           <div><dt>余额</dt><dd><b id="seed-result-balance">未获取</b><small id="seed-result-balance-note"></small></dd></div>
         </dl>
@@ -228,6 +228,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.7.9"></script>
+  <script src="/static/app.js?v=0.8.0"></script>
 </body>
 </html>

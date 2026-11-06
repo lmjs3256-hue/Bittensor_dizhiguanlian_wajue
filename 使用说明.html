@@ -445,12 +445,12 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <td>这个地址第一次上链的时间，副行标注注册网络（<code>nakamoto</code> 是最早期网络，<code>finney</code> 是现在的主网）</td>
 </tr>
 <tr>
-<td>历史交易</td>
-<td>该地址<strong>累计发生过多少笔转账</strong>，是 Taostats 给出的全量数字，和这次只翻了几页无关</td>
+<td>质押次数</td>
+<td>该地址<strong>在子网里做过多少次质押操作</strong>——<strong>质押（stake）和解质押（unstake）各算一次</strong>。这是 Taostats 给出的全量数字，和本次查询翻了几页无关；不是普通转账笔数</td>
 </tr>
 <tr>
 <td>日均频次</td>
-<td>历史交易次数 ÷ 注册至今的天数。注册当天按 1 天算；数字越大说明这个钱包越活跃（交易所、做市商通常几十上百）</td>
+<td>质押操作次数 ÷ 注册至今的天数。注册当天按 1 天算；数字越大说明这个钱包在子网里越活跃</td>
 </tr>
 <tr>
 <td>余额</td>
@@ -463,7 +463,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <ul>
 <li><strong>没配 Taostats API key</strong>：注册日期、交易次数、总余额都来自 Taostats。副行会写「需要 Taostats API key」。</li>
 <li><strong>额度用完了</strong>：Taostats 有 5 次/分钟的本地保护限速。等一分钟重查一次即可，结果会缓存在内存里 5 分钟。</li>
-<li><strong>用的是本地索引模式</strong>：本地库里没有全量口径，交易次数会标注为「仅本地索引内」，注册日期和余额留空。</li>
+<li><strong>用的是本地索引模式</strong>：本地库里没有质押事件，质押次数会降级成「本地索引内的转账笔数」并标注「本地索引无质押事件，改为转账笔数」，注册日期和余额留空。</li>
 </ul>
 <p>这四项<strong>永远不会用 0 冒充</strong>：真的是 0（比如已被清空的地址）就显示 0，取不到就显示「未获取」，两者区分得开。画像取不到也不影响查询本身，关联结果照常出。</p>
 <p>结果表每行是一个关联地址：</p>

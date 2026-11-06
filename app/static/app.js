@@ -107,17 +107,22 @@ function renderSeedProfile(profile, rpcBalance) {
     registeredNote.textContent = registered ? "" : "需要 Taostats API key";
   }
 
-  const count = Number.isFinite(profile.transfer_count) ? profile.transfer_count : null;
-  $("#seed-result-txcount").textContent = count === null ? placeholder : number(count) + " 笔";
+  // 质押操作次数（质押 + 解质押各算一次），不是普通转账笔数。
+  const rawCount = Number.isFinite(profile.stake_event_count)
+    ? profile.stake_event_count
+    : (Number.isFinite(profile.transfer_count) ? profile.transfer_count : null);
+  const count = rawCount;
+  $("#seed-result-txcount").textContent = count === null ? placeholder : number(count) + " 次";
   const countNote = $("#seed-result-txcount-note");
-  if (profile.transfer_count_scope === "local_index") {
-    countNote.textContent = "仅本地索引内";
+  const scope = profile.stake_event_scope || profile.transfer_count_scope;
+  if (scope === "local_index") {
+    countNote.textContent = "本地索引无质押事件，改为转账笔数";
   } else {
-    countNote.textContent = count === null ? "需要 Taostats API key" : "Taostats 全量";
+    countNote.textContent = count === null ? "需要 Taostats API key" : "质押 + 解质押";
   }
 
   const daily = Number.isFinite(profile.daily_frequency) ? profile.daily_frequency : null;
-  $("#seed-result-daily").textContent = daily === null ? placeholder : `${daily} 笔/天`;
+  $("#seed-result-daily").textContent = daily === null ? placeholder : `${daily} 次/天`;
   $("#seed-result-daily-note").textContent =
     daily === null
       ? (count === null ? "" : "缺注册日期")

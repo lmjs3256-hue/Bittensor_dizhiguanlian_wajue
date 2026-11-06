@@ -59,9 +59,9 @@ from .taostats import (
     get_account_profile,
     get_active_validator_addresses,
     get_exchange_addresses,
+    get_stake_event_total,
     get_stake_transfer_page,
     get_transfer_page,
-    get_transfer_total,
     is_configured as taostats_is_configured,
 )
 from .validation import is_valid_ss58
@@ -2680,7 +2680,7 @@ class LinkService:
             self._trim_archives(db)
         return archive_id
 
-    # -- 起始地址画像：注册日期 / 历史交易次数 / 日均频次 / 余额 ------------
+    # -- 起始地址画像：注册日期 / 质押操作次数 / 日均频次 / 余额 ------------
     def _seed_profile(
         self,
         seed: str,
@@ -2695,9 +2695,10 @@ class LinkService:
         - **注册日期**：Taostats ``/api/account/latest/v1`` 的 ``created_on_date``。
         - **余额**：同一接口的 ``balance_total``（自由 + 质押 + 预留），
           比只读 RPC 的可用余额更完整；RPC 余额仍作为兜底。
-        - **历史交易次数**：该地址转账列表的 ``total_items``（服务端给出的真实总量，
-          不受本次翻页多少影响）。
-        - **日均交易频次**：交易次数 ÷ 自注册日到今天的天数，至少按 1 天算。
+        - **质押操作次数**：``/v1/subnets/stake-events`` 的 ``action=all`` 的
+          ``total_items``——**子网质押与解质押各算一次**，不是普通转账笔数
+          （实测 ``stake`` + ``unstake`` 恰好等于 ``all``，且不含质押转移）。
+        - **日均频次**：质押操作次数 ÷ 自注册日到今天的天数，至少按 1 天算。
 
         每个字段都可能为 None（未配置 key / 限流 / 网络失败），界面显示
         「未获取」；任何异常都不会打断主查询。
@@ -2710,6 +2711,8 @@ class LinkService:
             "balance_free_tao": None,
             "balance_staked_tao": None,
             "transfer_count": None,
+            "stake_event_count": None,
+            "stake_event_scope": None,
             "active_days": None,
             "daily_frequency": None,
             "transfer_count_scope": None,
@@ -2735,15 +2738,16 @@ class LinkService:
                 source="taostats",
             )
 
-        # 历史交易次数：本地索引只能数“库里有几笔”，必须标明口径。
+        # 质押操作次数（质押 + 解质押）：本地索引没有这类事件，
+        # 拿不到时退回「本地索引内的转账笔数」，并明确标注口径。
         count: int | None = None
         scope: str | None = None
         if data_source == "taostats" and taostats_is_configured():
             try:
-                count, _cached = get_transfer_total(seed)
+                count, _cached = get_stake_event_total(seed)
                 scope = "taostats"
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"起始地址的历史交易次数未获取：{exc}")
+                warnings.append(f"起始地址的质押操作次数未获取：{exc}")
         if count is None:
             counted = sum(
                 1
@@ -2753,6 +2757,9 @@ class LinkService:
             if counted:
                 count = counted
                 scope = "local_index"
+        profile["stake_event_count"] = count
+        profile["stake_event_scope"] = scope
+        # 兼容旧前端：transfer_count 现在也指向「质押操作次数」，不再是转账笔数。
         profile["transfer_count"] = count
         profile["transfer_count_scope"] = scope
 

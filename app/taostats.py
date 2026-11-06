@@ -92,6 +92,8 @@ _stake_cache: dict[tuple[str, int], tuple[float, TransferPage]] = {}
 _validator_cache: tuple[float, frozenset[str]] | None = None
 _exchange_cache: tuple[float, tuple[dict[str, str], ...]] | None = None
 _profile_cache: dict[str, tuple[float, AccountProfile]] = {}
+# 质押操作次数缓存：address → (单调时钟, 总数)。与分页缓存分开，避免互相污染。
+_stake_total_cache: dict[str, tuple[float, int]] = {}
 _key_override: str | None = None
 _key_override_active = False
 
@@ -620,6 +622,74 @@ def get_transfer_total(address: str) -> tuple[int, bool]:
     return page.total_items, page.from_cache
 
 
+def get_stake_event_total(address: str) -> tuple[int, bool]:
+    """取「这个地址有多少次子网质押操作」——质押与解质押都算一次。
+
+    走 ``/v1/subnets/stake-events`` 的 ``action=all``：实测 ``stake`` + ``unstake``
+    的 ``total_items`` 恰好等于 ``all``（例如 475 + 431 = 906），所以两件事都被
+    计入，且不会混入 ``is_transfer=true`` 的质押转移。
+
+    返回 ``(总数, 是否命中缓存)``。``limit=1`` 只为拿分页里的真实总量，不翻页。
+    """
+
+    key = address
+    now = time.monotonic()
+    with _lock:
+        cached = _stake_total_cache.get(key)
+        if cached and now - cached[0] < CACHE_TTL_SECONDS:
+            return cached[1], True
+        if cached:
+            _stake_total_cache.pop(key, None)
+
+    api_key = _configured_api_key()
+    if not api_key:
+        raise TaostatsAuthError(
+            "未配置 Taostats API key。请在页面中的 Taostats 设置里填写并保存。"
+        )
+
+    _reserve_request()
+    try:
+        response = _request_get(
+            STAKE_EVENTS_URL,
+            api_key=api_key,
+            params={"coldkey": address, "action": "all", "page": 1, "limit": 1},
+        )
+    except httpx.HTTPError as exc:
+        raise TaostatsUnavailableError(
+            f"Taostats 请求失败：{exc}", request_made=True
+        ) from exc
+
+    if response.status_code in {401, 403}:
+        raise TaostatsAuthError(
+            "Taostats API key 无效或没有访问权限。",
+            request_made=True,
+            status_code=response.status_code,
+        )
+    if response.status_code == 429:
+        raise TaostatsRateLimitError(
+            "Taostats 返回限流，请稍后重试。",
+            request_made=True,
+            status_code=response.status_code,
+        )
+    if response.status_code >= 400:
+        raise TaostatsUnavailableError(
+            f"Taostats API 返回 HTTP {response.status_code}。",
+            request_made=True,
+            status_code=response.status_code,
+        )
+
+    try:
+        pagination = response.json().get("pagination") or {}
+        total = int(pagination["total_items"])
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise TaostatsUnavailableError("Taostats 质押事件响应格式无法识别。") from exc
+
+    with _lock:
+        _stake_total_cache[key] = (time.monotonic(), total)
+    return total, False
+
+
+
 def _text_or_none(value: Any) -> str | None:
     if value is None:
         return None
@@ -655,6 +725,7 @@ def reset_client_state_for_tests() -> None:
         _cache.clear()
         _stake_cache.clear()
         _profile_cache.clear()
+        _stake_total_cache.clear()
         _validator_cache = None
         _exchange_cache = None
         _key_override = None
