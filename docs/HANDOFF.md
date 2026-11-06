@@ -629,3 +629,18 @@ Set-Location G:\bittensor-wallet-link-intel
 - **界面**：`.seed-balance-card` 从 flex 改成 grid（1440 下 `minmax(0,1.6fr) repeat(4,minmax(0,1fr))`），1180 及以下 `repeat(3,…)`、560 及以下 `1fr 1fr`，地址块 `.seed-identity` 在窄屏 `grid-column:1/-1`。地址 17px/700/`var(--accent)` + 3px 左侧竖条。**注意**：原来第 593 行那组 `.seed-balance-card { grid-template-columns:minmax(0,1fr) auto }` 和第 641 行的 `1fr` 覆盖规则会盖掉新布局，已删除——以后改这个卡片先 grep `seed-balance-card` 把旧规则清干净。
 - **验收**：`tests/test_seed_profile.py` 8 条，`pytest -q` = **228 passed**；真实账户实测 47 288 笔 / 1 468 天 / 32.21 笔每天 / 119 310.99 TAO；`.probe/ui_check_074_profile.py` 四档宽度均不截断、不重叠、零溢出。
 - **遗留**：日均频次用的是「自然天数」而不是「实际活跃天数」（后者需要逐日交易聚合，Taostats 免费档没有现成接口），所以长时间不动的地址会把均值拉低，解读时要说明口径。
+
+## 40. 2026-11-06 0.7.6 交接：同步验证者名单偶发 SSL EOF 失败
+
+- **现象**：点「同步验证者地址」报 `Taostats 验证者名单请求失败：[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1010)`，HTTP 502。重试有时又会成功。
+- **别急着怀疑接口或参数**：`GET https://api.taostats.io/v1/validators/active` **不能带任何参数**——带 `network=finney` 报 `unknown field network, expected netuid`，带 `limit` 报 `unknown field limit`。不带参数则一次返回 7439 行（单个 `pagination` 页，`total_pages=1`），去重后 1196 个地址。现有实现本来就是裸请求，参数没问题。
+- **根因**：`taostats.py` 里每个请求都是「`_reserve_request()` + 单次 `httpx.get`」，**没有重试**。Taostats 的 TLS 握手偶发被对端截断（`httpx.ConnectError`，底层是 `ssl.SSLEOFError`），一次抖动就直接抛 `TaostatsUnavailableError` → 502 → 界面「同步失败」。
+- **修复**：新增 `taostats._request_get(url, api_key=, params=None, timeout=20)`：
+  - 只捕 `httpx.TransportError`（SSL EOF / 连接重置 / 读超时），最多 3 次，退避 `TRANSIENT_RETRY_BACKOFF_SECONDS * (attempt+1)` = 1.2s、2.4s；
+  - **HTTP 状态码不重试**——401/403 走 `TaostatsAuthError`、429 走 `TaostatsRateLimitError`、其余 ≥400 走 `TaostatsUnavailableError`，逻辑与原来完全一致，避免把限流当网络抖动反复打；
+  - 重试**不额外调 `_reserve_request()`**，只在进入前占一次本地 5 次/分钟额度——失败的请求没有消耗上游配额，重复占用会把本地额度烧光。
+- **五处请求全部改用它**：验证者名单、交易所名单、转账分页（`API_URL`）、质押转账（`STAKE_EVENTS_URL`）、账户资料（`ACCOUNT_LATEST_URL`）。grep 一下确认文件里只剩 `_request_get` 内部那一处 `httpx.get`。
+- **测试要注意**：`tests/test_taostats.py` 是通过 `monkeypatch.setattr(taostats.httpx, "get", ...)` 打桩的，所以 `_request_get` 内部必须写成 `httpx.get(...)`（模块属性），不能改成 `from httpx import get`。重试里用了 `time.sleep`，测试同时打了 `taostats.time.sleep` 的桩以免真的等 3.6 秒。
+- **实测**：修复后同一接口 200，`official_total=1196`、`inserted=0/updated=0/skipped=1196`（已经全在库里，属正常幂等），`synced_at=2026-11-06T12:13:53Z`。
+- **验收**：`pytest -q` = **230 passed**（新增 2 条重试用例）。
+- **遗留**：如果 Taostats 长时间不可达，3 次重试（约 3.6s）后仍会返回 502；界面提示已是原始错误文本，可以按「稍后重试」处理，无需改代码。

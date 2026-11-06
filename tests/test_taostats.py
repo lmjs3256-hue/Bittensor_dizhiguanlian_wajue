@@ -738,3 +738,47 @@ def test_taostats_key_settings_persist_locally_and_never_echo(monkeypatch):
                     get_transfer_page(ADDRESSES[1])
         finally:
             database.engine.dispose()
+
+
+def test_request_get_retries_transient_transport_error(monkeypatch):
+    """TLS 握手偶发 EOF 时应重试，而不是直接判成服务不可用。"""
+
+    monkeypatch.setenv("TAOSTATS_API_KEY", "test-secret")
+    attempts = []
+
+    def flaky_get(url, **kwargs):
+        attempts.append(url)
+        if len(attempts) < 3:
+            raise httpx.ConnectError("[SSL: UNEXPECTED_EOF_WHILE_READING]")
+        return api_response({"data": [{"address": ADDRESSES[0]}], "pagination": {}})
+
+    sleeps = []
+    monkeypatch.setattr(taostats.httpx, "get", flaky_get)
+    monkeypatch.setattr(taostats.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    addresses, cached = taostats.get_active_validator_addresses()
+
+    assert cached is False
+    assert addresses == {ADDRESSES[0]}
+    assert len(attempts) == 3
+    assert sleeps == [1.2, 2.4]
+
+
+def test_request_get_gives_up_after_all_attempts(monkeypatch):
+    """三次都失败才报不可用，且错误信息带上限速/网络原因。"""
+
+    monkeypatch.setenv("TAOSTATS_API_KEY", "test-secret")
+    attempts = []
+
+    def always_fail(url, **kwargs):
+        attempts.append(url)
+        raise httpx.ConnectError("[SSL: UNEXPECTED_EOF_WHILE_READING]")
+
+    monkeypatch.setattr(taostats.httpx, "get", always_fail)
+    monkeypatch.setattr(taostats.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(taostats.TaostatsUnavailableError) as excinfo:
+        taostats.get_active_validator_addresses()
+
+    assert len(attempts) == taostats.TRANSIENT_RETRY_ATTEMPTS == 3
+    assert "验证者名单请求失败" in str(excinfo.value)

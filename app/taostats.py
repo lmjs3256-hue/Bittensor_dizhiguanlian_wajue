@@ -143,11 +143,7 @@ def get_active_validator_addresses() -> tuple[set[str], bool]:
         )
     _reserve_request()
     try:
-        response = httpx.get(
-            VALIDATORS_ACTIVE_URL,
-            headers={"Authorization": api_key},
-            timeout=20,
-        )
+        response = _request_get(VALIDATORS_ACTIVE_URL, api_key=api_key)
     except httpx.HTTPError as exc:
         raise TaostatsUnavailableError(
             f"Taostats 验证者名单请求失败：{exc}", request_made=True
@@ -218,11 +214,7 @@ def get_exchange_addresses() -> tuple[list[dict[str, str]], bool]:
         )
     _reserve_request()
     try:
-        response = httpx.get(
-            EXCHANGE_ADDRESSES_URL,
-            headers={"Authorization": api_key},
-            timeout=20,
-        )
+        response = _request_get(EXCHANGE_ADDRESSES_URL, api_key=api_key)
     except httpx.HTTPError as exc:
         raise TaostatsUnavailableError(
             f"Taostats 交易所地址请求失败：{exc}", request_made=True
@@ -280,6 +272,42 @@ def get_exchange_addresses() -> tuple[list[dict[str, str]], bool]:
     with _lock:
         _exchange_cache = (time.monotonic(), tuple(dict(row) for row in result))
     return result, False
+
+
+TRANSIENT_RETRY_ATTEMPTS = 3
+TRANSIENT_RETRY_BACKOFF_SECONDS = 1.2
+
+
+def _request_get(
+    url: str,
+    *,
+    api_key: str,
+    params: dict[str, Any] | None = None,
+    timeout: float = 20,
+):
+    """取一次 GET 响应，传输层瞬时错误自动重试。
+
+    Taostats 的 TLS 握手偶发 `UNEXPECTED_EOF_WHILE_READING`（服务端根本没处理
+    这个请求），只发一次就被判成「服务不可用」太脆。这里只重试传输层异常；
+    HTTP 状态码（401/429/5xx）原样交给调用方判定，避免把限流当成网络抖动重试。
+    重试不额外占用本地限速额度——失败的请求没有真正消耗上游配额。
+    """
+
+    last_error: httpx.HTTPError | None = None
+    for attempt in range(TRANSIENT_RETRY_ATTEMPTS):
+        try:
+            return httpx.get(
+                url,
+                params=params,
+                headers={"Authorization": api_key},
+                timeout=timeout,
+            )
+        except httpx.TransportError as exc:  # 覆盖 SSL EOF / 连接重置 / 读超时
+            last_error = exc
+            if attempt + 1 < TRANSIENT_RETRY_ATTEMPTS:
+                time.sleep(TRANSIENT_RETRY_BACKOFF_SECONDS * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 
 def _reserve_request() -> None:
@@ -347,12 +375,7 @@ def get_transfer_page_query(
 
     _reserve_request()
     try:
-        response = httpx.get(
-            API_URL,
-            params=params,
-            headers={"Authorization": api_key},
-            timeout=20,
-        )
+        response = _request_get(API_URL, api_key=api_key, params=params)
     except httpx.HTTPError as exc:
         raise TaostatsUnavailableError(
             f"Taostats 请求失败：{exc}", request_made=True
@@ -442,16 +465,15 @@ def get_stake_transfer_page(address: str, page: int = 1) -> TransferPage:
 
     _reserve_request()
     try:
-        response = httpx.get(
+        response = _request_get(
             STAKE_EVENTS_URL,
+            api_key=api_key,
             params={
                 "coldkey": address,
                 "is_transfer": "true",
                 "page": page,
                 "limit": 200,
             },
-            headers={"Authorization": api_key},
-            timeout=20,
         )
     except httpx.HTTPError as exc:
         raise TaostatsUnavailableError(
@@ -530,11 +552,10 @@ def get_account_profile(address: str) -> AccountProfile:
 
     _reserve_request()
     try:
-        response = httpx.get(
+        response = _request_get(
             ACCOUNT_LATEST_URL,
+            api_key=api_key,
             params={"network": "finney", "address": address},
-            headers={"Authorization": api_key},
-            timeout=20,
         )
     except httpx.HTTPError as exc:
         raise TaostatsUnavailableError(

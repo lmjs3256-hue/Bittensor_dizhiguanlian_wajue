@@ -1,5 +1,25 @@
 # 验证交付记录
 
+## 0.7.6 验证记录（2026-11-06）
+
+**故障复现与定位**（`POST /api/library/import-validators`）：
+
+- 修复前实测：`HTTP 502` → `Taostats 验证者名单请求失败：[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1010)`。同进程再请求一次又成功，确认是**传输层偶发**而非接口变更。
+- 用保存的 key 独立直连核对接口本身：`GET https://api.taostats.io/v1/validators/active`（不带参数）返回 `200`，`pagination.total_items=7439`、`data` 7439 行、去重后 **1196** 个地址；带 `network=finney` 会被拒（`unknown field network, expected netuid`），带 `limit` 同样被拒 —— 现有代码本来就不带这两个参数，**参数不是问题原因**。
+
+**修复后实测**：
+
+| 项 | 结果 |
+| --- | --- |
+| HTTP | 200 |
+| `official_total` | 1196 |
+| `inserted` / `updated` / `skipped` | 0 / 0 / 1196（名单未变，幂等） |
+| `source` | `taostats:/v1/validators/active` |
+| `synced_at` | 2026-11-06T12:13:53Z |
+| `from_cache` | false |
+
+**回归**：`tests/test_taostats.py` 新增 `test_request_get_retries_transient_transport_error`（前两次 `httpx.ConnectError` SSL EOF、第三次成功，断言调用 3 次且退避为 `[1.2, 2.4]`）与 `test_request_get_gives_up_after_all_attempts`（三次全失败才 `TaostatsUnavailableError`）；`pytest -q` = **230 passed**；`/api/health` 版本 0.7.6，页面资源戳 `?v=0.7.6`。
+
 ## 0.7.5 验证记录（2026-11-06）
 
 **起始地址画像**（真实 Taostats 账户，`POST /api/relations` 实测）：
