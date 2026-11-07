@@ -452,6 +452,13 @@ class ReconcileInput(BaseModel):
     archive_ids: list[int] | None = Field(default=None, max_length=500)
 
 
+class TidyInput(BaseModel):
+    """一键整理地址库：把跨机同步 / 多次导入后的常见「污染」规整掉。"""
+
+    # 只预演、不落库：界面先给用户看「会改哪些」再确认。
+    dry_run: bool = False
+
+
 class LicenseActivateInput(BaseModel):
     token: str = Field(min_length=10, max_length=4000)
 
@@ -942,6 +949,19 @@ def reconcile_history(
         dry_run=payload.dry_run,
         archive_ids=payload.archive_ids,
     )
+
+
+@app.post("/api/library/tidy")
+def tidy_library(
+    payload: TidyInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """一键整理地址库：规整多分类脏数据、把系统角色地址移出用户自建库、清掉残留交易所标记。"""
+
+    try:
+        return svc.tidy_library(dry_run=payload.dry_run)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/api/library/group-addresses")

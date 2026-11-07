@@ -2589,6 +2589,46 @@ async function reinstallSeedBooks(button) {
   }
 }
 
+async function tidyLibrary(button) {
+  button.disabled = true;
+  try {
+    const preview = await api("/api/library/tidy", {
+      method: "POST",
+      body: JSON.stringify({ dry_run: true }),
+    });
+    if (!preview.changed) {
+      toast(`地址库已经很干净：扫描了 ${preview.total} 条，没有需要整理的项目。`);
+      return;
+    }
+    const parts = [];
+    if (preview.fixes.book) parts.push(`清空 ${preview.fixes.book} 个系统角色地址的用户库归属`);
+    if (preview.fixes.categories) parts.push(`规整 ${preview.fixes.categories} 条多分类（孤立 / 重复 / 缺主分类）`);
+    if (preview.fixes.category) parts.push(`修正 ${preview.fixes.category} 条主分类`);
+    if (preview.fixes.exchange) parts.push(`清掉 ${preview.fixes.exchange} 枚残留交易所标记`);
+    const okay = window.confirm(
+      `整理地址库：扫描 ${preview.total} 条，将修正 ${preview.changed} 条（${parts.join("，")}）。\n\n` +
+        `· 只规整脏数据，绝不删除地址、不改你的标签 / 备注。\n` +
+        `· 整理后可点「撤回上次导入」整体还原。`
+    );
+    if (!okay) return;
+    const result = await api("/api/library/tidy", {
+      method: "POST",
+      body: JSON.stringify({ dry_run: false }),
+    });
+    await loadLibrary();
+    const rp = [];
+    if (result.fixes.book) rp.push(`移出用户库 ${result.fixes.book} 个`);
+    if (result.fixes.categories) rp.push(`规整多分类 ${result.fixes.categories} 条`);
+    if (result.fixes.category) rp.push(`修正主分类 ${result.fixes.category} 条`);
+    if (result.fixes.exchange) rp.push(`清标记 ${result.fixes.exchange} 枚`);
+    toast(`已整理 ${result.changed} 条地址${rp.length ? `（${rp.join("，")}）` : ""}。`);
+  } catch (error) {
+    toast(`整理失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function saveGroupCategories(button) {
   const kind = button.dataset.groupKind;
   const name = button.dataset.groupName;
@@ -4026,6 +4066,8 @@ const undoImportButton = $("#undo-last-import");
 if (undoImportButton) undoImportButton.addEventListener("click", () => undoLastImport(undoImportButton));
 const reinstallSeedButton = $("#reinstall-seed-books");
 if (reinstallSeedButton) reinstallSeedButton.addEventListener("click", () => reinstallSeedBooks(reinstallSeedButton));
+const tidyLibraryButton = $("#tidy-library");
+if (tidyLibraryButton) tidyLibraryButton.addEventListener("click", () => tidyLibrary(tidyLibraryButton));
 const mergeGroupsButton = $("#merge-groups");
 if (mergeGroupsButton) mergeGroupsButton.addEventListener("click", toggleMergePanel);
 $("#sync-matched").addEventListener("click", () => syncCurrentResult("matched"));

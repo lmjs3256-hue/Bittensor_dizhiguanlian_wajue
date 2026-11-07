@@ -1448,6 +1448,150 @@ class LinkService:
                 "book_restored": book_restored,
             }
 
+    def tidy_library(self, *, dry_run: bool = False) -> dict[str, Any]:
+        """一键整理地址库：修掉跨机同步 / 多次导入后常见的几类「污染」。
+
+        只做安全的、可整体撤回的规整——绝不删地址、不改人工备注 / 标签：
+
+        * 多分类脏数据：孤立（不在分类表里、也不是系统分类）、重复、超出上限的分类名
+          会被清掉；主分类若不在多分类里会被补回；主分类本身非法则回落「其他」。
+        * 系统角色地址（交易所 / 验证者 / 公共地址 / 内置固定名单）不应当属于任何
+          用户自建库，残留的 ``book`` 会被清空（与「标记公共地址」的口径一致）。
+        * 交易所锁定残留：``exchange_confirmed/rejected`` 为 True、但当前已不是交易所
+          且非官方 / 内置固定名单时，清掉这枚残留标记。
+
+        ``dry_run=True`` 只扫描并报告会改哪些，不落库。无论预览还是执行都返回一份报告；
+        执行后写一条「撤回上次导入」快照，误整理可用它整体还原。
+        """
+
+        # 用户自建分类名：规整多分类时，孤立分类名若不在其中、也不是系统分类就丢弃。
+        user_categories = {item["name"] for item in self.categories()}
+        valid_tokens = user_categories | SYSTEM_CATEGORIES | {SYSTEM_CLASSIFICATION}
+        changes: list[dict[str, Any]] = []
+        total = 0
+        with self.database.session() as db:
+            rows = db.scalars(select(AddressLibrary).order_by(AddressLibrary.id)).all()
+            total = len(rows)
+            for row in rows:
+                fixes: list[str] = []
+                book_before = (row.book or "").strip()
+                categories_before = row.categories or ""
+                main_before = row.category or ""
+                exchange_before = bool(row.exchange_confirmed) or bool(row.exchange_rejected)
+                # 系统角色判定：多分类里含 EXCHANGE/VALIDATOR/PUBLIC，或内置 / 官方交易所。
+                cats = [canonical_category(name) for name in row_categories(row)]
+                system_role = (
+                    any(name.upper() in SYSTEM_CATEGORIES for name in cats)
+                    or is_builtin_row(row)
+                    or is_official_exchange_row(row)
+                )
+                # F2：系统角色不该挂在用户自建库下，清空残留 book。
+                book_after = book_before
+                if system_role and book_before:
+                    book_after = ""
+                    fixes.append("book")
+                # F1：规整多分类 + 主分类。
+                main = canonical_category(main_before)
+                if main not in valid_tokens and main.upper() not in SYSTEM_CATEGORIES:
+                    main = DEFAULT_CATEGORY
+                parsed: list[Any] = []
+                if categories_before:
+                    try:
+                        value = json.loads(categories_before)
+                        if isinstance(value, list):
+                            parsed = value
+                    except (TypeError, ValueError):
+                        parsed = []
+                cleaned_seq: list[str] = []
+                for token in parsed:
+                    name = canonical_category(token)
+                    if name and name not in cleaned_seq and name in valid_tokens:
+                        cleaned_seq.append(name)
+                # 主分类恒排第一（与 row_categories 的读取口径一致），超过上限截断。
+                cleaned_seq = [main, *[name for name in cleaned_seq if name != main]][:10]
+                if not cleaned_seq:
+                    cleaned_seq = [DEFAULT_CATEGORY]
+                # 只有“有效分类集合”真的变了才算脏（孤立项被移除 / 超上限截断）。
+                # 纯重复项、空的 categories 字段、主分类在 JSON 里的存储顺序都不影响
+                # 读取口径，不当作污染——否则会把大量正常记录误报成“待整理”。
+                if set(cleaned_seq) != set(row_categories(row)):
+                    categories_after = encode_categories(cleaned_seq)
+                    fixes.append("categories")
+                else:
+                    categories_after = categories_before
+                if main_before != main:
+                    fixes.append("category")
+                # F3：交易所锁定残留。规整后若 EXCHANGE 已不在多分类里，说明它早已不是
+                # 交易所（或被孤立分类拖累），这枚确认的交易所标记就是脏数据，清掉。
+                is_exchange_after = "EXCHANGE" in cleaned_seq
+                if (
+                    exchange_before
+                    and not is_exchange_after
+                    and not is_official_exchange_row(row)
+                    and not is_builtin_row(row)
+                ):
+                    fixes.append("exchange")
+                if fixes:
+                    changes.append(
+                        {
+                            "address": row.address,
+                            "label": row.label or default_address_label(row.address),
+                            "fixes": fixes,
+                            "book": {"before": book_before, "after": book_after},
+                            "categories": {
+                                "before": categories_before,
+                                "after": categories_after,
+                            },
+                            "category": {"before": main_before, "after": main},
+                            "exchange": {
+                                "before": exchange_before,
+                                "after": exchange_before and is_exchange_after,
+                            },
+                            "snapshot": _library_row_snapshot(row),
+                        }
+                    )
+                    if not dry_run:
+                        if book_after != book_before:
+                            row.book = book_after
+                        if categories_after != categories_before:
+                            row.categories = categories_after
+                        if main != main_before:
+                            row.category = main
+                        if exchange_before and not is_exchange_after:
+                            row.exchange_confirmed = False
+                            row.exchange_rejected = False
+            if not dry_run and changes:
+                summary = (
+                    f"整理地址库：规整 {sum(1 for c in changes if 'categories' in c['fixes'])} 条多分类、"
+                    f"清空 {sum(1 for c in changes if 'book' in c['fixes'])} 个系统角色地址的用户库归属、"
+                    f"清掉 {sum(1 for c in changes if 'exchange' in c['fixes'])} 枚残留交易所标记"
+                )
+                _record_import_batch(
+                    db,
+                    kind="tidy",
+                    summary=summary,
+                    inserted=[],
+                    updated=[
+                        {"address": change["address"], "snapshot": change["snapshot"]}
+                        for change in changes
+                    ],
+                )
+        return {
+            "dry_run": dry_run,
+            "total": total,
+            "changed": len(changes),
+            "fixes": {
+                "book": sum(1 for c in changes if "book" in c["fixes"]),
+                "categories": sum(1 for c in changes if "categories" in c["fixes"]),
+                "category": sum(1 for c in changes if "category" in c["fixes"]),
+                "exchange": sum(1 for c in changes if "exchange" in c["fixes"]),
+            },
+            "samples": [
+                {key: value for key, value in change.items() if key != "snapshot"}
+                for change in changes[:20]
+            ],
+        }
+
     def reinstall_seed_books(self) -> dict[str, Any]:
         """重新导入外发预置地址库：把预置组里地址库中缺失的地址补回来。
 

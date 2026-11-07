@@ -1092,6 +1092,16 @@ git reset --hard origin/main
 <li><strong>SQLite 不要走网络文件系统共享</strong>（SMB / NFS 挂 <code>data/wallet_link.db</code>）。Tailscale 做法下只有一台跑服务、其余用浏览器，天然规避；别尝试把数据库文件直接放共享盘让两台同时写，会损坏。</li>
 <li><strong>git 只同步导出的 JSON 同步包，绝不同步 <code>.db</code> 文件</strong>——SQLite 二进制无法干净合并，提交它只会制造冲突和损坏。<code>.gitignore</code> 已把 <code>data/</code> 排除，保持这样即可。</li>
 </ul>
+<p><strong>整理 / 修复污染（两种做法都适用）</strong></p>
+<p>两台机器的库反复互相导入后，即使地址不重复（地址在库里唯一），也可能残留一些“看着别扭”的脏数据。地址库清单工具栏点 <strong>「整理地址库」</strong> 可以一次修干净：</p>
+<ul>
+<li>会先弹出预览，告诉你“将修正 N 条、具体是哪几类”，<strong>确认后才落库</strong>；整理完可以点 <strong>「撤回上次导入」</strong> 整体还原。</li>
+<li>只做三类安全规整，<strong>不删地址、不改你的标签 / 备注</strong>：
+  1. <strong>多分类脏数据</strong>：清掉多分类里“不在分类表、也不是系统分类”的孤立名，去重、超上限截断；主分类若没在多分类里会补回去；主分类为空则补「其他」。
+  2. <strong>系统地址误挂用户库</strong>：交易所 / 验证者 / 公共地址 / 内置固定名单的地址，如果残留了「所属地址库」，会被清空——它们本该归在系统分组，不该混在你的自建库里。
+  3. <strong>残留的交易所锁定标记</strong>：某条地址以前确认过交易所、后来分类改回了普通分组，确认标记却还在。整理会清掉这种脏标记；<strong>官方名单 / 内置固定名单的交易所结论一律不动</strong>。</li>
+<li>历史自定义分类（旧 CSV 导入时留下的、已不在分类表里的名字）<strong>不会被当成孤立项清掉</strong>，因为 <code>categories()</code> 会把“地址记录里出现过的分类名”视为合法，保护你原有的分类。</li>
+</ul>
 <hr />
 <h2 id="十一常见问题">十一、常见问题</h2>
 <p><strong>Q：启动时提示 <code>The '&lt;' operator is reserved for future use</code>，或者满屏 <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt; HEAD</code>？</strong>
