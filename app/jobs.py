@@ -40,6 +40,17 @@ DEFAULT_MAX_ADDRESSES = _env_int("BITTENSOR_JOB_MAX_ADDRESSES", 150)
 ADDRESSES_PER_DEPTH = _env_int("BITTENSOR_JOB_ADDRESSES_PER_DEPTH", 50)
 JOB_RETENTION_SECONDS = 30 * 60
 
+# -- 巡检让路（manual_busy）------------------------------------------------
+# 手动查询每轮之间要等 62 秒（round_interval），期间任务状态是 waiting。
+# 只看「有没有 running」会把这 62 秒误判成空闲，让巡检插进去抢掉配额，
+# 下一轮手动查询又要重新等。所以判定口径是「任务未收尾就无限让路」，
+# 任务收尾后再静默一段时间，覆盖用户可能紧接着再点一次的情况。
+MANUAL_QUIET_SECONDS = _env_int("BITTENSOR_WATCH_QUIET_SECONDS", 120)
+# 僵死兜底：任务卡在 running/finalizing（网络挂住、落库卡住）时永远不进终态，
+# 若一直让路，后台巡检会永久停摆。只有当「状态 / 轮次 / 请求数 / 待查队列」
+# 全都没变化超过这个时长，才认为它僵死并恢复巡检。
+MANUAL_STALL_SECONDS = _env_int("BITTENSOR_WATCH_STALL_SECONDS", 10 * 60)
+
 
 def address_cap_for_depth(depth: int, base: int = DEFAULT_MAX_ADDRESSES) -> int:
     """按层级放大的地址护栏：3 级仍是 150，10 级放宽到 500。"""
@@ -78,6 +89,9 @@ class RelationJob:
     cancel_requested: bool = False
     finalized: bool = False
     stopped: bool = False
+    # 巡视「是否僵死」用：上次观察到进度变化的时刻，以及当时的进度签名。
+    progress_at: float = 0.0
+    progress_key: tuple = ()
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
@@ -214,6 +228,103 @@ class RelationJobManager:
             for job in jobs
             if job.status == "waiting" and job.next_round_at <= now and not job.is_finished
         ]
+
+    # -- 巡检让路 ---------------------------------------------------------
+    @staticmethod
+    def _progress_signature(job: RelationJob) -> tuple:
+        state = job.state
+        return (
+            job.status,
+            int(job.rounds_done),
+            int(job.total_requests),
+            len(state.rounds),
+            int(state.pending_total),
+        )
+
+    def _stalled(self, job: RelationJob, now: float) -> bool:
+        """任务是否已经僵死：进度签名超过 ``MANUAL_STALL_SECONDS`` 没变过。
+
+        首次观察一定会「变化」（``progress_key`` 初始是空元组），所以不会
+        误判；只有连续多轮都看到完全相同的状态，才认为它卡住了。
+        """
+
+        key = self._progress_signature(job)
+        if key != job.progress_key:
+            job.progress_key = key
+            job.progress_at = now
+            return False
+        last = job.progress_at or job.created_at
+        return now - last >= MANUAL_STALL_SECONDS
+
+    def manual_busy(self, now: float | None = None) -> dict[str, Any]:
+        """巡检是否该给手动查询让路。
+
+        - 有未收尾任务（pending / running / waiting / finalizing）→ ``running``，
+          无限让路。轮间 62 秒的 waiting 也算在内，不会被当成空闲。
+        - 任务都已收尾 → 从最后一条 ``finished_at`` 起静默
+          ``MANUAL_QUIET_SECONDS`` 秒，期间 ``cooldown``。
+        - 未收尾任务全部僵死 → 立即恢复（``paused=False``、``reason="stalled"``），
+          只在前端提示，不让后台永久停摆。
+        """
+
+        now = time.time() if now is None else now
+        with self._lock:
+            jobs = list(self._jobs.values())
+
+        active: list[RelationJob] = []
+        latest_finished = 0.0
+        latest_finished_id = ""
+        for job in jobs:
+            if job.is_finished:
+                finished = float(job.finished_at or 0.0)
+                if finished >= latest_finished:
+                    latest_finished = finished
+                    latest_finished_id = job.id
+            else:
+                active.append(job)
+
+        if active:
+            alive = [job for job in active if not self._stalled(job, now)]
+            if alive:
+                # 取最新创建的那个做展示对象：用户最关心刚点的那一次。
+                current = max(alive, key=lambda job: job.created_at)
+                return {
+                    "paused": True,
+                    "reason": "running",
+                    "resume_in_seconds": 0,
+                    "job_id": current.id,
+                    "active_jobs": len(alive),
+                    "stalled_jobs": len(active) - len(alive),
+                }
+            return {
+                "paused": False,
+                "reason": "stalled",
+                "resume_in_seconds": 0,
+                "job_id": max(active, key=lambda job: job.created_at).id,
+                "active_jobs": len(active),
+                "stalled_jobs": len(active),
+            }
+
+        deadline = latest_finished + MANUAL_QUIET_SECONDS
+        if latest_finished and now < deadline:
+            return {
+                "paused": True,
+                "reason": "cooldown",
+                # 至少报 1 秒：0 会让人以为「已恢复」，而实际要再等一个 tick。
+                "resume_in_seconds": max(1, int(round(deadline - now))),
+                "job_id": latest_finished_id,
+                "active_jobs": 0,
+                "stalled_jobs": 0,
+            }
+
+        return {
+            "paused": False,
+            "reason": "",
+            "resume_in_seconds": 0,
+            "job_id": "",
+            "active_jobs": 0,
+            "stalled_jobs": 0,
+        }
 
     def cleanup(self, now: float | None = None) -> None:
         now = time.time() if now is None else now

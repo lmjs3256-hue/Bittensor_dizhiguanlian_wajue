@@ -77,6 +77,45 @@ class WatchService:
 
     def __init__(self, database: Database) -> None:
         self.database = database
+        # 最近一次 tick 的让路判定：调度器每 30 秒写一次，status() 读给前端。
+        self._pause: dict[str, Any] = {
+            "paused": False,
+            "reason": "",
+            "resume_in_seconds": 0,
+            "job_id": "",
+            "active_jobs": 0,
+            "stalled_jobs": 0,
+        }
+
+    # -- 巡检让路 ---------------------------------------------------------
+    def set_pause(self, state: dict[str, Any]) -> None:
+        """记录调度器这一次的让路判定，供 ``/api/watch/status`` 展示。"""
+
+        self._pause = dict(state)
+
+    def pause_payload(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
+        """给前端一份可直接显示的中文说明，文案只在这里维护。
+
+        传入 ``state`` 就按它实时生成（status 路由用它，倒计时才准）；
+        不传则用调度器上次 tick 记下的快照。
+        """
+
+        current = dict(self._pause if state is None else state)
+        reason = current.get("reason", "")
+        if reason == "running":
+            detail = "手动查询进行中，巡检已让路（避免抢走每分钟 5 次配额）"
+        elif reason == "cooldown":
+            detail = (
+                f"手动查询已结束，冷却 {current.get('resume_in_seconds', 0)} 秒后继续巡检"
+            )
+        elif reason == "stalled":
+            detail = (
+                f"有 {current.get('stalled_jobs', 1)} 个查询任务超过 10 分钟没有进度，"
+                "已按僵死处理并恢复巡检"
+            )
+        else:
+            detail = ""
+        return {**current, "detail": detail}
 
     # -- 配置 -------------------------------------------------------------
     def config(self) -> dict[str, Any]:
@@ -141,6 +180,8 @@ class WatchService:
         return {
             "config": config,
             "today_requests": self._today_requests(),
+            # 巡检是否因手动查询而暂停：前端据此显示「已让路 / 冷却 N 秒」。
+            "pause": self.pause_payload(),
             "watchable": self.watchable_count(),
             "checked_once": int(checked),
             "pending_candidates": int(pending),
@@ -424,7 +465,9 @@ class WatchService:
                     break
                 result = self._check_address(targets[0].address, config)
                 counters["requests"] += result["requests"]
-                counters["checked"] += 1
+                if not result.get("rate_limited"):
+                    # 被限速的地址游标没动（下次还会再查），不计入本轮进度。
+                    counters["checked"] += 1
                 counters["inserted"] += result["inserted"]
                 counters["new_found"] += result["new_found"]
                 done += 1
@@ -577,40 +620,53 @@ class WatchService:
             if state is None:
                 state = WatchState(address=address)
                 db.add(state)
-            if initialized and edges:
-                fresh = [edge for edge in edges if edge["block"] > baseline]
-                for edge in fresh:
-                    partner = edge["counterparty"]
-                    if not partner or partner == address:
-                        continue
-                    if partner.startswith(SYSTEM_PREFIX):
-                        continue
-                    if not is_valid_ss58(partner):
-                        continue
-                    in_library = partner in pair_counter
-                    partner_book, partner_source = pair_counter.get(partner, ("", ""))
-                    if not in_library and partner not in revoked:
-                        new_found += 1
-                    if in_library:
-                        self._bump_pair(db, book, partner_book, edge["amount"])
-                        # 自动入库的地址会继续累计：后面若另一个库的累计更大，
-                        # 就按「累计金额最多的库」改判归属。
-                        if (
-                            config["auto_import"]
-                            and str(partner_source or "").startswith("auto-watch")
-                        ):
-                            self._accumulate(db, partner, book, edge, threshold, address)
-                        continue
-                    if partner in revoked:
-                        continue
-                    if config["auto_import"]:
-                        if self._accumulate(db, partner, book, edge, threshold, address):
-                            inserted += 1
-            state.checked_count = int(state.checked_count or 0) + 1
-            state.last_checked_at = utcnow()
-            state.last_error = "限速暂停" if rate_limited else ""
-            # 首次巡检只建立基线；后续只推进到见过的最大块。
-            state.last_block = max(int(state.last_block or 0), max_block)
+            if rate_limited:
+                # 被限速时数据不完整，两件事都不能做：
+                # 1) 不能入库——下次重查时 baseline 没推进，同一批转账会被
+                #    再累计一次，金额翻倍可能把不该入库的地址灌进来；
+                # 2) 不能写 last_checked_at——那等于把没查完的地址标记成
+                #    「已巡检」，要等下一整轮（约 2 天）才会再查，被静默跳过。
+                # 只留个原因，游标原地不动，下一 tick 重试同一个地址。
+                state.last_error = "限速暂停，稍后重试"
+            else:
+                if initialized and edges:
+                    fresh = [edge for edge in edges if edge["block"] > baseline]
+                    for edge in fresh:
+                        partner = edge["counterparty"]
+                        if not partner or partner == address:
+                            continue
+                        if partner.startswith(SYSTEM_PREFIX):
+                            continue
+                        if not is_valid_ss58(partner):
+                            continue
+                        in_library = partner in pair_counter
+                        partner_book, partner_source = pair_counter.get(partner, ("", ""))
+                        if not in_library and partner not in revoked:
+                            new_found += 1
+                        if in_library:
+                            self._bump_pair(db, book, partner_book, edge["amount"])
+                            # 自动入库的地址会继续累计：后面若另一个库的累计更大，
+                            # 就按「累计金额最多的库」改判归属。
+                            if (
+                                config["auto_import"]
+                                and str(partner_source or "").startswith("auto-watch")
+                            ):
+                                self._accumulate(
+                                    db, partner, book, edge, threshold, address
+                                )
+                            continue
+                        if partner in revoked:
+                            continue
+                        if config["auto_import"]:
+                            if self._accumulate(
+                                db, partner, book, edge, threshold, address
+                            ):
+                                inserted += 1
+                state.checked_count = int(state.checked_count or 0) + 1
+                state.last_checked_at = utcnow()
+                state.last_error = ""
+                # 首次巡检只建立基线；后续只推进到见过的最大块。
+                state.last_block = max(int(state.last_block or 0), max_block)
         return {
             "requests": requests,
             "new_found": new_found,

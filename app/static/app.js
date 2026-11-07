@@ -3164,6 +3164,15 @@ function watchStatusText(data) {
   const run = data.last_run;
   const parts = [];
   parts.push(config.enabled ? "已开启" : "已关闭");
+  // 巡检给手动查询让路时，进度会停住。必须明说，否则过两天又会以为坏了。
+  const pause = data.pause || {};
+  if (config.enabled && pause.reason === "running") {
+    parts.push("已让路：手动查询进行中，等出结果后继续");
+  } else if (config.enabled && pause.reason === "cooldown") {
+    parts.push(`已让路：查询已结束，冷却 ${pause.resume_in_seconds || 0} 秒`);
+  } else if (config.enabled && pause.reason === "stalled") {
+    parts.push("提示：有查询任务长时间无进度，巡检已恢复");
+  }
   parts.push(`可巡检 ${data.watchable || 0} 个地址`);
   if (!config.enabled) {
     parts.push("打开开关后才会自动巡检");

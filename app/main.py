@@ -205,6 +205,13 @@ async def _watch_scheduler() -> None:
             if WATCH_LOCK.locked():
                 continue
             async with WATCH_LOCK:
+                # 手动查询优先：任务未收尾（含轮间 62 秒等待）或刚结束还没
+                # 静默够，就跳过本次 tick。巡检晚 30 秒推进没有损失，抢走
+                # 配额却会让用户那一轮查询撞限速、白等一分钟。
+                pause = JOBS.manual_busy()
+                WATCH.set_pause(pause)
+                if pause["paused"]:
+                    continue
                 await asyncio.to_thread(WATCH.tick, 1)
         except asyncio.CancelledError:
             raise
@@ -1093,7 +1100,11 @@ def exchange_sync_ack(svc: Annotated[LinkService, Depends(service)]):
 def watch_status():
     """巡检进度、今日请求数、最近几轮结果、金额最高的待入库候选。"""
 
-    return WATCH.status()
+    data = WATCH.status()
+    # 让路判定按此刻实时算：调度器 30 秒才 tick 一次，读缓存快照会让
+    # 「冷却 N 秒」长时间停在同一个数字，看着像卡住了。
+    data["pause"] = WATCH.pause_payload(JOBS.manual_busy())
+    return data
 
 
 @app.post("/api/watch/config")
