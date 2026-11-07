@@ -639,6 +639,9 @@ def select_exportable_addresses(
             str(value).upper()
             for value in [row.get("library_category") or "", *(row.get("library_categories") or [])]
         ]
+        if "VALIDATOR" in row_category_list:
+            skipped_validator += 1
+            continue
         if (
             "EXCHANGE" in row_category_list
             and row.get("exchange_confirmed")
@@ -646,14 +649,9 @@ def select_exportable_addresses(
         ):
             skipped_exchange += 1
             continue
-        if "VALIDATOR" in row_category_list:
-            skipped_validator += 1
-            continue
-        categories = [str(value) for value in (row.get("library_categories") or [])]
-        if any(
-            canonical_category(value) == SYSTEM_CLASSIFICATION
-            for value in [row.get("library_category") or "", *categories]
-        ):
+        # 系统角色（交易所/验证者/公共地址）均不导出：公共地址是“查到即截止”
+        # 的关联终点，不应再作为待跟进钱包扩散；新建地址库时同样排除。
+        if row_category_list and set(row_category_list) & SYSTEM_CATEGORIES:
             skipped_system += 1
             continue
         address = str(row.get("address") or "")
@@ -1624,6 +1622,9 @@ class LinkService:
                     )
                 current.exchange_confirmed = decision == "confirm"
                 current.exchange_rejected = decision == "reject"
+                # 确认交易所即归入交易所分组，移出用户自建库（与公共地址同理）。
+                if decision == "confirm" and current.book:
+                    current.book = ""
             payload = {"saved": True, "item": address_dict(current)}
         if decision == "confirm":
             payload["correction"] = self.reconcile_history(addresses=[address], watch=False)
@@ -1669,6 +1670,10 @@ class LinkService:
                     row.categories = encode_categories(
                         [*row_categories(row), PUBLIC_CATEGORY]
                     )
+                # 标记公共地址即归入公共地址分组，移出任何用户自建库；
+                # 否则它仍挂在某个自建库（如 6NCK）下，和人工整理的地址混在一起。
+                if row.book:
+                    row.book = ""
             else:
                 remaining = [
                     name
@@ -2450,18 +2455,20 @@ class LinkService:
             for address in candidates:
                 row = existing.get(address)
                 if row is not None:
-                    row_category_list = {str(value).upper() for value in row_categories(row)}
+                    row_category_set = {str(value).upper() for value in row_categories(row)}
+                    if "VALIDATOR" in row_category_set:
+                        skipped_validator += 1
+                        continue
                     if (
-                        "EXCHANGE" in row_category_list
+                        "EXCHANGE" in row_category_set
                         and row.exchange_confirmed
                         and not row.exchange_rejected
                     ):
                         skipped_exchange += 1
                         continue
-                    if "VALIDATOR" in row_category_list:
-                        skipped_validator += 1
-                        continue
-                    if SYSTEM_CLASSIFICATION in row_categories(row):
+                    # 系统角色（交易所/验证者/公共地址）不进用户自建库：
+                    # 它们属于系统身份分组，创建新库时一律排除，避免和人工整理的库混在一起。
+                    if row_category_set & SYSTEM_CATEGORIES:
                         skipped_system += 1
                         continue
                     if not row.book:

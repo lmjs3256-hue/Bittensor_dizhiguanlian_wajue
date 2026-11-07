@@ -248,3 +248,138 @@ def test_export_selected_api_returns_only_selected():
         finally:
             main_module.SERVICE = original
             database.engine.dispose()
+
+
+# 回归：手动标成「公共地址」的地址必须能在本地址库清单里被找到。
+# 复现用户的真实场景——把关联结果里以 Thor 结尾的地址标为公共地址后，
+# 在「地址库清单」里既搜得到、也能按「公共地址」角色筛出（此前只有地址库下拉，
+# 大量条目里根本找不到，误以为没入库）。
+THOR_ADDR = "5Gjq3XfuGxtAa6jmTgohbaAL4AA9RE7FQUBG87RGHG8xThor"
+
+
+def test_manually_marked_public_address_is_discoverable_in_library():
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "discoverable.db")
+        original = getattr(main_module, "SERVICE", None)
+        main_module.SERVICE = service
+        try:
+            # 1) 模拟界面操作：把 Thor 结尾的关联地址标为公共地址（接口对全新地址也会建行）。
+            marked = main_module.SERVICE.decide_public_address(THOR_ADDR, True)
+            item = marked["item"]
+            assert item["category"] == "PUBLIC"
+            assert "PUBLIC" in item["categories"]
+
+            # 2) 模拟地址库清单拉取数据：和前端 state.library 同源。
+            client = TestClient(main_module.app)
+            response = client.get("/api/library")
+            assert response.status_code == 200
+            rows = response.json()["items"]
+            row = next(r for r in rows if r["address"] == THOR_ADDR)
+            # 数据层已入库，且角色字段就是前端角色筛选要匹配的值。
+            assert row["category"] == "PUBLIC"
+            assert "PUBLIC" in row["categories"]
+
+            # 3) 复刻前端 libraryRowMatchesFilters 的判定，锁死「标了能找到」的契约：
+            #    按角色 PUBLIC 能筛出、按地址关键字 Thor 能搜到、无关关键字不会误命中。
+            def matches(book_filter="", role="", search=""):
+                if book_filter and (row.get("book") or "") != book_filter:
+                    return False
+                if role:
+                    cats = row["categories"] if row.get("categories") else [row["category"]]
+                    cats = [c for c in cats if c]
+                    if role not in cats:
+                        return False
+                q = (search or "").strip().lower()
+                if q:
+                    hay = " ".join(
+                        [
+                            row.get("address") or "",
+                            row.get("label") or "",
+                            row.get("book") or "",
+                            row.get("note") or "",
+                            " ".join(row.get("categories") or []),
+                        ]
+                    ).lower()
+                    if q not in hay:
+                        return False
+                return True
+
+            assert matches(role="PUBLIC") is True
+            assert matches(role="EXCHANGE") is False
+            assert matches(search="thor") is True
+            assert matches(search="GHG8x") is True
+            assert matches(search="zzz-not-exist") is False
+            # 默认（不过滤）一定可见。
+            assert matches() is True
+        finally:
+            main_module.SERVICE = original
+            database.engine.dispose()
+
+
+# 回归：新建地址库（如 6NCK）必须自动排除已标记为公共地址的地址，
+# 公共地址属于系统身份分组，不该混进用户自建库。
+def test_create_address_book_excludes_manually_marked_public_address():
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "book-skip-public.db")
+        try:
+            # 把关联地址标成公共地址（模拟界面「标为公共地址」）。
+            service.decide_public_address(PUBLIC_ADDR, True)
+            item = service.decide_public_address(PUBLIC_ADDR, True)["item"]
+            assert "PUBLIC" in item["categories"]
+
+            result = service.create_address_book(
+                name="6NCK", seed=SEED, addresses=[PUBLIC_ADDR, OTHER], include_seed=True
+            )
+            # 公共地址被排除，不进 6NCK；只进发起地址 + OTHER。
+            assert result["skipped_system"] == 1
+            assert result["inserted"] == 2
+            from app.db import AddressLibrary
+
+            with database.session() as db:
+                rows = db.query(AddressLibrary).filter_by(book="6NCK").all()
+                assert {row.address for row in rows} == {SEED, OTHER}
+                # 公共地址本身仍在库里，只是不属于任何用户自建库（book 为空）。
+                public_row = db.query(AddressLibrary).filter_by(address=PUBLIC_ADDR).one()
+                assert public_row.category == "PUBLIC"
+                assert public_row.book == ""
+        finally:
+            database.engine.dispose()
+
+
+# 回归：把已建进用户库（如 6NCK）的地址标为公共地址，应自动移出该用户库。
+def test_marking_public_removes_address_from_user_book():
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory, "public-unbook.db")
+        try:
+            service.create_address_book(name="6NCK", seed="", addresses=[PUBLIC_ADDR])
+            from app.db import AddressLibrary
+
+            with database.session() as db:
+                assert db.query(AddressLibrary).filter_by(address=PUBLIC_ADDR).one().book == "6NCK"
+            # 再标为公共地址：应移出 6NCK。
+            service.decide_public_address(PUBLIC_ADDR, True)
+            with database.session() as db:
+                row = db.query(AddressLibrary).filter_by(address=PUBLIC_ADDR).one()
+                assert row.book == ""
+                assert "PUBLIC" in service_module.row_categories(row)
+        finally:
+            database.engine.dispose()
+
+
+# 回归：后端 select_exportable_addresses 也要排除公共地址（与新建库、界面筛选一致）。
+def test_select_exportable_addresses_excludes_public():
+    from app.service import select_exportable_addresses
+
+    rows = [
+        {"address": "5Apublic00000000000000000000000000000000000000000000000", "library_category": "PUBLIC", "library_categories": ["PUBLIC"], "exchange_confirmed": False, "exchange_rejected": False, "depth": 1},
+        {"address": "5Bnormal00000000000000000000000000000000000000000000000", "library_category": "群友", "library_categories": ["群友"], "exchange_confirmed": False, "exchange_rejected": False, "depth": 1},
+        {"address": "5Cexchange0000000000000000000000000000000000000000000000", "library_category": "EXCHANGE", "library_categories": ["EXCHANGE"], "exchange_confirmed": True, "exchange_rejected": False, "depth": 1},
+    ]
+    selection = select_exportable_addresses(rows)
+    assert selection["skipped_system"] == 1
+    assert selection["skipped_exchange"] == 1
+    assert selection["addresses"] == ["5Bnormal00000000000000000000000000000000000000000000000"]

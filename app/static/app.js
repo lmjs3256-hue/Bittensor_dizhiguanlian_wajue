@@ -7,6 +7,8 @@ const state = {
   books: [],
   categories: [],
   bookFilter: "",
+  librarySearch: "",
+  libraryRole: "",
   depthFilter: "all",
   // 关联层级上限：默认 3 级，最高 10 级。层级只决定 BFS 向下走多少跳，
   // 单边门槛、累计门槛、交易所/公共地址截止等规则在每一级都一样。
@@ -1753,15 +1755,41 @@ function updateLibrarySelection() {
   });
 }
 
+// 地址库清单的三重筛选：按地址库(book)、按系统角色(公共地址/交易所/验证者)、按关键词。
+// 标记过的地址（如「公共地址」）因此能在清单里被搜到 / 按角色筛出，解决“标了却找不到”的问题。
+function libraryRowMatchesFilters(row) {
+  if (state.bookFilter && (row.book || "") !== state.bookFilter) return false;
+  if (state.libraryRole) {
+    const cats = (row.categories && row.categories.length ? row.categories : [row.category]).filter(Boolean);
+    if (!cats.includes(state.libraryRole)) return false;
+  }
+  const q = state.librarySearch.trim().toLowerCase();
+  if (q) {
+    const hay = [
+      row.address,
+      row.label || "",
+      row.book || "",
+      row.note || "",
+      (row.categories || []).join(" "),
+    ].join(" ").toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
 function renderLibraryList() {
-  const rows = state.bookFilter
-    ? state.library.filter((row) => (row.book || "") === state.bookFilter)
-    : state.library;
+  const rows = state.library.filter(libraryRowMatchesFilters);
   const total = state.library.length;
-  $("#library-count").textContent = state.bookFilter
-    ? `${rows.length} / ${total} 条`
-    : `${total} 条`;
-  $("#library-table").innerHTML = libraryTable(rows);
+  $("#library-count").textContent = rows.length === total
+    ? `${total} 条`
+    : `${rows.length} / ${total} 条`;
+  if (!rows.length) {
+    $("#library-table").innerHTML = total
+      ? '<div class="placeholder">没有匹配的地址。试试调整搜索词、地址库或角色筛选。</div>'
+      : '<div class="placeholder">地址库为空。可通过上方单个添加或导入 TXT/CSV/JSON。</div>';
+  } else {
+    $("#library-table").innerHTML = libraryTable(rows);
+  }
   renderMergePanel();
   renderInterlinkGroups();
   updateLibrarySelection();
@@ -2195,6 +2223,16 @@ function selectBook(name) {
   renderBookFilter();
   renderLibraryList();
   if (state.bookFilter) toast(`只看地址库「${state.bookFilter}」。`);
+}
+
+function selectLibraryRole(role) {
+  state.libraryRole = role || "";
+  renderLibraryList();
+}
+
+function setLibrarySearch(value) {
+  state.librarySearch = value || "";
+  renderLibraryList();
 }
 
 async function exportBook(name, format) {
@@ -3538,11 +3576,12 @@ function syncSummary(result) {
 }
 
 /* 新建地址库：把当前结果的可导入地址打上库名存进地址库，
-   规则与导出 TXT 一致——已确认交易所和验证者地址剔除。 */
+   规则与导出 TXT 一致——已确认交易所、验证者和公共地址剔除。 */
 function seedIsPublicAddress(data) {
   return (data.seed_library_matches || []).some((entry) => {
     const category = String(entry.category || "").toUpperCase();
     if (category === "VALIDATOR") return true;
+    if (category === "PUBLIC") return true;
     return category === "EXCHANGE" && Boolean(entry.exchange_confirmed);
   });
 }
@@ -3552,13 +3591,13 @@ function updateBookHint() {
   if (!hint) return;
   const data = state.lastResult;
   if (!data) { hint.textContent = "先完成一次关联查询。"; return; }
-  const { addresses, skippedExchange, skippedValidator } = selectExportableAddresses(data.related);
+  const { addresses, skippedExchange, skippedValidator, skippedPublic } = selectExportableAddresses(data.related);
   const includeSeed = $("#book-include-seed").checked;
   const seedSkipped = includeSeed && seedIsPublicAddress(data);
   const count = addresses.length + (includeSeed && !seedSkipped ? 1 : 0);
   const parts = [`本次可导入 ${count} 个地址`];
-  if (skippedExchange || skippedValidator) {
-    parts.push(`已排除交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个`);
+  if (skippedExchange || skippedValidator || skippedPublic) {
+    parts.push(`已排除交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个、公共地址 ${skippedPublic} 个`);
   }
   parts.push(includeSeed ? "含发起地址" : "不含发起地址");
   if (seedSkipped) parts.push("发起地址本身是交易所或验证者，会被跳过");
@@ -4010,6 +4049,8 @@ $("#book-name").addEventListener("keydown", (event) => {
   if (event.key === "Enter") createBookFromResult();
 });
 $("#book-filter").addEventListener("change", (event) => selectBook(event.target.value));
+$("#library-role-filter").addEventListener("change", (event) => selectLibraryRole(event.target.value));
+$("#library-search").addEventListener("input", (event) => setLibrarySearch(event.target.value));
 $("#run-interlink").addEventListener("click", runInterlink);
 $("#interlink-mode").addEventListener("change", syncInterlinkMode);
 syncInterlinkMode();
@@ -4108,8 +4149,9 @@ function selectExportableAddresses(rows) {
   const seen = new Set();
   let skippedExchange = 0;
   let skippedValidator = 0;
+  let skippedPublic = 0;
   for (const row of rows || []) {
-    // 交易所/验证者身份可能在多分类里（官方名单追加的 EXCHANGE），按全集判断。
+    // 交易所/验证者/公共地址身份可能在多分类里（官方名单追加的 EXCHANGE），按全集判断。
     const names = [row.library_category, ...(row.library_categories || [])]
       .map((value) => String(value || "").toUpperCase());
     if (names.includes("EXCHANGE") && row.exchange_confirmed && !row.exchange_rejected) {
@@ -4120,11 +4162,16 @@ function selectExportableAddresses(rows) {
       skippedValidator += 1;
       continue;
     }
+    // 公共地址是“查到即截止”的关联终点，不导出、也不进用户新建库。
+    if (names.includes("PUBLIC")) {
+      skippedPublic += 1;
+      continue;
+    }
     if (!row.address || seen.has(row.address)) continue;
     seen.add(row.address);
     keep.push(row.address);
   }
-  return { addresses: keep, skippedExchange, skippedValidator };
+  return { addresses: keep, skippedExchange, skippedValidator, skippedPublic };
 }
 
 $("#export-addresses").addEventListener("click", () => {
@@ -4137,10 +4184,10 @@ $("#export-addresses").addEventListener("click", () => {
   const rows = depthRows.filter(rowPassesAmountFilter);
   const amountSkipped = depthRows.length - rows.length;
   const amountNote = amountSkipped > 0 ? `，金额筛选隐藏 ${amountSkipped} 个轻微关联` : "";
-  const { addresses, skippedExchange, skippedValidator } = selectExportableAddresses(rows);
+  const { addresses, skippedExchange, skippedValidator, skippedPublic } = selectExportableAddresses(rows);
   if (!addresses.length) {
     const depthNote = depth === null ? "" : `（${depth} 级关联里）`;
-    toast(`没有可导出的地址${depthNote}；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个${amountNote}。可把导出层级改回「全部层级」或调低金额阈值。`, true);
+    toast(`没有可导出的地址${depthNote}；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个、公共地址 ${skippedPublic} 个${amountNote}。可把导出层级改回「全部层级」或调低金额阈值。`, true);
     return;
   }
   const blob = new Blob([addresses.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
@@ -4150,7 +4197,7 @@ $("#export-addresses").addEventListener("click", () => {
   link.click();
   URL.revokeObjectURL(link.href);
   const depthText = depth === null ? "全部层级" : `${depth} 级关联`;
-  toast(`已导出 ${depthText} ${addresses.length} 个地址（每行一个）；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个${amountNote}。`);
+  toast(`已导出 ${depthText} ${addresses.length} 个地址（每行一个）；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个、公共地址 ${skippedPublic} 个${amountNote}。`);
 });
 $("#seed").addEventListener("keydown", (event) => { if (event.key === "Enter") runRelations(); });
 $("#license-activate").addEventListener("click", activateLicense);
