@@ -1183,7 +1183,9 @@ def scan(
     except ScanBusyError as exc:
         raise HTTPException(409, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(502, f"RPC scan failed: {exc}") from exc
+        # TimeoutError 的 str() 是空串，直接拼 {exc} 会得到
+        # "RPC scan failed: "，用户完全看不出原因。带上异常类型。
+        raise HTTPException(502, f"RPC scan failed: {type(exc).__name__}: {exc}") from exc
 
 
 @app.post("/api/relations")

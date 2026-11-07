@@ -1120,6 +1120,8 @@ git reset --hard origin/main
 0.6.4 起结果区顶部会直接列出原因（key 未配置、本地索引为空、金额门槛太高、过滤条件挡掉等）。常见处理：① 确认已保存 Taostats API key（勾着“使用 Taostats 历史索引”时没 key 会被直接拦下）；② 金额阈值改小（把 1 改成 0.1 试试）；③ 这个地址可能本来就没有往来。</p>
 <p><strong>Q：分轮查询到一半不动了？</strong>
 每分钟 5 次请求的限制会让每轮之间等约 1 分钟，属正常现象。如果超过 3 分钟没变化，点“停止续查”保留已有结果，稍后重试。</p>
+<p><strong>Q：点「扫描最新块」转很久没反应，或者提示「扫描失败」？</strong>
+0.8.10 起首次扫描要先从链上拉取 runtime 元数据（实测 30~90 秒，取决于网络），期间按钮会显示「扫描中（首次预热约 1 分钟）…」，<strong>不要重复点</strong>——重复点会提示“已有扫描在进行”。预热完成后每块只需几秒，完成提示里会附带「运行时预热 XX 秒」。如果失败信息是 <code>RPC scan failed: TimeoutError: ...</code>，说明节点或网络太慢，稍后重试即可；如果提示 409「a scan job is already running」，重启一次服务——0.8.10 起启动时会自动把上次被强杀留下的扫描标记为中断并释放锁，等 8 分钟租约过期的情况已经不会再有。</p>
 <p><strong>Q：Taostats 报 401 / 401 Unauthorized？</strong>
 key 没填、填错，或 key 已在 Taostats 后台被删/重置（0.6.4 起 key 已保存在本机，重启不再丢失）。到 <a href="https://taostats.io/zh/pro/api-keys">https://taostats.io/zh/pro/api-keys</a> 重新复制一次，粘贴保存即可。如果提示 key 已失效，在后台删掉重新生成。</p>
 <p><strong>Q：能不能在 Mac 或 Linux 上用？</strong>

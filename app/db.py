@@ -510,6 +510,34 @@ class Database:
                     {"new": str(seed)[-4:], "old": label},
                 )
 
+        self.recover_interrupted_scans()
+
+    def recover_interrupted_scans(self) -> int:
+        """收尾上次进程被强杀 / 崩溃时遗留的扫描。
+
+        启动这一刻不可能有本进程发起的扫描在跑，所以表里凡是 ``running``
+        的 ScanJob 都是上一次进程的孤儿：它永远不会自己结束，而它占着的
+        ScanLock 租约会让新扫描一直撞 409（租约 8 分钟，用户会以为"扫描坏了"）。
+
+        返回被标记为中断的任务数，便于启动日志里说清楚。
+        """
+
+        now = datetime.now(timezone.utc)
+        with self.session() as db:
+            orphans = db.scalars(
+                select(ScanJob).where(ScanJob.status == "running")
+            ).all()
+            for job in orphans:
+                job.status = "failed"
+                job.error = "服务重启，扫描被中断"
+                job.finished_at = now
+            if orphans:
+                lock = db.get(ScanLock, "chain-scan")
+                if lock is not None:
+                    lock.owner_job = None
+                    lock.lease_until = now
+            return len(orphans)
+
     @contextmanager
     def session(self) -> Iterator[Session]:
         db = self.sessions()

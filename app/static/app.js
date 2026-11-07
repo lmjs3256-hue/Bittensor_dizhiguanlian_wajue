@@ -1520,16 +1520,30 @@ async function runBackfill() {
 
 async function scanBlocks(advance) {
   const buttons = [$("#scan-latest"), $("#scan-advance")];
+  const labels = buttons.map((button) => (button ? button.textContent : ""));
   buttons.forEach((button) => { button.disabled = true; });
+  // 首次扫描要先拉链上 runtime 元数据（实测 25~130 秒），期间界面没有任何
+  // 变化会让人以为卡死/失败，这里明确告诉用户在等什么。
+  const active = advance ? $("#scan-advance") : $("#scan-latest");
+  if (active) {
+    active.textContent = "扫描中（首次预热约 1 分钟）…";
+    active.title = "正在连接节点并拉取 runtime 元数据，首次扫描较慢，之后会快很多";
+  }
   try {
     const result = await api(`/api/scan?blocks=${encodeURIComponent($("#scan-blocks").value)}&advance=${advance}`, { method: "POST" });
-    toast(`扫描完成：${result.scanned_blocks} 块，新增 ${result.transfer_count} 条转账。`);
+    const warm = result.warmup_seconds ? `（运行时预热 ${Math.round(result.warmup_seconds)} 秒）` : "";
+    toast(`扫描完成：${result.scanned_blocks} 块，新增 ${result.transfer_count} 条转账${warm}。`);
     await loadOverview();
   } catch (error) {
     toast(`扫描失败：${error.message}`, true);
     await loadOverview();
   } finally {
-    buttons.forEach((button) => { button.disabled = false; });
+    buttons.forEach((button, index) => {
+      if (!button) return;
+      button.disabled = false;
+      button.textContent = labels[index];
+      button.removeAttribute("title");
+    });
   }
 }
 

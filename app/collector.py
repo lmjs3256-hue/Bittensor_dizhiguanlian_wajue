@@ -244,10 +244,30 @@ def extract_stake_transfers(
     return rows
 
 
+#: 单块读取（get_block / get_events）的超时。预热之后这两种请求都很快。
+DEFAULT_TIMEOUT_SECONDS = 25.0
+
+#: 连接 + 初始化 runtime 元数据的超时。
+#:
+#: `init_runtime()` 需要从链上拉取 runtime WASM/metadata，实测冷启动要
+#: 25~72 秒（2026-11 观察）。它和「读一个块」完全不是一个量级的操作，
+#: 用 25 秒去卡它会让**每一次扫描都必然超时**（此前的 bug：报错信息还是
+#: 空的 `TimeoutError: `，界面上只显示 `RPC scan failed:`）。
+#: 这里单独给它一个宽超时，预热完成后单块读取仍然只有 1~6 秒。
+DEFAULT_WARMUP_TIMEOUT_SECONDS = 240.0
+
+
 class RPCCollector:
-    def __init__(self, url: str, *, timeout_seconds: float = 25.0) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        warmup_timeout_seconds: float = DEFAULT_WARMUP_TIMEOUT_SECONDS,
+    ) -> None:
         self.url = url
         self.timeout_seconds = timeout_seconds
+        self.warmup_timeout_seconds = warmup_timeout_seconds
 
     async def collect_range(
         self,
@@ -263,7 +283,11 @@ class RPCCollector:
         transfers = 0
         started = time.monotonic()
         try:
-            await asyncio.wait_for(substrate.initialize(), self.timeout_seconds)
+            # 预热阶段：连接 + 拉取 runtime 元数据。这一步在冷启动时可能
+            # 要几十秒，必须单独放宽超时，否则读第一块就会撞上 25 秒上限。
+            await asyncio.wait_for(substrate.initialize(), self.warmup_timeout_seconds)
+            await asyncio.wait_for(substrate.init_runtime(), self.warmup_timeout_seconds)
+            warmup_seconds = round(time.monotonic() - started, 2)
             head = int(await substrate.get_block_number())
             end = min(end, head)
             start = max(1, min(start, end + 1))
@@ -297,6 +321,7 @@ class RPCCollector:
                 "end_block": end if scanned else 0,
                 "scanned_blocks": scanned,
                 "transfer_count": transfers,
+                "warmup_seconds": warmup_seconds,
                 "seconds": round(time.monotonic() - started, 2),
             }
         finally:

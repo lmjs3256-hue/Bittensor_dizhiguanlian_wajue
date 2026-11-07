@@ -3636,11 +3636,11 @@ class LinkService:
             )
             last = cursor.last_block if cursor else None
             if lock is None:
-                lock = ScanLock(lock_name="chain-scan", lease_until=now + timedelta(minutes=3))
+                lock = ScanLock(lock_name="chain-scan", lease_until=now + timedelta(minutes=8))
                 db.add(lock)
             else:
                 lock.owner_job = None
-                lock.lease_until = now + timedelta(minutes=3)
+                lock.lease_until = now + timedelta(minutes=8)
             # Commit creates a unique SQLite row before scanning starts. Other
             # worker processes see the lease and cannot start a concurrent scan.
             db.flush()
@@ -3720,7 +3720,9 @@ class LinkService:
                     if lock is not None and lock.owner_job == job_id:
                         lock.owner_job = None
                         lock.lease_until = datetime.now(timezone.utc)
-                    return job_dict(row)
+                    # warmup_seconds 来自采集结果（不是 ScanJob 列），手工补回，
+                    # 方便在界面上区分「慢在 runtime 预热」还是「慢在逐块读取」。
+                    return {**job_dict(row), "warmup_seconds": result.get("warmup_seconds")}
             return {**result, "id": job_id, "status": "complete"}
         except Exception as exc:
             with self.database.session() as db:
