@@ -760,16 +760,6 @@ Set-Location G:\bittensor-wallet-link-intel
 - **探针**：`.probe/chk_depth_083.py` —— 检查 `#depth` 选项 1..10 / 默认 3、三处下拉各 11 项、阈值出厂回填、改值后按钮变 `is-dirty`、保存后 toast 与 `is-saved`、刷新后回填、`scanPayload()` 的 depth、1440 与 900 宽的行内对齐与溢出。`.probe/job6_083.py` —— 真实跑 6 级分轮作业。**探针会写真实的 `data/settings.json`**（走的是同一个接口），跑完记得 `POST /api/settings/scan-thresholds {"min_edge_tao":"1","min_total_tao":"1"}` 复原，别把测试值留给用户。
 - **踩过的坑**：验证时用了一个从截图里截断的 45 位地址 `5CQBKcMbMrvGkdDkMgGmFqRhKmZnFqCwHqSPmZqPjyMQ4`，Taostats 一直返回 `HTTP 400 / Invalid SS58 address: Length is bad`，一度以为是限流或接口改动。**先用 `is_valid_ss58()` 确认长度 48 再排查网络**，能省半小时。
 
-## 49. 2026-11-07 0.8.5 交接：路径明细地址改回头尾各 4 位
-
-- **用户需求**：「路径明细的地址显示只需要头尾各4位，当前是头尾各6位。查询记录和扫描关联结果都要同步改。」
-- **改动只有一处**：`app/static/app.js` 的 `pathAddr()` 改成直接 `return shortAddr(value)`。原来它自己写了一套 `${text.slice(0, 6)}…${text.slice(-6)}`（0.8.2 重排明细表时为了让「人工比对」多显示两位），而主表走 `shortAddr()` 的头4尾4，于是同一屏出现两种长度，同一个地址看着像两个。
-- **「查询记录也要同步改」不需要改两遍**：扫描结果与查询记录回看共用同一条渲染链 —— `renderResult()` → `relatedRowsTable()` / `pathDetailRowHtml()` → `pathAddr()`。查历史时 `viewHistoryRecord()` 只是把归档的 `result` 交给 `renderResult()`，所以改 `pathAddr` 两边同时生效。**以后遇到「主结果和历史记录都要改」的需求，先确认是不是同一条链，别去写两份。**
-- **别再把截断规则分散**：全站地址截断现在只有 `shortAddr()` 一处。`pathAddr()` 保留成一层薄封装是为了让明细表的调用点语义清楚（万一以后真要对明细特殊处理），但它内部不许再出现 `slice(`。`test_path_detail_address_uses_the_same_truncation_as_main_table` 锁住了这一点：既断言 `shortAddr` 的 4/4 写法还在，也断言 `pathAddr` 函数体内没有自己的 `slice(`。
-- **文案要跟着改**：地址位数在文档里是**明写**的，改代码不改文档会自相矛盾。这次动了 `使用说明.md`（「头 6 + 尾 6（比主表多两位，方便人工比对）」→「头 4 + 尾 4（和主表同一套规则）」）并用 `tools/build_usage_html.py` 重建 HTML；`README.md` 新增第 53 条；`docs/VERIFICATION.md` 里 0.8.2 那条「够放头6尾6两个地址」是当时的实测事实，**不改原句，只在后面加一句「0.8.5 已统一成头4尾4」**，保留历史可追溯。
-- **验收**：全量 **311 passed**（新增 1 条）。探针 `.probe/chk_path_addr_085.py`，真实历史记录 #59 逐跳地址 `5Gy8…jEbt / 5HDo…D7QQ / 5FUR…tzHe / 5GBn…iEUi` 全部 9 字符、`anyLegacy13=false`、主表与明细同地址文本一致、路径列无折行。
-- **探针踩的坑**：手搓 `renderResult({related, seed})` 会崩在 `data.warnings is not iterable`（`renderResult` 还要读 `warnings` / `limitations` / `depth_distribution` 等一批字段）。正确做法是直接调页面自己的 `viewHistoryRecord(id)` 走完整流程，别自己拼一个半成品 result 对象。
-
 ## 48. 2026-11-07 0.8.4 交接：关联明细检索的跳数 / 翻页上限跟层级对齐
 
 - **用户需求**：「已知地址库的地址关联明细检索，最多跳数和翻页上限要和最大层级一致。」即 0.8.3 把关联层级放到 10 级之后，地址库页那个检索面板还卡在 3 跳 / 20 页。
@@ -787,3 +777,13 @@ Set-Location G:\bittensor-wallet-link-intel
 - **测试里造数据要带旁支**：`build_chain(hops)` 的 `branches` 参数。纯链在 5 次预算内就能走完（每层只有 1 个候选），测不出「预算不足」分支；`branches=2` 才是真实地址的样子。我第一次写这条测试就是因为用了纯链而失败，误以为实现有问题。
 - **验收**：全量 **310 passed**（新增 `tests/test_interlink_depth.py` 17 条）。前端探针 `.probe/chk_interlink_depth_084.py`。**探针要注意 `#view-library` 默认 `hidden`**，不先 `classList.remove("hidden")` 量出来全是 0×0 —— 这个坑 0.8.2 踩过一次，这次又踩了。
 - **遗留**：`--headless=new` 下探针里 `#interlink-group-field` 因为切到了地址模式而被隐藏，尺寸为 0 属预期，不是布局 bug。要量组模式得把 `#interlink-mode` 改回 `group` 再量。
+## 49. 2026-11-07 0.8.5 交接：路径明细地址改回头尾各 4 位
+
+- **用户需求**：「路径明细的地址显示只需要头尾各4位，当前是头尾各6位。查询记录和扫描关联结果都要同步改。」
+- **改动只有一处**：`app/static/app.js` 的 `pathAddr()` 改成直接 `return shortAddr(value)`。原来它自己写了一套 `${text.slice(0, 6)}…${text.slice(-6)}`（0.8.2 重排明细表时为了让「人工比对」多显示两位），而主表走 `shortAddr()` 的头4尾4，于是同一屏出现两种长度，同一个地址看着像两个。
+- **「查询记录也要同步改」不需要改两遍**：扫描结果与查询记录回看共用同一条渲染链 —— `renderResult()` → `relatedRowsTable()` / `pathDetailRowHtml()` → `pathAddr()`。查历史时 `viewHistoryRecord()` 只是把归档的 `result` 交给 `renderResult()`，所以改 `pathAddr` 两边同时生效。**以后遇到「主结果和历史记录都要改」的需求，先确认是不是同一条链，别去写两份。**
+- **别再把截断规则分散**：全站地址截断现在只有 `shortAddr()` 一处。`pathAddr()` 保留成一层薄封装是为了让明细表的调用点语义清楚（万一以后真要对明细特殊处理），但它内部不许再出现 `slice(`。`test_path_detail_address_uses_the_same_truncation_as_main_table` 锁住了这一点：既断言 `shortAddr` 的 4/4 写法还在，也断言 `pathAddr` 函数体内没有自己的 `slice(`。
+- **文案要跟着改**：地址位数在文档里是**明写**的，改代码不改文档会自相矛盾。这次动了 `使用说明.md`（「头 6 + 尾 6（比主表多两位，方便人工比对）」→「头 4 + 尾 4（和主表同一套规则）」）并用 `tools/build_usage_html.py` 重建 HTML；`README.md` 新增第 53 条；`docs/VERIFICATION.md` 里 0.8.2 那条「够放头6尾6两个地址」是当时的实测事实，**不改原句，只在后面加一句「0.8.5 已统一成头4尾4」**，保留历史可追溯。
+- **验收**：全量 **311 passed**（新增 1 条）。探针 `.probe/chk_path_addr_085.py`，真实历史记录 #59 逐跳地址 `5Gy8…jEbt / 5HDo…D7QQ / 5FUR…tzHe / 5GBn…iEUi` 全部 9 字符、`anyLegacy13=false`、主表与明细同地址文本一致、路径列无折行。
+- **探针踩的坑**：手搓 `renderResult({related, seed})` 会崩在 `data.warnings is not iterable`（`renderResult` 还要读 `warnings` / `limitations` / `depth_distribution` 等一批字段）。正确做法是直接调页面自己的 `viewHistoryRecord(id)` 走完整流程，别自己拼一个半成品 result 对象。
+
