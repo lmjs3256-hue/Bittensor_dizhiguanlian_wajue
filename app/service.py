@@ -668,6 +668,27 @@ def select_exportable_addresses(
     }
 
 
+def _parse_iso_utc(value: Any) -> datetime | None:
+    """把导出包里的 ``created_at`` / ``updated_at`` 还原成时区感知的 UTC 时间。
+
+    与 :func:`app.db.iso_utc` 对应：空值或无法解析时返回 ``None``，调用方据此
+    回退到「保守合并」（不按时间戳判定谁新）。接受 ``Z`` 与 ``+00:00`` 两种写法。
+    """
+
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
     import csv
     import io
@@ -728,6 +749,9 @@ def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
                 "book": str(row.get("book") or "").strip()[:BOOK_NAME_MAX_LENGTH],
                 "exchange_confirmed": boolean(row, "exchange_confirmed"),
                 "exchange_rejected": boolean(row, "exchange_rejected"),
+                # 跨机同步包（schema v2）携带的时间戳，供导入端做 LWW 合并。
+                "created_at": str(row.get("created_at") or "").strip(),
+                "updated_at": str(row.get("updated_at") or "").strip(),
             }
         )
     return result
@@ -792,13 +816,36 @@ class LinkService:
                 # 官方名单同步来的交易所结论是固定的：导入、备份还原、改分类
                 # 都不能把交易所身份冲掉，也不能改判成“待确认/已否定”。
                 locked_exchange = is_official_exchange_row(current)
+                # 跨机同步包（schema v2）带 updated_at：按“谁更新以谁为准”
+                # 做最后写入优先（LWW）合并；任一侧缺时间戳则回退保守合并。
+                current_updated = _parse_iso_utc(iso_utc(current.updated_at))
+                incoming_updated = _parse_iso_utc(row.get("updated_at"))
+                use_lww = (
+                    current_updated is not None
+                    and incoming_updated is not None
+                    and not locked_exchange
+                )
                 incoming_book = str(row.get("book") or "").strip()
-                if incoming_book and not current.book:
-                    current.book = incoming_book[:BOOK_NAME_MAX_LENGTH]
-                    changed = True
+                current_book = (current.book or "").strip()
+                if use_lww:
+                    if incoming_updated > current_updated and incoming_book != current_book:
+                        # book 允许被较新的空值清空：例如某机把公共地址移出
+                        # 用户库（book 置空），另一台残留的旧 book 应被同步清掉。
+                        current.book = incoming_book[:BOOK_NAME_MAX_LENGTH]
+                        changed = True
+                else:
+                    if incoming_book and not current_book:
+                        current.book = incoming_book[:BOOK_NAME_MAX_LENGTH]
+                        changed = True
                 for field in ("label", "note"):
-                    incoming = row.get(field, "")
-                    if incoming and getattr(current, field) != incoming:
+                    incoming = str(row.get(field, "") or "")
+                    current_value = getattr(current, field) or ""
+                    if use_lww:
+                        # 较新一方为准，但空值不覆盖非空，避免误清空人工备注。
+                        if incoming_updated > current_updated and incoming and incoming != current_value:
+                            setattr(current, field, incoming)
+                            changed = True
+                    elif incoming and incoming != current_value:
                         setattr(current, field, incoming)
                         changed = True
                 # 分类只在文件里明确写了才改，避免用纯地址 TXT 覆盖人工分类。
@@ -2284,6 +2331,9 @@ class LinkService:
                 "book": item["book"],
                 "exchange_confirmed": item["exchange_confirmed"],
                 "exchange_rejected": item["exchange_rejected"],
+                # 跨机同步包（schema v2）携带时间戳，导入端据此做“最后写入优先”合并。
+                "created_at": item.get("created_at") or "",
+                "updated_at": item.get("updated_at") or "",
             }
             for item in self.library()
             if wanted is None or item["address"] in wanted
@@ -2295,7 +2345,7 @@ class LinkService:
 
             payload = {
                 "format": "bittensor-address-library",
-                "schema_version": 1,
+                "schema_version": 2,
                 "addresses": portable,
             }
             licensed_to = license_mod.watermark()
@@ -2320,6 +2370,8 @@ class LinkService:
             "book",
             "exchange_confirmed",
             "exchange_rejected",
+            "created_at",
+            "updated_at",
         ]
         writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
         writer.writeheader()

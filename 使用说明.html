@@ -1062,6 +1062,36 @@ git reset --hard origin/main
 <pre><code class="language-powershell">.\.venv\Scripts\python.exe run.py --doctor
 </code></pre>
 <p>它不开服务，直接把同样的结论打印到窗口里，退出码 1 表示有项目没通过。</p>
+<h3 id="多设备同步地址库家里-公司轮流用">多设备同步地址库（家里 / 公司轮流用）</h3>
+<p>工具只跑在一台机器上时，地址库就是那台机器上的 <code>data/wallet_link.db</code>。如果你家里、公司各有一台，想让两边的地址库保持一致，有两种做法，按省心程度排序：</p>
+<p><strong>做法一（最省心）：Tailscale 单一事实源</strong></p>
+<p>你如果已经装了 Tailscale（零配置 mesh VPN），让工具只在一台“尽量常开”的机器上跑，家里 / 公司 / 手机都通过浏览器访问同一份数据库，根本不存在“两边不同步”的问题：</p>
+<ol>
+<li>常开那台机器上用 <code>python run.py --host 0.0.0.0 --port 8766</code> 启动（监听所有网卡，含 Tailscale 虚拟网卡）；</li>
+<li>其他设备浏览器打开 <code>http://&lt;常开机器 Tailscale IP&gt;:8766</code> 即可，和在本机打开一模一样；</li>
+<li>只有<strong>常开那台</strong>需要授权激活——客户端只是浏览器去打那台机器的接口，不受本机未激活影响；</li>
+<li><strong>不要</strong>把 8766 端口映射到公网，只在 Tailscale 网络内可达即可（Tailscale 本身按设备鉴权）。</li>
+</ol>
+<p>前提：常开机器得在线；它关机时你就暂时访问不了。若想要“主机挂了也不中断”，用做法二作为离线兜底。</p>
+<p><strong>做法二（离线可用）：导出 JSON 同步包 + 私有 git / U 盘搬运</strong></p>
+<p>两台机器各自本地跑，要同步时把一边的地址库导出、搬到另一边导入合并：</p>
+<ol>
+<li>在一台机器点「导出全部」（JSON），得到一个 <code>schema_version=2</code> 的同步包，里面每条地址都带 <code>created_at</code> / <code>updated_at</code> 时间戳；</li>
+<li>把它提交进你的<strong>私有 git 仓库</strong>（GitHub 私有库 / 本地 git 都行，别用公开库），或拷到 U 盘；</li>
+<li>另一台机器 <code>git pull</code> / 拷到本地后，在「批量导入文件」里选这个 JSON 导入；</li>
+<li>导入会按时间戳做<strong>最后写入优先（LWW）合并</strong>：
+   - <code>book</code>（所属用户库）取较新一方，且允许被较新的空值清空——这正好能修复“某台把公共地址移出用户库后，另一台残留旧 <code>book</code> 清不掉”的污染滞留；
+   - <code>label</code> / <code>note</code> 取较新一方，但空值不覆盖非空，不会误清空人工备注；
+   - <code>categories</code> 仍取并集（分类是附加信息，不丢数据），交易所锁定逻辑不变；
+   - 没有时间戳的旧包（纯 TXT / 老 CSV）仍按原保守合并，行为不变；
+   - 每次导入都记批次，导入错了点「撤回上次导入」即可还原。</li>
+</ol>
+<p>两边各跑一次（A 导→B 导，再 B 导→A 导）就能把两份库合并成一致；因为按地址唯一合并，重叠地址不会变成重复行。</p>
+<p><strong>两条硬约束</strong></p>
+<ul>
+<li><strong>SQLite 不要走网络文件系统共享</strong>（SMB / NFS 挂 <code>data/wallet_link.db</code>）。Tailscale 做法下只有一台跑服务、其余用浏览器，天然规避；别尝试把数据库文件直接放共享盘让两台同时写，会损坏。</li>
+<li><strong>git 只同步导出的 JSON 同步包，绝不同步 <code>.db</code> 文件</strong>——SQLite 二进制无法干净合并，提交它只会制造冲突和损坏。<code>.gitignore</code> 已把 <code>data/</code> 排除，保持这样即可。</li>
+</ul>
 <hr />
 <h2 id="十一常见问题">十一、常见问题</h2>
 <p><strong>Q：启动时提示 <code>The '&lt;' operator is reserved for future use</code>，或者满屏 <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt; HEAD</code>？</strong>
