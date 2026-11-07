@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.11">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.12">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -28,6 +28,19 @@
     </div>
   </div>
   <div class="license-watermark" id="license-watermark" hidden></div>
+  <div class="license-gate hidden" id="access-gate">
+    <div class="license-card">
+      <span class="license-badge">REMOTE ACCESS</span>
+      <h2>需要访问口令</h2>
+      <p>这台服务跑在另一台电脑上。请到那台电脑的页面顶部复制「访问口令」，粘贴到这里。同一口令有效期 90 天，换设备才需要再输一次。</p>
+      <label class="license-input">访问口令
+        <input id="access-token" type="text" spellcheck="false" autocomplete="off" placeholder="ABCD-EFGH-IJKL-MNOP">
+      </label>
+      <button class="primary" id="access-login" type="button">进入</button>
+      <small>口令只存在主机本地，经 HttpOnly Cookie 记住，页面脚本读不到。忘记口令时，在主机上执行 <code>python run.py --remote</code> 会重新打印出来。</small>
+    </div>
+  </div>
+  <div class="remote-badge" id="remote-badge" hidden>远程访问</div>
   <div class="shell">
     <aside class="sidebar">
       <div class="brand"><div class="mark">WL</div><div><b>Wallet Link</b><span>Bittensor Intelligence</span></div></div>
@@ -229,6 +242,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.11"></script>
+  <script src="/static/app.js?v=0.8.12"></script>
 </body>
 </html>

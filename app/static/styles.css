@@ -444,6 +444,12 @@ body.license-locked .shell { filter:blur(2px); pointer-events:none; user-select:
 .license-watermark { position:fixed; right:16px; bottom:10px; z-index:60; font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--muted); opacity:.45; pointer-events:none; user-select:none; }
 @media (max-width:560px) { .license-card { padding:22px 18px 20px; } .license-machine button { margin-left:0; } }
 
+/* 远程访问口令：甲方案下主机开放给 Tailscale / 局域网的第二道门 */
+.license-input input { width:100%; padding:13px 14px; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:9px; font-family:var(--mono); font-size:17px; letter-spacing:.16em; text-align:center; outline:none; }
+.license-input input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+body.access-locked .shell { filter:blur(2px); pointer-events:none; user-select:none; }
+.remote-badge { position:fixed; right:16px; top:14px; z-index:70; font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; color:var(--accent); background:var(--accent-soft); border-radius:999px; padding:4px 10px; pointer-events:none; }
+
 /* 结果为空时说明原因：以前 0 个关联地址只显示一张空表，容易误判成工具坏了 */
 .result-alert { border:1px solid var(--warn); background:var(--warn-soft); color:var(--warn); border-radius:12px; padding:14px 16px; margin:18px 0 0; }
 .result-alert .alert-title { font-weight:750; margin-bottom:6px; font-size:14px; }

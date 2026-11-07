@@ -292,8 +292,79 @@ async function api(url, options = {}) {
     ...options,
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.detail || `请求失败 (${response.status})`);
+  if (!response.ok) {
+    // 远程模式下 Cookie 过期或换了口令：直接把人送回口令框，不要只弹一句红字。
+    if (response.status === 401 && body.code === "need_access_token") {
+      showAccessGate();
+      throw new Error("需要访问口令");
+    }
+    throw new Error(body.detail || `请求失败 (${response.status})`);
+  }
   return body;
+}
+
+/* -- 远程访问口令（甲方案：一台主机跑服务，其余设备当浏览器客户端） ----- */
+async function loadAccessStatus() {
+  try {
+    return await api("/api/access/status");
+  } catch (_) {
+    // 服务不可用时不要误锁界面，健康检查会提示连接问题。
+    return { remote_mode: false, local: true, authenticated: true, required: false };
+  }
+}
+
+function showAccessGate() {
+  const gate = $("#access-gate");
+  if (!gate) return;
+  gate.classList.remove("hidden");
+  document.body.classList.add("access-locked");
+  const input = $("#access-token");
+  if (input) {
+    input.value = "";
+    setTimeout(() => input.focus(), 60);
+  }
+}
+
+function applyAccessStatus(status) {
+  const gate = $("#access-gate");
+  const badge = $("#remote-badge");
+  if (status && status.required) {
+    showAccessGate();
+    return;
+  }
+  if (gate) gate.classList.add("hidden");
+  document.body.classList.remove("access-locked");
+  // 在别的设备上操作时给个明确标识，免得误以为服务跑在这台机器上。
+  if (badge) badge.hidden = !(status && status.remote_mode && !status.local);
+}
+
+async function submitAccessToken() {
+  const button = $("#access-login");
+  const input = $("#access-token");
+  const value = (input && input.value ? input.value : "").trim();
+  if (!value) {
+    toast("请输入访问口令", true);
+    if (input) input.focus();
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+    button.textContent = "验证中…";
+  }
+  try {
+    await api("/api/access/login", {
+      method: "POST",
+      body: JSON.stringify({ token: value }),
+    });
+    // 口令写进 Cookie 后整页重载，比逐个补调接口干净。
+    location.reload();
+  } catch (error) {
+    toast(`进入失败：${error.message}`, true);
+    if (button) {
+      button.disabled = false;
+      button.textContent = "进入";
+    }
+  }
 }
 
 /* -- 离线授权：未激活时只显示激活页，激活后页面右下角常驻团队水印 ------- */
@@ -4266,6 +4337,14 @@ $("#export-addresses").addEventListener("click", () => {
 });
 $("#seed").addEventListener("keydown", (event) => { if (event.key === "Enter") runRelations(); });
 $("#license-activate").addEventListener("click", activateLicense);
+const accessLoginButton = $("#access-login");
+if (accessLoginButton) accessLoginButton.addEventListener("click", submitAccessToken);
+const accessTokenInput = $("#access-token");
+if (accessTokenInput) {
+  accessTokenInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") submitAccessToken();
+  });
+}
 $("#copy-machine").addEventListener("click", async () => {
   const code = $("#license-machine").textContent.trim();
   if (!code || code === "读取中…") return;
@@ -4280,6 +4359,10 @@ $("#copy-machine").addEventListener("click", async () => {
 (async function bootstrap() {
   loadAmountFilter();
   syncAmountFilterControls();
+  // 甲方案：主机跑服务，其余设备只当浏览器客户端。先过访问口令再谈业务。
+  const access = await loadAccessStatus();
+  applyAccessStatus(access);
+  if (access && access.required) return; // 未过口令时只留口令框
   const status = await loadLicenseStatus();
   applyLicenseStatus(status);
   if (!status.licensed) return; // 未激活时只留激活页，不请求业务接口

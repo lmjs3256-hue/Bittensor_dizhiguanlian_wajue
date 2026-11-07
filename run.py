@@ -1,8 +1,111 @@
 from __future__ import annotations
 
 import argparse
+import os
+import socket
 import sys
 from pathlib import Path
+
+
+def _ipv4_addresses() -> list[str]:
+    """列出本机对外可达的 IPv4（排除回环）。
+
+    两条路子一起用：``getaddrinfo(hostname)`` 能拿到所有网卡，但某些 Windows
+    环境下只返回一条；UDP connect 不需要真的发包，可以问出默认出口地址。
+    """
+
+    found: list[str] = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            address = info[4][0]
+            if address not in found:
+                found.append(address)
+    except OSError:
+        pass
+    default_route = _default_route_address()
+    if default_route and default_route not in found:
+        found.append(default_route)
+    return [address for address in found if not address.startswith("127.")]
+
+
+def _default_route_address() -> str | None:
+    """默认出口地址：多网卡时用它挑「最该给用户看」的那个。
+
+    UDP connect 只填路由表，不发包，所以离线也能用。
+    """
+
+    for probe in ("8.8.8.8", "1.1.1.1"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect((probe, 80))
+                return sock.getsockname()[0]
+        except OSError:
+            continue
+    return None
+
+
+def _is_tailscale(address: str) -> bool:
+    """Tailscale 的 IPv4 固定落在 100.64.0.0/10（CGNAT 段）。"""
+
+    parts = address.split(".")
+    if len(parts) != 4 or parts[0] != "100":
+        return False
+    try:
+        return 64 <= int(parts[1]) <= 127
+    except ValueError:
+        return False
+
+
+def _print_remote_banner(port: int) -> None:
+    """远程模式下把「怎么连、口令是多少」直接打出来。"""
+
+    from app import access
+
+    token, created = access.ensure_token()
+    addresses = _ipv4_addresses()
+    tailscale = [address for address in addresses if _is_tailscale(address)]
+    # 多网卡机器上常有一堆虚拟网卡（VMware / WSL / Hyper-V）。默认出口那个
+    # 才是用户真正要用的，其余折叠成一行，避免把选择成本丢给用户。
+    default_route = _default_route_address()
+    physical = [address for address in addresses if not _is_tailscale(address)]
+    if default_route in physical:
+        physical.remove(default_route)
+        physical.insert(0, default_route)
+    primary, others = (physical[0], physical[1:]) if physical else ("", [])
+
+    lines = [
+        "",
+        "─" * 62,
+        " 远程访问已开启（其余设备只当浏览器客户端）",
+        "",
+        f" 访问口令   {token}" + ("   ← 本次新生成" if created else ""),
+        "            （存在 data/settings.json，主机页面也能查看）",
+        "",
+        f" 本机       http://127.0.0.1:{port}",
+    ]
+    if tailscale:
+        for address in tailscale:
+            lines.append(f" Tailscale  http://{address}:{port}")
+    else:
+        lines.append(" Tailscale  未检测到 100.64.0.0/10 地址")
+        lines.append("            装了 Tailscale 的话先执行 tailscale up 再重启本服务")
+    if primary:
+        lines.append(f" 局域网     http://{primary}:{port}")
+    if others:
+        lines.append(f" 其他网卡   {' / '.join(f'http://{a}:{port}' for a in others)}")
+        lines.append("            （虚拟网卡，通常用不到）")
+    if not tailscale and not primary:
+        lines.append(" 其他设备   未探测到非回环地址，检查网络连接")
+    lines += [
+        "",
+        " 提醒：同一把 Taostats API key 同一时刻只能有一台机器开巡检。",
+        "       其余设备只打开浏览器访问，不要再单独启动一份服务。",
+        "─" * 62,
+        "",
+    ]
+    print("\n".join(lines), file=sys.stderr, flush=True)
+    # 告诉应用层「面板已经打过了」，避免 lifespan 再重复打一遍口令。
+    os.environ["WALLET_LINK_BANNER_PRINTED"] = "1"
 
 
 def run_doctor() -> int:
@@ -42,6 +145,11 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--reload", action="store_true")
     parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="开放给 Tailscale / 局域网访问（自动绑定 0.0.0.0 并要求访问口令）",
+    )
+    parser.add_argument(
         "--doctor",
         action="store_true",
         help="只做环境自检并打印结果，不启动服务",
@@ -50,11 +158,21 @@ def main() -> int:
     if args.doctor:
         return run_doctor()
 
+    host = args.host
+    if args.remote:
+        # 显式指定了 --host 就尊重它，否则绑全网卡：Tailscale 地址和局域网地址
+        # 都落在不同网卡上，绑 127.0.0.1 时别的设备根本连不上。
+        if host == "127.0.0.1":
+            host = "0.0.0.0"
+        # 子进程（--reload）会继承环境变量，所以这里设置就够了。
+        os.environ["WALLET_LINK_REMOTE"] = "1"
+        _print_remote_banner(args.port)
+
     import uvicorn
 
     uvicorn.run(
         "app.main:app",
-        host=args.host,
+        host=host,
         port=args.port,
         reload=args.reload,
         reload_dirs=[str(Path(__file__).resolve().parent / "app")] if args.reload else None,

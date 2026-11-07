@@ -1071,19 +1071,57 @@ git reset --hard origin/main
 <pre><code class="language-powershell">.\.venv\Scripts\python.exe run.py --doctor
 </code></pre>
 <p>它不开服务，直接把同样的结论打印到窗口里，退出码 1 表示有项目没通过。</p>
-<h3 id="多设备同步地址库家里-公司轮流用">多设备同步地址库（家里 / 公司轮流用）</h3>
-<p>工具只跑在一台机器上时，地址库就是那台机器上的 <code>data/wallet_link.db</code>。如果你家里、公司各有一台，想让两边的地址库保持一致，有两种做法，按省心程度排序：</p>
-<p><strong>做法一（最省心）：Tailscale 单一事实源</strong></p>
-<p>你如果已经装了 Tailscale（零配置 mesh VPN），让工具只在一台“尽量常开”的机器上跑，家里 / 公司 / 手机都通过浏览器访问同一份数据库，根本不存在“两边不同步”的问题：</p>
+<h3 id="多设备协同家里-公司-手机">多设备协同（家里 / 公司 / 手机）</h3>
+<p>先说结论：<strong>让一台电脑跑服务，其他设备只开浏览器访问</strong>。不要在每台电脑各跑一份再同步地址库——那样会互相踩死，原因见下面「为什么不能两台各跑一份」。</p>
+<p><strong>做法一（推荐）：一台主机跑服务，其余设备当客户端</strong></p>
+<pre><code class="language-bash">python run.py --remote
+</code></pre>
+<p>启动后终端会打印一个小面板，包含访问口令和各设备该用的地址：</p>
+<pre><code> 访问口令   ABCD-EFGH-IJKL-MNOP   ← 本次新生成
+ 本机       http://127.0.0.1:8766
+ Tailscale  http://100.101.102.103:8766
+ 局域网     http://192.168.1.20:8766
+</code></pre>
 <ol>
-<li>常开那台机器上用 <code>python run.py --host 0.0.0.0 --port 8766</code> 启动（监听所有网卡，含 Tailscale 虚拟网卡）；</li>
-<li>其他设备浏览器打开 <code>http://&lt;常开机器 Tailscale IP&gt;:8766</code> 即可，和在本机打开一模一样；</li>
-<li>只有<strong>常开那台</strong>需要授权激活——客户端只是浏览器去打那台机器的接口，不受本机未激活影响；</li>
-<li><strong>不要</strong>把 8766 端口映射到公网，只在 Tailscale 网络内可达即可（Tailscale 本身按设备鉴权）。</li>
+<li>选一台<strong>尽量常开</strong>的电脑（下面叫「主机」）跑上面的命令；</li>
+<li>家里 / 公司 / 手机浏览器打开面板里对应的地址；</li>
+<li>第一次会要求输入访问口令，输一次记住 90 天，之后不用再输；</li>
+<li>只有主机需要激活授权——其他设备只是浏览器在调主机的接口。</li>
 </ol>
-<p>前提：常开机器得在线；它关机时你就暂时访问不了。若想要“主机挂了也不中断”，用做法二作为离线兜底。</p>
-<p><strong>做法二（离线可用）：导出 JSON 同步包 + 私有 git / U 盘搬运</strong></p>
-<p>两台机器各自本地跑，要同步时把一边的地址库导出、搬到另一边导入合并：</p>
+<p><strong>访问口令是什么</strong>：<code>--remote</code> 会把服务从「只听本机」放开到「全网卡」，同一个 Wi-Fi 或同一个 Tailscale 网络里的人就都能打开页面、用你的 key、改你的地址库。所以加了一道门：主机本机（<code>127.0.0.1</code>）打开免验证，从别的设备进来必须带口令。</p>
+<ul>
+<li>口令首次自动生成，存在 <code>data/settings.json</code>，和备份一起搬走；</li>
+<li>想看口令：在<strong>主机</strong>浏览器控制台或页面接口里查，终端启动面板也会打印；也可以在主机上 <code>curl http://127.0.0.1:8766/api/access/token</code>；</li>
+<li>想换口令：主机上 <code>POST /api/access/token/rotate</code>，旧口令连同所有已登录设备立即失效；</li>
+<li>口令<strong>只能在主机上查看和重置</strong>，远程设备即使已经登录也不给看。</li>
+</ul>
+<p><strong>安全边界</strong>：口令是防「同网段的其他人误入」，不是防公网。<strong>不要把 8766 端口映射到公网</strong>，只在 Tailscale / 局域网内可达即可。</p>
+<p><strong>为什么不能两台各跑一份</strong></p>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>后果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>限速器是<strong>进程级</strong>的</td>
+<td>两台各有一份计数器，都以为自己 5 次/分钟没问题，服务端看到的是同一个 key 合计 10 次/分钟 → 429。两边还都会显示「被限流」，看着像 Taostats 的问题</td>
+</tr>
+<tr>
+<td>巡检会重复烧额度</td>
+<td>每地址 2 次请求 × 685 个地址，两台各跑一遍 = 同一批地址查两次，产出为零、额度翻倍</td>
+</tr>
+<tr>
+<td>SQLite 单写</td>
+<td>两台同时写同一个文件会损坏；想「看到同一个库」只能访问同一个进程</td>
+</tr>
+</tbody>
+</table>
+<p><strong>一条不能违反的规则</strong>：<strong>同一把 Taostats API key，同一时刻只能有一台机器开巡检。</strong> 备机如果要装同一份代码做故障切换，务必把巡检开关关掉（<code>config.enabled=false</code>，<code>tick()</code> 会直接返回、一次请求都不发），等主机挂了再打开。</p>
+<p><strong>做法二（离线兜底 / 换电脑迁移）：导出 JSON 同步包 + 私有 git / U 盘</strong></p>
+<p>这不是日常协同手段，只在三种情况下用：主机长期不在线、换电脑迁移、备机离线跑完回灌。</p>
 <ol>
 <li>在一台机器点「导出全部」（JSON），得到一个 <code>schema_version=2</code> 的同步包，里面每条地址都带 <code>created_at</code> / <code>updated_at</code> 时间戳；</li>
 <li>把它提交进你的<strong>私有 git 仓库</strong>（GitHub 私有库 / 本地 git 都行，别用公开库），或拷到 U 盘；</li>
@@ -1129,6 +1167,12 @@ git reset --hard origin/main
 0.6.4 起结果区顶部会直接列出原因（key 未配置、本地索引为空、金额门槛太高、过滤条件挡掉等）。常见处理：① 确认已保存 Taostats API key（勾着“使用 Taostats 历史索引”时没 key 会被直接拦下）；② 金额阈值改小（把 1 改成 0.1 试试）；③ 这个地址可能本来就没有往来。</p>
 <p><strong>Q：分轮查询到一半不动了？</strong>
 每分钟 5 次请求的限制会让每轮之间等约 1 分钟，属正常现象。如果超过 3 分钟没变化，点“停止续查”保留已有结果，稍后重试。</p>
+<p><strong>Q：手机 / 另一台电脑打开主机地址，一直要求输入访问口令，输对了也进不去？</strong>
+先确认输入的是<strong>主机当前这一版</strong>的口令——点过「重置口令」的话，旧口令会立即失效。在主机上执行 <code>python run.py --remote</code>，启动面板会打印当前口令；也可以主机上直接访问 <a href="http://127.0.0.1:8766/api/access/token">http://127.0.0.1:8766/api/access/token</a> 查看。仍然不行的话，检查是不是用了 <code>http://127.0.0.1:8766</code> 访问——<code>127.0.0.1</code> 在手机 / 另一台电脑上指的是那台设备自己，必须用面板里打印的 Tailscale 或局域网地址。</p>
+<p><strong>Q：从别的设备打开页面，提示「无法连接到服务」？</strong>
+逐项排查：① 主机是否还在跑（主机上打开 <a href="http://127.0.0.1:8766/api/health">http://127.0.0.1:8766/api/health</a> 看有没有返回）；② 主机启动时是不是没用 <code>--remote</code>——只监听 <code>127.0.0.1</code> 时外部设备根本连不上；③ 两台设备是否在同一个 Tailscale 网络（<code>tailscale status</code> 看两边是否都 online）；④ Windows 防火墙是否拦了 8766 端口（首次启动时弹出的允许提示要勾「专用网络」）；⑤ 主机休眠了——甲方案依赖主机在线。</p>
+<p><strong>Q：巡检进度一直不动？</strong>
+0.8.11 起手动查询优先，巡检会主动让路：查询进行中（包括轮间 62 秒等待）以及查询结束后 120 秒内，巡检都不推进，面板会显示「已让路：手动查询进行中 / 冷却 N 秒」。这是预期行为。如果显示的是僵死提示，说明有条查询任务超过 10 分钟毫无进度，系统已按僵死处理并恢复巡检。</p>
 <p><strong>Q：点「扫描最新块」转很久没反应，或者提示「扫描失败」？</strong>
 0.8.10 起首次扫描要先从链上拉取 runtime 元数据（实测 30~90 秒，取决于网络），期间按钮会显示「扫描中（首次预热约 1 分钟）…」，<strong>不要重复点</strong>——重复点会提示“已有扫描在进行”。预热完成后每块只需几秒，完成提示里会附带「运行时预热 XX 秒」。如果失败信息是 <code>RPC scan failed: TimeoutError: ...</code>，说明节点或网络太慢，稍后重试即可；如果提示 409「a scan job is already running」，重启一次服务——0.8.10 起启动时会自动把上次被强杀留下的扫描标记为中断并释放锁，等 8 分钟租约过期的情况已经不会再有。</p>
 <p><strong>Q：Taostats 报 401 / 401 Unauthorized？</strong>

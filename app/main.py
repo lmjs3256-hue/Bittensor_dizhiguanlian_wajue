@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import access as access_mod
 from . import diagnostics
 from . import license as license_mod
 from . import settings_store
@@ -97,6 +98,16 @@ async def lifespan(_app: FastAPI):
         saved_key = settings_store.load_api_key()
         if saved_key:
             configure_taostats_api_key(saved_key)
+    # 远程模式下把访问口令准备好。``run.py --remote`` 已经打过完整面板，
+    # 这里只补一句——直接 uvicorn 起服务（没走 run.py）时才需要完整提示。
+    if access_mod.remote_enabled():
+        access_token, token_created = access_mod.ensure_token()
+        if not os.getenv("WALLET_LINK_BANNER_PRINTED"):
+            print(
+                f"[access] 远程访问已开启，访问口令：{access_token}"
+                f"{'（本次新生成）' if token_created else ''}",
+                file=sys.stderr,
+            )
     scheduler = asyncio.create_task(_job_scheduler())
     exchange_sync = (
         asyncio.create_task(_auto_sync_exchanges()) if AUTO_EXCHANGE_SYNC_ENABLED else None
@@ -151,13 +162,47 @@ PUBLIC_PATHS = {
     "/api/version",
     "/api/license",
     "/api/license/activate",
+    # 口令接口同样不受授权状态影响：远程设备要先过口令，才有机会看到激活页。
+    "/api/access/status",
+    "/api/access/login",
+}
+
+# 远程模式下不用口令也能访问的路径：首页（要能弹出输入框）、健康检查、
+# 版本号，以及口令接口本身。其余一律要求先通过口令。
+ACCESS_PUBLIC_PATHS = {
+    "/",
+    "/api/health",
+    "/api/version",
+    "/api/access/status",
+    "/api/access/login",
 }
 
 
 @app.middleware("http")
-async def license_guard(request: Request, call_next):
+async def request_guard(request: Request, call_next):
+    """两道门：先远程访问口令，再离线授权。
+
+    顺序不能反：未授权的远程访客也应该先被口令挡住，否则「这台机器有没有
+    激活、机器码是多少」这类信息会直接漏给同网段的任何人。
+    """
+
     path = request.url.path
-    if path in PUBLIC_PATHS or path.startswith("/static/"):
+    if path.startswith("/static/"):
+        return await call_next(request)
+    # 第一道：只在远程模式下生效；只监听 127.0.0.1 时整段跳过。
+    if (
+        access_mod.remote_enabled()
+        and path not in ACCESS_PUBLIC_PATHS
+        and not access_mod.allowed(request)
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "detail": "需要访问口令：请输入主机页面上显示的访问口令",
+                "code": "need_access_token",
+            },
+        )
+    if path in PUBLIC_PATHS:
         return await call_next(request)
     if not license_mod.is_licensed():
         return JSONResponse(
@@ -473,6 +518,59 @@ class LicenseActivateInput(BaseModel):
 @app.get("/", include_in_schema=False)
 def home():
     return FileResponse(ROOT / "templates" / "index.html")
+
+
+# -- 远程访问口令 ----------------------------------------------------------
+class AccessLoginInput(BaseModel):
+    """远程设备输入访问口令。"""
+
+    token: str = Field(min_length=4, max_length=64)
+
+
+@app.get("/api/access/status")
+def access_status(request: Request):
+    """前端据此判断要不要弹口令框、要不要显示「远程访问」标识。"""
+
+    return access_mod.status(request)
+
+
+@app.post("/api/access/login")
+def access_login(payload: AccessLoginInput, response: Response):
+    if not access_mod.verify(payload.token):
+        raise HTTPException(401, "访问口令不正确")
+    token = settings_store.load_access_token() or ""
+    response.set_cookie(
+        key=access_mod.COOKIE_NAME,
+        value=token,
+        max_age=access_mod.COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return {"ok": True}
+
+
+@app.get("/api/access/token")
+def access_token(request: Request):
+    """在主机本机查看完整口令，方便复制到手机或另一台电脑。
+
+    远程请求一律拒绝——能远程读到口令，这道门就等于不存在。
+    """
+
+    if not access_mod.is_local(request):
+        raise HTTPException(403, "只能在运行服务的那台电脑上查看访问口令")
+    token, created = access_mod.ensure_token()
+    return {"token": token, "created": created, "hint": access_mod.hint()}
+
+
+@app.post("/api/access/token/rotate")
+def access_token_rotate(request: Request):
+    """重置口令：旧口令连同所有已登录设备一起失效。"""
+
+    if not access_mod.is_local(request):
+        raise HTTPException(403, "只能在运行服务的那台电脑上重置访问口令")
+    token = access_mod.rotate()
+    return {"token": token, "hint": access_mod.hint()}
 
 
 @app.get("/api/health")

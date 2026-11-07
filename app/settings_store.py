@@ -339,3 +339,27 @@ def save_watch_config(config: dict[str, Any]) -> bool:
     data["version"] = 1
     data[_WATCH_FIELD] = merged
     return _write(data)
+
+
+# -- 远程访问口令 ----------------------------------------------------------
+# 甲方案下主机要监听 0.0.0.0 才能被 Tailscale / 局域网访问，这道口令就是
+# 除「能连上这个网」之外的第二道门。它不是机密，和 key 放在同一个文件里，
+# 换电脑时一起带走，等于把「哪些设备能进」也一起迁移过去。
+_ACCESS_TOKEN_FIELD = "access_token"
+
+
+def load_access_token() -> str | None:
+    value = _read().get(_ACCESS_TOKEN_FIELD)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def save_access_token(token: str) -> bool:
+    value = token.strip()
+    if not value:
+        return False
+    data = _read()
+    data["version"] = 1
+    data[_ACCESS_TOKEN_FIELD] = value
+    return _write(data)
