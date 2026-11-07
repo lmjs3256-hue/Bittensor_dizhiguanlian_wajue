@@ -1,5 +1,34 @@
 # 验证交付记录
 
+## 0.8.5 验证记录（2026-11-07）
+
+**改动**：路径明细里的地址从「头6尾6」改成「头4尾4」，与关联结果主表、查询记录统一一套截断规则。
+
+**函数级（CDP 直接调用页面函数）**
+
+| 检查项 | 结果 |
+| --- | --- |
+| 样本地址长度 | 48 |
+| `shortAddr(sample)` | `5HTL…Tif7` |
+| `pathAddr(sample)` | `5HTL…Tif7` |
+| 两者一致 | `true` |
+
+**页面级（真实历史记录 #59，5 个关联、3 跳路径）**
+
+| 检查项 | 结果 |
+| --- | --- |
+| 明细展开 | `detailOpened=true` |
+| 逐跳地址文本 | `5Gy8…jEbt` / `5HDo…D7QQ` / `5HDo…D7QQ` / `5FUR…tzHe` / `5FUR…tzHe` / `5GBn…iEUi` |
+| 文本长度 | 全部 `9`（4 + `…` + 4） |
+| 头 4 / 尾 4 | `headOk=true`、`tailOk=true` |
+| 残留头6尾6（长度 13） | `anyLegacy13=false` |
+| 主表同一地址文本 | `5GBn…iEUi`（与明细末跳一致） |
+| 路径列折行 | `wayTruncated=0`，3 行均高 15px |
+| 明细滚动区高 | 134px |
+| 页面横向溢出 | `pageOverflowX=false` |
+
+**回归**：`node --check app/static/app.js` 通过；`pytest -q` = **311 passed**（新增 `test_path_detail_address_uses_the_same_truncation_as_main_table` 1 条，断言 `pathAddr` 复用 `shortAddr` 且自身不再出现 `slice(`）；`/api/health` 报 `0.8.5`，页面资源戳 `?v=0.8.5`；`使用说明.html` 用 `tools/build_usage_html.py` 重新生成（81 007 bytes）。
+
 ## 0.8.2 验证记录（2026-11-07）
 
 **改动**：路径明细重排为「每跳一行」；「收起明细」改为强调色实心按钮；深灰主题按钮对比度修正；日均频次天数改按北京时间算。
@@ -13,7 +42,7 @@
 | --- | --- |
 | 列宽 | 跳 44 / 路径 632 / 流向类型 118 / 金额 104 / 时间 150 / 区块 88 |
 | 每跳行高 | 30（表头）→ 34～35，2 跳 / 6 跳全部 `allOneLine=true` |
-| 地址折行 | `wayTruncated=0`，路径列 612px 内容宽度够放头6尾6两个地址 |
+| 地址折行 | `wayTruncated=0`，路径列 612px 内容宽度够放头6尾6两个地址（**0.8.5 已统一成头4尾4**，见上一节） |
 | 横条溢出 | `pageOverflowX=false`（1440 与窄屏均无） |
 | 收起按钮 | 78×30、`rgb(9,111,100)` 实心底、12px/750、对比度 6.05（亮）/ 8.39（深灰） |
 | 展开标记 | 行内按钮实心 + 行 `.path-open`（左竖条 + 浅底），收起后 `rowText=路径明细`、`detailGone=true` |

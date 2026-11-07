@@ -63,3 +63,22 @@ def test_path_detail_has_two_collapse_entries_for_long_paths():
     assert "path-detail-foot" in JS
     assert "hops.length > 3" in JS
     assert ".path-detail-foot" in CSS
+
+
+def test_path_detail_address_uses_the_same_truncation_as_main_table():
+    """路径明细的地址截断必须和主表同一套（头 4 + 尾 4）。
+
+    0.8.2 重排明细表时这里单独用了头6尾6「方便人工比对」，结果同一屏里
+    主表 `5Hiv…N8kS`、明细 `5Hiv4k…8kSn2P` 两种长度，同一个地址看着像两个。
+    现在 `pathAddr()` 直接复用 `shortAddr()`，全站只有一处截断规则。
+    """
+
+    # 全站唯一截断规则仍在 shortAddr：
+    assert "text.slice(0, 4)}…${text.slice(-4)}" in JS
+    # 明细的 pathAddr 不许再自己写一套数字
+    start = JS.index("function pathAddr(")
+    body = JS[start : JS.index("}", start)]
+    assert "shortAddr(value)" in body, "pathAddr 应复用 shortAddr，不要再单独截断"
+    assert "slice(" not in body, "pathAddr 里不应再出现自己的 slice 截断"
+    # 明细行必须真的用 pathAddr 渲染（而不是直接短地址或完整地址）
+    assert "pathAddr(from)" in JS and "pathAddr(to)" in JS

@@ -775,11 +775,11 @@ function relatedTable(rows) {
   }).join("")}</tbody></table>`;
 }
 
-// 路径明细里的地址比主表多显示几位：主表 9 列要抢宽度只能用头4尾4，
-// 但明细表的「路径」列有 600px 以上，头6尾6 更容易人工比对是不是同一个地址。
+// 路径明细里的地址跟主表统一成头 4 + 尾 4，全站只有 shortAddr 一处截断规则。
+// 早期这里单独用头6尾6（想着明细列宽更宽、更好比对），但同一屏里主表头4尾4、
+// 明细头6尾6 会让人以为是两个不同地址，统一成一套更好认。
 function pathAddr(value) {
-  const text = String(value || "");
-  return text.length > 14 ? `${text.slice(0, 6)}…${text.slice(-6)}` : text;
+  return shortAddr(value);
 }
 
 function pathDetailRowHtml(row) {
