@@ -1574,7 +1574,7 @@ function libraryRowsTable(rows) {
     const editorRow = "";
     return `<tr>
       <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"${state.librarySelection.has(String(row.id)) ? " checked" : ""}${row.builtin_locked ? ' disabled title="内置固定名单地址，不能批量删除"' : ""}></td>
-      <td class="mono address library-address-cell"><div class="address-main">${addressLink(row.address, row.address)}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button></div></td>
+      <td class="mono address library-address-cell"><div class="address-main">${addressLink(row.address, shortAddr(row.address))}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button></div></td>
       <td class="library-label-cell">${labelCell}</td>
       <td><div class="category-chips">${chips}</div>${exchangeControl}${publicControl}</td>
       <td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td>

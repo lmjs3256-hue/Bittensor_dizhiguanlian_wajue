@@ -1,5 +1,12 @@
 # 变更记录
 
+## 0.8.7 · 地址库清单地址改为头尾各 4 位掩码并带复制按钮 · 2026-11-07
+
+- **地址库清单的地址不再显示两行**：原本地址列直接渲染完整 SS58（约 48 位）的 Taostats 链接，窄列里会折成两行。现改为 `shortAddr()` 头 4 + 尾 4、中间省略的掩码格式（如 `5Gjq…Thor`），仍是可点开 Taostats 的链接，紧邻一个「复制」按钮（复制完整地址），整行 `white-space:nowrap` 不再换行。
+- 与「地址关联明细检索」结果表（早已用掩码 + 复制按钮）口径一致；全站地址展示统一为头尾各 4 位、中间隐藏，除非有特殊要求。
+- 改了 `app.js` 与 `styles.css` 两处静态资源，已同步升 `VERSION` 与 `index.html` 两处 `?v=` 到 0.8.7。
+- 新增 `tests/test_library_address_display.py` 回归测试：断言库清单行用 `addressLink(row.address, shortAddr(row.address))` 渲染（掩码 + 仍可跳 Taostats）、且带 `data-copy-address` 复制按钮、CSS 含 `.library-address-cell .address-main { white-space:nowrap }`，锁死「掩码 + 复制、不换行」的契约。
+
 ## 0.8.6 · 地址库清单支持搜索与角色筛选 · 2026-11-07
 
 - **修复“手动标了公共地址却在地址库里找不到 / 进错库”的漏洞**：用户把一个以 Thor 结尾的关联地址标为公共地址后，去「已知地址库」按公共地址查找却找不到；更糟的是当时创建的新库（如 6NCK）把这条公共地址也收了进去。根因有两层：

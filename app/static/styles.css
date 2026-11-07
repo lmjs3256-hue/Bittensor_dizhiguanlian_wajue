@@ -455,8 +455,11 @@ body.license-locked .shell { filter:blur(2px); pointer-events:none; user-select:
 /* 地址明细：点击地址在 Taostats 打开，旁边有快捷复制 */
 .addr-link { color:var(--accent); text-decoration:none; border-bottom:1px dashed var(--accent-soft); font:inherit; word-break:break-all; }
 .addr-link:hover { text-decoration:none; border-bottom-style:solid; }
-.library-address-cell { min-width:260px; }
-.library-address-cell .addr-link { font-size:11.5px; }
+.library-address-cell { min-width:240px; }
+/* 地址只显示头4+尾4，且整行不换行；masked 链接 + 复制按钮横向排布。 */
+.library-address-cell .address-main { display:flex; align-items:center; gap:7px; white-space:nowrap; }
+.library-address-cell .addr-link { font-size:12px; }
+.library-address-cell code, .library-address-cell .addr-link { white-space:nowrap; }
 .library-address-cell .copy-address { padding:3px 8px; font-size:11px; }
 .category-chips { display:flex; gap:5px; flex-wrap:wrap; margin-bottom:6px; }
 .category-editor-row > td { padding:0 12px 12px; border-bottom:1px solid var(--line); }
