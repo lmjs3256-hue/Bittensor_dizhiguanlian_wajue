@@ -19,6 +19,7 @@ from app.relation import discover
 from app.relation_config import LinkPolicy, TransferRecord
 from app.service import LinkService, _stake_counterparty
 from app.taostats import TransferPage, get_stake_transfer_page, reset_client_state_for_tests
+from http_stub import as_http_get
 
 A = "5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt"
 B = "5DceuTr7XPqw67PNHW9ewzzo2cZ7Cm8HgfjwUqEpd8Mh8QNg"
@@ -226,7 +227,7 @@ def test_stake_event_client_parses_response_and_caches(monkeypatch):
             request=httpx.Request("GET", taostats.STAKE_EVENTS_URL),
         )
 
-    monkeypatch.setattr(taostats.httpx, "get", fake_get)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(fake_get))
     page = get_stake_transfer_page(A)
     cached = get_stake_transfer_page(A)
 

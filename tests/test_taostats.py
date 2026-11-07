@@ -19,6 +19,7 @@ from app.taostats import (
     get_exchange_addresses,
     get_transfer_page,
 )
+from http_stub import as_http_get
 
 
 ADDRESSES = [
@@ -62,7 +63,7 @@ def test_transfer_client_sends_key_and_parses_paginated_response(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(taostats.httpx, "get", fake_get)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(fake_get))
 
     page = get_transfer_page(ADDRESSES[0])
     cached = get_transfer_page(ADDRESSES[0])
@@ -105,7 +106,7 @@ def test_transfer_client_requires_key_and_obeys_local_rate_guard(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(taostats.httpx, "get", fake_get)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(fake_get))
     for index in range(taostats.LOCAL_REQUESTS_PER_MINUTE):
         get_transfer_page(f"address-{index}")
 
@@ -116,15 +117,13 @@ def test_transfer_client_requires_key_and_obeys_local_rate_guard(monkeypatch):
 
 def test_transfer_client_reports_auth_and_provider_rate_errors(monkeypatch):
     monkeypatch.setenv("TAOSTATS_API_KEY", "test-secret")
-    monkeypatch.setattr(
-        taostats.httpx, "get", lambda *_args, **_kwargs: api_response({}, 401)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(lambda *_args, **_kwargs: api_response({}, 401))
     )
     with pytest.raises(TaostatsAuthError, match="无效或没有访问权限"):
         get_transfer_page(ADDRESSES[0])
 
     taostats.reset_client_state_for_tests()
-    monkeypatch.setattr(
-        taostats.httpx, "get", lambda *_args, **_kwargs: api_response({}, 429)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(lambda *_args, **_kwargs: api_response({}, 429))
     )
     with pytest.raises(TaostatsRateLimitError, match="返回限流"):
         get_transfer_page(ADDRESSES[1])
@@ -146,7 +145,7 @@ def test_exchange_directory_parses_coldkeys_and_uses_cache(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(taostats.httpx, "get", fake_get)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(fake_get))
 
     rows, from_cache = get_exchange_addresses()
     cached, cached_from_cache = get_exchange_addresses()
@@ -635,6 +634,21 @@ def test_api_selects_data_source_and_preserves_local_default(monkeypatch):
             None,
         ),
     )
+    # taostats 模式下服务还会去问验证者名单、起始地址画像，并抓子网 stake 转移。
+    # 以前直连超时，这些调用走进了「不抛异常、静默降级」的分支，用例看起来是
+    # 通过的；0.8.16 让超时可以被感知（并自动切代理）后就会真的发外网请求。
+    # 这里显式打桩：这个用例验证的是数据源选择，不是网络行为。
+    monkeypatch.setattr(
+        service_module, "get_active_validator_addresses", lambda: (set(), False)
+    )
+    monkeypatch.setattr(
+        service_module, "get_account_profile", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        service_module,
+        "get_stake_transfer_page",
+        lambda *_a, **_k: TransferPage([], None),
+    )
     with TemporaryDirectory() as directory:
         database = Database(Path(directory) / "api.db")
         try:
@@ -697,7 +711,7 @@ def test_taostats_key_settings_persist_locally_and_never_echo(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(taostats.httpx, "get", fake_get)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(fake_get))
     with TemporaryDirectory() as directory:
         database = Database(Path(directory) / "key-settings.db")
         try:
@@ -753,7 +767,7 @@ def test_request_get_retries_transient_transport_error(monkeypatch):
         return api_response({"data": [{"address": ADDRESSES[0]}], "pagination": {}})
 
     sleeps = []
-    monkeypatch.setattr(taostats.httpx, "get", flaky_get)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(flaky_get))
     monkeypatch.setattr(taostats.time, "sleep", lambda seconds: sleeps.append(seconds))
 
     addresses, cached = taostats.get_active_validator_addresses()
@@ -774,7 +788,7 @@ def test_request_get_gives_up_after_all_attempts(monkeypatch):
         attempts.append(url)
         raise httpx.ConnectError("[SSL: UNEXPECTED_EOF_WHILE_READING]")
 
-    monkeypatch.setattr(taostats.httpx, "get", always_fail)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(always_fail))
     monkeypatch.setattr(taostats.time, "sleep", lambda seconds: None)
 
     with pytest.raises(taostats.TaostatsUnavailableError) as excinfo:

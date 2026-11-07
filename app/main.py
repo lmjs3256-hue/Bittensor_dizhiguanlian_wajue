@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
@@ -19,6 +21,7 @@ from . import access as access_mod
 from . import diagnostics
 from . import license as license_mod
 from . import settings_store
+from . import taostats
 from .config import ROOT_DIR, database_path, settings
 from .db import Database, install_seed_books
 from .inputs import InputError
@@ -154,6 +157,34 @@ TAOSTATS_KEY_MISSING = (
     "未配置 Taostats API key：请先在页面「Taostats API key」里粘贴并点「保存 API key」，再发起查询。"
     "如果只想查本地索引，请取消勾选「使用 Taostats 历史索引」。"
 )
+
+# 出站探测结果缓存：探测要发 2~3 个请求，自检连点时不能每次重跑。
+_OUTBOUND_PROBE: dict[str, Any] = {"at": 0.0, "payload": None}
+_OUTBOUND_PROBE_TTL = 60.0
+_OUTBOUND_PROBE_LOCK = threading.Lock()
+
+
+def _outbound_probe_cached(force: bool = False) -> dict[str, Any] | None:
+    """出一份出站可达性报告（带 60 秒缓存）。探测异常不影响自检本身。"""
+
+    now = time.monotonic()
+    with _OUTBOUND_PROBE_LOCK:
+        cached = _OUTBOUND_PROBE.get("payload")
+        if not force and cached and now - float(_OUTBOUND_PROBE["at"]) < _OUTBOUND_PROBE_TTL:
+            return cached
+        try:
+            active = taostats.outbound_proxy_status()
+            payload = taostats.probe_outbound()
+            payload["active"] = active
+        except Exception as exc:  # noqa: BLE001 - 探测失败不能让自检报错
+            payload = {
+                "results": [],
+                "active": {},
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        _OUTBOUND_PROBE["at"] = now
+        _OUTBOUND_PROBE["payload"] = payload
+        return payload
 
 # 未激活时也要能打开的路径：首页显示激活页，健康检查和授权接口用于自检/激活。
 PUBLIC_PATHS = {
@@ -611,6 +642,8 @@ def diagnose(svc: Annotated[LinkService, Depends(service)]):
         startup_builtin=BUILTIN_STARTUP_RESULT,
         # 界面上会重复点，给 5 秒缓存；管理端改了地址库也能很快看到。
         cache_ttl=5.0,
+        # 出站可达性单独缓存：探测要发 2~3 个请求，不能每次点自检都跑一遍。
+        outbound_probe=_outbound_probe_cached(),
     )
 
 

@@ -4087,6 +4087,7 @@ class LinkService:
         pagination_complete = True
         provider_window_truncated = False
         api_error = ""
+        api_error_kind = ""
         records_by_key: dict[str, Any] = {}
         if crawl is not None:
             state = crawl.state
@@ -4097,6 +4098,7 @@ class LinkService:
             pagination_complete = state.pagination_complete
             provider_window_truncated = state.provider_window_truncated
             api_error = state.api_error
+            api_error_kind = state.api_error_kind
             if state.has_work:
                 pagination_complete = False
                 if pending_note:
@@ -4303,6 +4305,10 @@ class LinkService:
                 + (["local"] if local_transfer_rows else [])
             ),
             "freshness": report.freshness,
+            # 失败原因分类，页面据此给不同的处理建议：
+            # "auth" = key 无效；"network" = 够不到 Taostats；"" = 没出错。
+            "api_error": api_error,
+            "api_error_kind": api_error_kind,
             "policy": {
                 **report.policy.to_dict(),
                 "min_edge_tao": str(policy.min_edge_tao),

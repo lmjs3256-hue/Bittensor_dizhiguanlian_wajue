@@ -164,6 +164,9 @@ def test_diagnose_endpoint(monkeypatch):
     import app.main as main_module
 
     diagnostics.clear_cache()
+    # 自检接口会顺带探测出站可达性，那要真的发请求。这个用例只验证自检能
+    # 跑通，不打桩的话会在测试机上卡十几秒，而且结果依赖本机网络。
+    monkeypatch.setattr(main_module, "_outbound_probe_cached", lambda force=False: None)
     with TemporaryDirectory() as directory:
         database, service = build_service(directory, "api-diagnose.db")
         original = getattr(main_module, "SERVICE", None)
@@ -240,3 +243,80 @@ def test_version_endpoint_flags_stale_process():
     payload = client.get("/api/version").json()
     assert payload["running_version"] == main_module.VERSION_INFO["version"]
     assert payload["stale"] is False
+
+
+def test_outbound_check_passes_when_active_path_reachable():
+    diagnostics.clear_cache()
+    with TemporaryDirectory() as directory:
+        database, _service = build_service(directory)
+        try:
+            probe = {
+                "active": {"url": "http://127.0.0.1:7890", "source": "系统代理"},
+                "results": [
+                    {"proxy": "http://127.0.0.1:7890", "source": "系统代理", "ok": True, "status_code": 200},
+                    {"proxy": None, "source": "直连", "ok": False, "error": "ConnectTimeout"},
+                ],
+            }
+            report = report_for(database, taostats_configured=True, outbound_probe=probe)
+            item = check(report, "outbound")
+            assert item["status"] == "pass"
+            assert "系统代理" in item["detail"]
+        finally:
+            database.engine.dispose()
+
+
+def test_outbound_check_warns_when_active_path_down_but_other_works():
+    """本机代理掉线后自动切换成功：只提示，不算故障。"""
+
+    diagnostics.clear_cache()
+    with TemporaryDirectory() as directory:
+        database, _service = build_service(directory)
+        try:
+            probe = {
+                "active": {"url": "http://127.0.0.1:7890", "source": "系统代理"},
+                "results": [
+                    {"proxy": "http://127.0.0.1:7890", "source": "系统代理", "ok": False, "error": "ConnectTimeout"},
+                    {"proxy": None, "source": "直连", "ok": True, "status_code": 200},
+                ],
+            }
+            report = report_for(database, taostats_configured=True, outbound_probe=probe)
+            item = check(report, "outbound")
+            assert item["status"] == "warn"
+            assert "直连" in item["detail"]
+        finally:
+            database.engine.dispose()
+
+
+def test_outbound_check_fails_when_nothing_reachable():
+    """所有出站路径都不通 = 查询必然退回本地索引，必须报 fail 并指明去查代理。"""
+
+    diagnostics.clear_cache()
+    with TemporaryDirectory() as directory:
+        database, _service = build_service(directory)
+        try:
+            probe = {
+                "active": {"url": None, "source": "直连"},
+                "results": [
+                    {"proxy": None, "source": "直连", "ok": False, "error": "ConnectTimeout: timed out"},
+                ],
+            }
+            report = report_for(database, taostats_configured=True, outbound_probe=probe)
+            assert report["ok"] is False
+            item = check(report, "outbound")
+            assert item["status"] == "fail"
+            assert "代理" in item["hint"]
+        finally:
+            database.engine.dispose()
+
+
+def test_outbound_check_absent_when_not_probed():
+    """没传探测结果就不要凭空生成一条检查项。"""
+
+    diagnostics.clear_cache()
+    with TemporaryDirectory() as directory:
+        database, _service = build_service(directory)
+        try:
+            report = report_for(database, taostats_configured=True)
+            assert all(item["id"] != "outbound" for item in report["checks"])
+        finally:
+            database.engine.dispose()

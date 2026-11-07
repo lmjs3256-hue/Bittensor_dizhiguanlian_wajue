@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.8.16 · 查询失败被误报成「没有 API key」：出站自动走系统代理 · 2026-11-08
+
+- **现象**：0.8.15 上查询失败，页面提示**没有可用的 API key**，但 key 明明配着（`/api/overview` 返回 `taostats_configured=true`）。
+- **真因（实测取证）**：这台机器**直连 taostats.io 超时**——同一时刻从本机发起：直连 `ReadTimeout 8.5s`；经本机 Clash 代理 `127.0.0.1:7890` **HTTP 200 / 1.2 秒**。而 Python 的 httpx **只认环境变量、不读 Windows 系统代理设置**，服务一直在直连，于是所有 Taostats 请求超时 → 查询静默退回本地索引（`LOCAL_FALLBACK`、`api_requests=0`）→ 前端把「0 次请求 + 退回本地」直接判成「没有可用的 API key」，把排查方向带偏。
+- **修复一（根因）：出站自动走系统代理**。`app/taostats.py` 新增出站路径决策层，按序取：`WALLET_LINK_HTTP_PROXY` 环境变量（`none`/`off` 强制直连）→ **Windows 系统代理（WinINET 注册表，Clash/v2rayN 写在这里）** → `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` → 直连。某条路径传输层失败后**拉黑 10 分钟并自动换下一条**，换路时打印 `[taostats] 出站请求走 …：原因`。`trust_env=False`，代理选择完全由这一层接管，不再受环境变量隐式影响。
+- **修复二（误导性文案）**：`app/service.py` 与 `app/jobs.py` 的结果里新增 `api_error` / `api_error_kind`（`auth`=key 无效 / `network`=连不上 / 空=无错），`app/crawl.py` 的状态加 `api_error_kind`。前端 `emptyResultReason()` 不再用「0 次请求 + LOCAL_FALLBACK」反推 key 缺失，改为：只有服务端明确说「未配置」才提示 key；网络失败则提示「连不上 Taostats 接口（不是 API key 的问题）」并指向环境自检。
+- **修复三（可诊断）**：环境自检新增「出站网络（taostats.io）」一项，逐条探测每个出站路径（HEAD 请求，不带 key、不占额度，60 秒缓存），三种结论：当前路径可达 / 当前不通但另一条可用（会自动切换）/ 全部不通（判定为 fail，提示去查代理）。
+- **验证**：真实探测 `系统代理 200/1.0s`、`环境变量代理(127.0.0.1:50806) ReadTimeout`、`直连 ConnectTimeout`；新增 `tests/test_outbound_proxy.py` 15 例 + 自检出站 4 例。
+
 ## 0.8.15 · 说明文档：远程访问与公网隧道独立成章 · 2026-11-07
 
 - **问题**：远程访问、公网隧道、口令这些内容 0.8.12/0.8.13 就写进了《使用说明》，但被放在「十、拷贝到另一台电脑」下面的**三级标题**里。离线 HTML 的目录只收二级标题，所以读者翻目录根本看不到，会以为文档没更新。

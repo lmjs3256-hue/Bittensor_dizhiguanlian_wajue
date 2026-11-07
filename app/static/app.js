@@ -1151,22 +1151,35 @@ function removeRelation(address) {
 }
 
 /* 0 个关联地址时，必须告诉用户"为什么是空表"，否则很容易被当成工具坏了。
-   最常见的两种：Taostats API key 没配（只回退了本地索引）、过滤/阈值把结果挡光。 */
+   最常见的两种：Taostats API key 没配（只回退了本地索引）、过滤/阈值把结果挡光。
+
+   0.8.16 修正：以前只要「taostats 数据源 + 0 次请求 + LOCAL_FALLBACK」就断定
+   「没有可用的 API key」。但网络够不到 taostats.io（代理没开、被墙）时结果完全
+   一样——于是查询因为网络失败，页面却叫人去填 key，方向全错。现在优先看服务端
+   给的 api_error_kind，只有真的没有 key 才那么说。 */
 function emptyResultReason(data) {
   if ((data.related || []).length) return null;
   const warnings = [...(data.warnings || []), ...(data.limitations || [])].join(" ");
-  const keyMissing = /API key/i.test(warnings)
-    || (data.data_source === "taostats" && !data.api_requests && data.freshness === "LOCAL_FALLBACK");
+  const errorKind = data.api_error_kind || "";
+  const apiError = data.api_error || "";
+  // key 缺失只有一种确凿证据：服务端明确说没配。不再靠"0 次请求"反推。
+  const keyMissing = /未配置.*API key|没有可用的.*API key/i.test(warnings)
+    || errorKind === "auth" && /API key/i.test(apiError) && /未配置/i.test(apiError);
+  const networkFailed = errorKind === "network" || (!keyMissing && Boolean(apiError));
   const points = [];
   if (keyMissing) {
     points.push("当前服务没有可用的 Taostats API key，这次查询只读了本地索引。");
+  } else if (networkFailed) {
+    points.push(`连不上 Taostats 接口（不是 API key 的问题）：${apiError || "请求失败"}。`);
   }
   if (data.freshness === "LOCAL_FALLBACK") {
     points.push(`本地索引里没有这个地址的转账记录（本地共 ${number(data.local_transfer_count || 0)} 条转账，覆盖区间有限）。`);
   } else if (data.data_source === "local" && data.freshness === "EMPTY_INDEX") {
     points.push("本地索引是空的：先在「更新链上索引」里扫描最新区块，或勾选「使用 Taostats 历史索引」再查。");
   }
-  if (keyMissing || data.freshness === "LOCAL_FALLBACK") {
+  if (networkFailed) {
+    points.push("检查本机代理软件（Clash 等）是否在运行、系统代理是否已开启，然后重新查询；点「更新日志 → 环境自检」可以看到「出站网络」每一项的实际结果。");
+  } else if (keyMissing || data.freshness === "LOCAL_FALLBACK") {
     points.push("保存 API key（或取消勾选「使用 Taostats 历史索引」只查本地）后重新查询。");
   } else if (data.data_source === "taostats" && !(data.taostats_transfer_count > 0)) {
     points.push("Taostats 返回 0 条转账：这个地址在该数据源里没有可用的转账历史。");
@@ -1185,13 +1198,15 @@ function emptyResultReason(data) {
   if (!points.length) {
     points.push("数据源里没有符合当前层级/方向/金额条件的转账记录。");
   }
-  return { keyMissing, points };
+  return { keyMissing, networkFailed, points };
 }
 
 function emptyResultSummary(data) {
   const reason = emptyResultReason(data);
   if (!reason) return "";
-  return reason.keyMissing ? "未配置 Taostats API key，只查了本地索引" : "数据源里没有符合条件的转账";
+  if (reason.keyMissing) return "未配置 Taostats API key，只查了本地索引";
+  if (reason.networkFailed) return "连不上 Taostats 接口，只查了本地索引";
+  return "数据源里没有符合条件的转账";
 }
 
 function focusTaostatsKey(message) {

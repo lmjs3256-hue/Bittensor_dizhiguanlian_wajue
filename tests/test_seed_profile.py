@@ -7,6 +7,7 @@ import pytest
 
 from app import service as service_module
 from app import taostats
+from http_stub import as_http_get
 
 
 SEED = "5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt"
@@ -229,7 +230,7 @@ def test_stake_event_total_requests_action_all_with_limit_one(monkeypatch):
         calls.append((url, kwargs.get("params")))
         return _stake_response(906)
 
-    monkeypatch.setattr(taostats.httpx, "get", fake_get)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(fake_get))
 
     total, cached = taostats.get_stake_event_total(SEED)
 
@@ -255,7 +256,7 @@ def test_stake_event_total_is_cached(monkeypatch):
         calls.append(1)
         return _stake_response(12)
 
-    monkeypatch.setattr(taostats.httpx, "get", fake_get)
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(fake_get))
 
     first, cached_first = taostats.get_stake_event_total(SEED)
     second, cached_second = taostats.get_stake_event_total(SEED)
@@ -267,7 +268,7 @@ def test_stake_event_total_is_cached(monkeypatch):
 
 def test_stake_event_total_raises_on_rate_limit(monkeypatch):
     monkeypatch.setenv("TAOSTATS_API_KEY", "test-key")
-    monkeypatch.setattr(taostats.httpx, "get", lambda *a, **k: _stake_response(0, status=429))
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(lambda *a, **k: _stake_response(0, status=429)))
 
     with pytest.raises(taostats.TaostatsRateLimitError):
         taostats.get_stake_event_total(SEED)

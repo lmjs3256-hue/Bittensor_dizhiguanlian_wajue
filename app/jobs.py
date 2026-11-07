@@ -577,6 +577,9 @@ class RelationJobManager:
             "rounds_log": list(state.round_log),
             "kind_labels": KIND_LABELS,
             "error": job.error,
+            # 区分「key 无效」与「够不到 Taostats」：页面据此给不同建议。
+            "api_error": state.api_error,
+            "api_error_kind": state.api_error_kind,
             "archive_id": job.archive_id,
             "warnings": list(dict.fromkeys(state.warnings))[:8],
             "result": job.result,

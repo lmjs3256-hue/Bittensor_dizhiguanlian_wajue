@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from collections import deque
@@ -96,6 +97,239 @@ _profile_cache: dict[str, tuple[float, AccountProfile]] = {}
 _stake_total_cache: dict[str, tuple[float, int]] = {}
 _key_override: str | None = None
 _key_override_active = False
+
+
+# -- 出站代理 -----------------------------------------------------------------
+#
+# 实测踩过的坑：这台机器直连 taostats.io 会超时（国内路由不稳），必须走本机
+# 代理（Clash 之类）。但 Python 的 httpx 只认环境变量，不读 Windows 系统代理
+# 设置——于是出现「浏览器打得开 taostats.io，服务查询一直超时」，查询静默
+# 退回本地索引，页面还把它报成『没有可用的 API key』，完全误导排查方向。
+#
+# 这里按下述顺序决定出站路径，传输层失败时自动换下一条能用的：
+#
+#   1. WALLET_LINK_HTTP_PROXY 环境变量（"none"/"off" 强制直连）
+#   2. Windows 系统代理（WinINET 注册表，ProxyEnable=1 时；Clash 写在这里）
+#   3. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY 环境变量
+#   4. 直连
+#
+# 某条路失败后会被「拉黑」10 分钟，期间优先走其他路；全部失败再从头试。
+
+_PROXY_OVERRIDE_ENV = "WALLET_LINK_HTTP_PROXY"
+_PROXY_BAN_SECONDS = 600.0
+_PROBE_TIMEOUT_SECONDS = 6.0
+
+_proxy_state_lock = threading.Lock()
+_proxy_state: dict[str, Any] = {
+    "url": None,
+    "source": "undecided",
+    "banned": {},  # url(None 表示直连) -> 拉黑截止时刻（单调时钟）
+}
+_proxy_clients: dict[str | None, httpx.Client] = {}
+_wininet_cache: tuple[float, str | None] | None = None
+
+
+def _normalize_proxy_server(server: str) -> str | None:
+    """把注册表里的 ProxyServer 规范成 httpx 认的 URL。
+
+    支持两种形态：``127.0.0.1:7890``（全局代理）和
+    ``http=127.0.0.1:7890;https=127.0.0.1:7890``（按协议指定）。
+    """
+
+    text = server.strip()
+    if not text:
+        return None
+    if "=" in text:
+        parts = {}
+        for item in text.split(";"):
+            if "=" in item:
+                name, _, value = item.partition("=")
+                parts[name.strip().lower()] = value.strip()
+        text = parts.get("https") or parts.get("http") or ""
+    text = text.strip()
+    if not text:
+        return None
+    if "://" not in text:
+        text = "http://" + text
+    return text
+
+
+def _wininet_proxy_url() -> str | None:
+    """读 Windows 系统代理（Clash / v2rayN 等都会写 WinINET 设置）。"""
+
+    global _wininet_cache
+
+    if os.name != "nt":
+        return None
+    now = time.monotonic()
+    if _wininet_cache and now - _wininet_cache[0] < 60:
+        return _wininet_cache[1]
+    value = None
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            0,
+            winreg.KEY_READ,
+        ) as key:
+            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+            if enabled:
+                server, _ = winreg.QueryValueEx(key, "ProxyServer")
+                value = _normalize_proxy_server(str(server))
+    except Exception:  # noqa: BLE001 - 注册表读不到就当没有系统代理
+        value = None
+    _wininet_cache = (now, value)
+    return value
+
+
+def _proxy_candidates() -> list[tuple[str | None, str]]:
+    """按优先级列出出站路径候选：(代理 URL 或 None=直连, 来源说明)。"""
+
+    override = os.getenv(_PROXY_OVERRIDE_ENV, "").strip()
+    if override:
+        if override.lower() in {"none", "off", "direct", "no"}:
+            return [(None, "env-override")]
+        if "://" not in override:
+            override = "http://" + override
+        return [(override, "env-override")]
+
+    candidates: list[tuple[str | None, str]] = []
+    wininet = _wininet_proxy_url()
+    if wininet:
+        candidates.append((wininet, "系统代理"))
+    env_url = (
+        os.getenv("HTTPS_PROXY")
+        or os.getenv("https_proxy")
+        or os.getenv("HTTP_PROXY")
+        or os.getenv("http_proxy")
+        or os.getenv("ALL_PROXY")
+        or os.getenv("all_proxy")
+        or ""
+    ).strip()
+    if env_url:
+        candidates.append((env_url, "环境变量"))
+    candidates.append((None, "直连"))
+    return candidates
+
+
+def _decide_proxy(now: float | None = None) -> tuple[str | None, str]:
+    """挑第一条没有被拉黑的候选路径。"""
+
+    moment = time.monotonic() if now is None else now
+    banned = _proxy_state.get("banned", {})
+    candidates = _proxy_candidates()
+    for url, source in candidates:
+        until = banned.get(url)
+        if until and moment < until:
+            continue
+        return url, source
+    return candidates[0]
+
+
+def _log_proxy_change(url: str | None, source: str, reason: str) -> None:
+    target = url if url else "直连"
+    print(f"[taostats] 出站请求走 {source}（{target}）：{reason}", file=sys.stderr)
+
+
+def _active_proxy() -> tuple[str | None, str]:
+    """当前生效的出站路径；第一次调用时决定，之后沿用直到失败换路。"""
+
+    with _proxy_state_lock:
+        if _proxy_state["source"] != "undecided":
+            return _proxy_state["url"], _proxy_state["source"]
+        url, source = _decide_proxy()
+        _proxy_state["url"] = url
+        _proxy_state["source"] = source
+        _log_proxy_change(url, source, "初始选择")
+        return url, source
+
+
+def _note_proxy_failure(url: str | None, source: str, exc: Exception) -> None:
+    """某条路传输层失败：拉黑它，换下一条（换了会打一行日志）。"""
+
+    with _proxy_state_lock:
+        banned = _proxy_state.setdefault("banned", {})
+        banned[url] = time.monotonic() + _PROXY_BAN_SECONDS
+        new_url, new_source = _decide_proxy()
+        if (new_url, new_source) != (url, source):
+            _proxy_state["url"] = new_url
+            _proxy_state["source"] = new_source
+            _log_proxy_change(new_url, new_source, f"原路径（{source}）失败：{exc}")
+
+
+def _reset_proxy_decision() -> None:
+    """重置出站路径决策（测试用）。"""
+
+    with _proxy_state_lock:
+        _proxy_state["url"] = None
+        _proxy_state["source"] = "undecided"
+        _proxy_state["banned"] = {}
+    for client in _proxy_clients.values():
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+    _proxy_clients.clear()
+
+
+def _client_for(proxy_url: str | None) -> httpx.Client:
+    """按代理 URL 缓存 Client。trust_env=False：代理选择完全由上面接管。"""
+
+    client = _proxy_clients.get(proxy_url)
+    if client is None:
+        client = httpx.Client(proxy=proxy_url, trust_env=False)
+        _proxy_clients[proxy_url] = client
+    return client
+
+
+def _http_get(
+    url: str,
+    *,
+    params: dict[str, Any] | None,
+    headers: dict[str, str],
+    timeout: float,
+    proxy_url: str | None,
+):
+    """单次 HTTP GET —— 全模块唯一的出站发送点。
+
+    单独抽成函数是为了留一个稳定的测试接缝：换代理实现（Client / 直连 /
+    将来的异步版本）时，测试只需要替换这一个函数。
+    """
+
+    return _client_for(proxy_url).get(
+        url, params=params, headers=headers, timeout=timeout
+    )
+
+
+def outbound_proxy_status() -> dict[str, Any]:
+    """当前出站路径（诊断接口用）。"""
+
+    url, source = _active_proxy()
+    return {"url": url, "source": source}
+
+
+def probe_outbound(timeout: float = _PROBE_TIMEOUT_SECONDS) -> dict[str, Any]:
+    """逐条候选路径探测 taostats.io 的可达性，返回每条的结果。
+
+    只做连接层探测（HEAD 请求），不带 API key、不占查询额度。
+    """
+
+    results: list[dict[str, Any]] = []
+    for url, source in _proxy_candidates():
+        item: dict[str, Any] = {"proxy": url, "source": source}
+        started = time.monotonic()
+        try:
+            response = _client_for(url).head("https://taostats.io/", timeout=timeout)
+            item["ok"] = response.status_code < 500
+            item["status_code"] = response.status_code
+        except Exception as exc:  # noqa: BLE001 - 探测失败本身就是结果
+            item["ok"] = False
+            item["error"] = f"{type(exc).__name__}: {exc}"[:120]
+        item["seconds"] = round(time.monotonic() - started, 1)
+        results.append(item)
+    return {"results": results}
 
 
 def configure_api_key(api_key: str) -> None:
@@ -293,19 +527,25 @@ def _request_get(
     这个请求），只发一次就被判成「服务不可用」太脆。这里只重试传输层异常；
     HTTP 状态码（401/429/5xx）原样交给调用方判定，避免把限流当成网络抖动重试。
     重试不额外占用本地限速额度——失败的请求没有真正消耗上游配额。
+
+    重试时若传输层仍失败，会自动换一条出站路径（代理 ↔ 直连）再试，
+    避免本机代理挂了或直连被墙时整条链路长时间不可用。
     """
 
     last_error: httpx.HTTPError | None = None
     for attempt in range(TRANSIENT_RETRY_ATTEMPTS):
+        proxy_url, source = _active_proxy()
         try:
-            return httpx.get(
+            return _http_get(
                 url,
                 params=params,
                 headers={"Authorization": api_key},
                 timeout=timeout,
+                proxy_url=proxy_url,
             )
         except httpx.TransportError as exc:  # 覆盖 SSL EOF / 连接重置 / 读超时
             last_error = exc
+            _note_proxy_failure(proxy_url, source, exc)
             if attempt + 1 < TRANSIENT_RETRY_ATTEMPTS:
                 time.sleep(TRANSIENT_RETRY_BACKOFF_SECONDS * (attempt + 1))
     assert last_error is not None

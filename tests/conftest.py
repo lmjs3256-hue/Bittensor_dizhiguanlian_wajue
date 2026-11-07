@@ -21,6 +21,9 @@ def _license_gate_open(monkeypatch, tmp_path):
     # 每个测试一份独立的设置文件；同时清掉进程内缓存的 key。
     monkeypatch.setenv("WALLET_LINK_SETTINGS", str(tmp_path / "settings.json"))
     monkeypatch.delenv("TAOSTATS_API_KEY", raising=False)
+    # 出站代理：测试里强制直连，别让跑测试的机器上的系统代理（Clash 等）
+    # 影响结果，也别在无桩的用例里真的去连外网。
+    monkeypatch.setenv("WALLET_LINK_HTTP_PROXY", "none")
     # 预置地址库（app/seed_books）只在真实启动时导入；测试用临时库，
     # 关掉它，避免每个用例都凭空多出几百条地址。
     import app.main as main_module
@@ -33,3 +36,4 @@ def _license_gate_open(monkeypatch, tmp_path):
     taostats.clear_api_key()
     yield
     taostats.clear_api_key()
+

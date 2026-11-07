@@ -1250,6 +1250,15 @@ git reset --hard origin/main
 0.8.11 起手动查询优先，巡检会主动让路：查询进行中（包括轮间 62 秒等待）以及查询结束后 120 秒内，巡检都不推进，面板会显示「已让路：手动查询进行中 / 冷却 N 秒」。这是预期行为。如果显示的是僵死提示，说明有条查询任务超过 10 分钟毫无进度，系统已按僵死处理并恢复巡检。</p>
 <p><strong>Q：点「扫描最新块」转很久没反应，或者提示「扫描失败」？</strong>
 0.8.10 起首次扫描要先从链上拉取 runtime 元数据（实测 30~90 秒，取决于网络），期间按钮会显示「扫描中（首次预热约 1 分钟）…」，<strong>不要重复点</strong>——重复点会提示“已有扫描在进行”。预热完成后每块只需几秒，完成提示里会附带「运行时预热 XX 秒」。如果失败信息是 <code>RPC scan failed: TimeoutError: ...</code>，说明节点或网络太慢，稍后重试即可；如果提示 409「a scan job is already running」，重启一次服务——0.8.10 起启动时会自动把上次被强杀留下的扫描标记为中断并释放锁，等 8 分钟租约过期的情况已经不会再有。</p>
+<p><strong>Q：查询提示「未配置 Taostats API key」，但我明明填过 key？</strong>
+先升级到 0.8.16 再看：<strong>0.8.15 及更早版本会把「连不上 Taostats」误报成「没有 key」</strong>。原因是那时出站请求只会直连，不读 Windows 系统代理——你这台机器直连 taostats.io 会超时，查询就静默退回本地索引，页面看到「0 次请求」便认定是没配 key（<code>/api/overview</code> 里 <code>taostats_configured</code> 明明是 <code>true</code>）。</p>
+<p>0.8.16 起：出站会自动跟随 Windows 系统代理（Clash / v2rayN 等写在系统设置里的那种），一条路不通会自动换另一条（并打印 <code>[taostats] 出站请求走 …</code>），同时把「连不上」和「没有 key」分成两种提示。升级后仍失败，打开 <strong>「更新日志 → 环境自检」</strong> 看 <strong>「出站网络（taostats.io）」</strong> 这一项：</p>
+<ul>
+<li><code>pass 当前走系统代理（http://127.0.0.1:7890）可达</code> → 网络正常；</li>
+<li><code>warn 当前路径不通，但直连可用</code> → 代理软件刚掉过一次线，已自动切换；</li>
+<li><code>fail 所有出站路径都不通</code> → 代理软件没开 / 系统代理没勾上，或被公司网络拦了。把代理软件打开再点一次自检。</li>
+</ul>
+<p>想强制指定出站路径，可以设环境变量 <code>WALLET_LINK_HTTP_PROXY</code>：填 <code>127.0.0.1:7890</code> 用它，填 <code>none</code> 强制直连。</p>
 <p><strong>Q：Taostats 报 401 / 401 Unauthorized？</strong>
 key 没填、填错，或 key 已在 Taostats 后台被删/重置（0.6.4 起 key 已保存在本机，重启不再丢失）。到 <a href="https://taostats.io/zh/pro/api-keys">https://taostats.io/zh/pro/api-keys</a> 重新复制一次，粘贴保存即可。如果提示 key 已失效，在后台删掉重新生成。</p>
 <p><strong>Q：能不能在 Mac 或 Linux 上用？</strong>

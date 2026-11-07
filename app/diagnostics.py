@@ -149,6 +149,7 @@ def build_report(
     taostats_configured: bool | None = None,
     startup_builtin: dict[str, Any] | None = None,
     cache_ttl: float = 0.0,
+    outbound_probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """汇总一次自检结果：给界面和命令行共用。
 
@@ -308,6 +309,54 @@ def build_report(
                 "需要同步官方名单或新地址时再填 key；只想用已有数据可以直接查询。",
             )
         )
+
+    if outbound_probe is not None:
+        # 出站可达性：直连 taostats.io 不通、系统代理也不通时，查询会退回本地
+        # 索引。0.8.16 之前这种故障会被页面误报成『没有可用的 API key』。
+        active = outbound_probe.get("active") or {}
+        results = outbound_probe.get("results") or []
+        working = [item for item in results if item.get("ok")]
+        current_ok = any(
+            item.get("ok") for item in results if item.get("proxy") == active.get("url")
+        )
+        if current_ok:
+            target = active.get("url") or "直连"
+            checks.append(
+                _check(
+                    "outbound",
+                    "出站网络（taostats.io）",
+                    "pass",
+                    f"当前走{active.get('source') or ''}（{target}）可达",
+                )
+            )
+        elif working:
+            fallback = working[0]
+            checks.append(
+                _check(
+                    "outbound",
+                    "出站网络（taostats.io）",
+                    "warn",
+                    f"当前路径（{active.get('source') or ''}）不通，但 "
+                    f"{fallback.get('source') or ''}"
+                    f"（{fallback.get('proxy') or '直连'}）可用，重试后会自动切换",
+                    "刚发生过一次失败切换属正常；持续出现说明本机代理软件在反复掉线。",
+                )
+            )
+        else:
+            paths = "、".join(
+                f"{item.get('source')}（{item.get('proxy') or '直连'}）：{item.get('error') or item.get('status_code')}"
+                for item in results
+            )
+            checks.append(
+                _check(
+                    "outbound",
+                    "出站网络（taostats.io）",
+                    "fail",
+                    f"所有出站路径都不通——{paths}",
+                    "检查本机代理软件（Clash 等）是否在运行、系统代理是否开启；"
+                    "公司网络可能直接拦掉了 taostats.io。此时查询只能用本地索引。",
+                )
+            )
 
     failed = [item for item in checks if item["status"] == "fail"]
     warned = [item for item in checks if item["status"] == "warn"]

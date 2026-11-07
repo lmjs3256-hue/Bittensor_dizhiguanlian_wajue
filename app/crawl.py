@@ -49,6 +49,9 @@ class CrawlState:
     pagination_complete: bool = True
     provider_window_truncated: bool = False
     api_error: str = ""
+    # 出错类型：``"auth"``（key 无效）/ ``"network"``（连不上）/ ``""``。
+    # 页面必须能区分「没有可用 key」和「够不到 Taostats」，否则修错方向。
+    api_error_kind: str = ""
     fatal_error: str = ""
 
     api_requests: int = 0
@@ -275,6 +278,7 @@ class TaostatsCrawl:
                     success=False,
                 )
             state.api_error = str(exc)
+            state.api_error_kind = "auth" if isinstance(exc, TaostatsAuthError) else "network"
             if isinstance(exc, TaostatsAuthError):
                 # 密钥问题不会随时间自愈，分轮作业应直接结束而不是每分钟重试。
                 state.fatal_error = str(exc)
