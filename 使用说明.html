@@ -118,9 +118,10 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <li><a href="#八taostats-api-key可选但推荐">八、Taostats API key（可选，但推荐）</a></li>
 <li><a href="#九本地索引进阶可跳过">九、本地索引（进阶，可跳过）</a></li>
 <li><a href="#十拷贝到另一台电脑">十、拷贝到另一台电脑</a></li>
-<li><a href="#十一常见问题">十一、常见问题</a></li>
-<li><a href="#十二名词解释">十二、名词解释</a></li>
-<li><a href="#十三还想深入看">十三、还想深入看</a></li>
+<li><a href="#十一多设备访问">十一、多设备访问</a></li>
+<li><a href="#十二常见问题">十二、常见问题</a></li>
+<li><a href="#十三名词解释">十三、名词解释</a></li>
+<li><a href="#十四还想深入看">十四、还想深入看</a></li>
 </ul>
 </div>
 </nav>
@@ -129,6 +130,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <blockquote>
 <p>这份说明写给第一次使用的人，不需要懂编程。照着做，大约 5 分钟能让工具跑起来。
 只想快速开始？直接跳到 <a href="#三安装只需一次">三、安装</a> 和 <a href="#五第一次查询照着点就行">五、第一次查询</a>。
+想让手机、外网也能打开这个页面？见 <a href="#十一多设备访问">十一、多设备访问</a>（含公网隧道、重启后地址会不会变）。
 开发与设计细节见 <a href="https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue/blob/main/README.md">README.md</a>，版本变化见 <a href="https://github.com/lmjs3256-hue/Bittensor_dizhiguanlian_wajue/blob/main/CHANGELOG.md">CHANGELOG.md</a>。</p>
 </blockquote>
 <hr />
@@ -331,6 +333,9 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </blockquote>
 <h3 id="关闭">关闭</h3>
 <p>双击 <strong><code>停止.cmd</code></strong>。电脑重启后服务不会自动启动，需要再次双击快捷方式。</p>
+<blockquote>
+<p>想让手机 / 另一台电脑也能用这套工具，或者人在外面要访问，看 <a href="#十一多设备访问">十一、多设备访问</a>。那里的「公网隧道」做法客户端不用装任何软件，但<strong>网址每次重启都会换</strong>，原因和替代方案都写在那节里。</p>
+</blockquote>
 <h3 id="在同一台电脑上复制一份做测试换个磁盘或目录">在同一台电脑上复制一份做测试（换个磁盘或目录）</h3>
 <p>可以，而且<strong>不用重新安装、也不用重新激活</strong>：</p>
 <ol>
@@ -1071,9 +1076,16 @@ git reset --hard origin/main
 <pre><code class="language-powershell">.\.venv\Scripts\python.exe run.py --doctor
 </code></pre>
 <p>它不开服务，直接把同样的结论打印到窗口里，退出码 1 表示有项目没通过。</p>
-<h3 id="多设备协同家里-公司-手机">多设备协同（家里 / 公司 / 手机）</h3>
+<hr />
+<h2 id="十一多设备访问">十一、多设备访问</h2>
+<blockquote>
+<p>手机、家里的另一台电脑、公司电脑，都想打开这套工具：
+只待在家里用 → 「做法一」，同一个 Wi-Fi 就能开；
+想在外网用、客户端又不想装任何软件 → 「做法二：公网隧道」；
+主机重启后地址会不会变 → 「主机重启 / 关窗口之后，隧道地址会不会变？」</p>
+</blockquote>
 <p>先说结论：<strong>让一台电脑跑服务，其他设备只开浏览器访问</strong>。不要在每台电脑各跑一份再同步地址库——那样会互相踩死，原因见下面「为什么不能两台各跑一份」。</p>
-<p><strong>做法一（推荐）：一台主机跑服务，其余设备当客户端</strong></p>
+<h3 id="做法一推荐一台主机跑服务其余设备当客户端">做法一（推荐）：一台主机跑服务，其余设备当客户端</h3>
 <p>在那台<strong>尽量常开</strong>的电脑（下面叫「主机」）上，双击 <strong><code>启动-远程访问.cmd</code></strong>（想用命令行就是 <code>python run.py --remote</code>）。</p>
 <p>启动窗口会打印一个小面板，包含访问口令和各设备该用的地址：</p>
 <pre><code> 访问口令   ABCD-EFGH-IJKL-MNOP   ← 本次新生成
@@ -1097,8 +1109,8 @@ git reset --hard origin/main
 <li>想换口令：主机上 <code>POST /api/access/token/rotate</code>，旧口令连同所有已登录设备立即失效；</li>
 <li>口令<strong>只能在主机上查看和重置</strong>，远程设备即使已经登录也不给看。</li>
 </ul>
-<p><strong>安全边界</strong>：口令是防「同网段的其他人误入」，不是防公网。<strong>不要把 8766 端口直接映射到公网</strong>——要在外网用，走下面的「做法三」，让隧道替你挡在前面。</p>
-<p><strong>做法三（外网访问、客户端零安装）：公网隧道</strong></p>
+<p><strong>安全边界</strong>：口令是防「同网段的其他人误入」，不是防公网。<strong>不要把 8766 端口直接映射到公网</strong>——要在外网用，走下面的「做法二」，让隧道替你挡在前面。</p>
+<h3 id="做法二外网访问客户端零安装公网隧道">做法二（外网访问、客户端零安装）：公网隧道</h3>
 <p>Tailscale 好是好，但每台手机、每台电脑都得装一遍。如果你只想「打开浏览器就能用」，用 Cloudflare 隧道：</p>
 <ol>
 <li>在主机上双击 <strong><code>启动-公网隧道.cmd</code></strong>；</li>
@@ -1116,7 +1128,47 @@ git reset --hard origin/main
 <blockquote>
 <p>换成云服务器之后怎么办：把这份代码部署到服务器，用 Nginx + 域名 + 免费证书反代到 8766，客户端还是打开一个网址，什么都不用改。注意 API key 目前用 Windows DPAPI 加密存在 <code>data/settings.json</code> 里，<strong>搬到 Linux 服务器解不开</strong>，需要在服务器页面上重新粘贴一次 key。</p>
 </blockquote>
-<p><strong>为什么不能两台各跑一份</strong></p>
+<h3 id="主机重启-关窗口之后隧道地址会不会变">主机重启 / 关窗口之后，隧道地址会不会变？</h3>
+<p><strong>会变。</strong> 现在跑的是 Cloudflare <strong>临时隧道</strong>（quick tunnel），网址在每次启动时随机分配：</p>
+<ul>
+<li><strong>关掉那个窗口 → 网址立刻失效</strong>，别人再打开会看到 Cloudflare 的 502 页面；</li>
+<li><strong>主机重启 → 服务和隧道都停了</strong>，再双击 <code>启动-公网隧道.cmd</code> 会拿到一个<strong>全新的网址</strong>，旧网址一律作废；</li>
+<li>就算不重启，隧道进程被杀、断网重连后重建连接，也可能换网址。</li>
+</ul>
+<p>所以临时隧道适合「这几天自己用一下」，不适合「发给别人长期收藏」。想让网址固定，三条路：</p>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>地址</th>
+<th>代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>命名隧道 + 自己的域名</strong>（长期推荐）</td>
+<td>固定，如 <code>wallet.你的域名.com</code></td>
+<td>一个域名（年费几十元；DNS 托管到 Cloudflare 免费）+ 一次配置</td>
+</tr>
+<tr>
+<td><strong>局域网 + 路由器给主机固定 IP</strong></td>
+<td>局域网内固定，如 <code>http://192.168.1.20:8766</code></td>
+<td>只在同一个 Wi-Fi 下有效，出门用不了</td>
+</tr>
+<tr>
+<td><strong>Tailscale</strong></td>
+<td>固定，<code>http://100.x.x.x:8766</code></td>
+<td>每台客户端都要装 App</td>
+</tr>
+</tbody>
+</table>
+<p><strong>主机重启后，服务不会自己起来。</strong> 两种情况要分开看：</p>
+<ol>
+<li><strong>服务本身</strong>：双击脚本才会启动，重启电脑后必须再双击一次（或在浏览器打开页面确认打不开，就知道了）。</li>
+<li><strong>隧道进程</strong>：跟着那个命令行窗口活着，窗口关了、机器重启了，隧道就断了。</li>
+</ol>
+<p>想省掉"每次重启都要点一下"，按 <code>Win + R</code> 输入 <code>shell:startup</code> 回车，把 <strong><code>启动-公网隧道.cmd</code> 的快捷方式</strong>拖进弹出的文件夹。这样每次开机登录后它会自己跑起来——<strong>但网址仍然是新的</strong>，起床后看一眼窗口里印的地址，重新发给需要的人（或者干脆一次配好命名隧道，从此不用管）。</p>
+<h3 id="为什么不能两台各跑一份">为什么不能两台各跑一份</h3>
 <table>
 <thead>
 <tr>
@@ -1140,7 +1192,7 @@ git reset --hard origin/main
 </tbody>
 </table>
 <p><strong>一条不能违反的规则</strong>：<strong>同一把 Taostats API key，同一时刻只能有一台机器开巡检。</strong> 备机如果要装同一份代码做故障切换，务必把巡检开关关掉（<code>config.enabled=false</code>，<code>tick()</code> 会直接返回、一次请求都不发），等主机挂了再打开。</p>
-<p><strong>做法二（离线兜底 / 换电脑迁移）：导出 JSON 同步包 + 私有 git / U 盘</strong></p>
+<h3 id="做法三离线兜底-换电脑迁移导出-json-同步包-私有-git-u-盘">做法三（离线兜底 / 换电脑迁移）：导出 JSON 同步包 + 私有 git / U 盘</h3>
 <p>这不是日常协同手段，只在三种情况下用：主机长期不在线、换电脑迁移、备机离线跑完回灌。</p>
 <ol>
 <li>在一台机器点「导出全部」（JSON），得到一个 <code>schema_version=2</code> 的同步包，里面每条地址都带 <code>created_at</code> / <code>updated_at</code> 时间戳；</li>
@@ -1154,12 +1206,12 @@ git reset --hard origin/main
    - 每次导入都记批次，导入错了点「撤回上次导入」即可还原。</li>
 </ol>
 <p>两边各跑一次（A 导→B 导，再 B 导→A 导）就能把两份库合并成一致；因为按地址唯一合并，重叠地址不会变成重复行。</p>
-<p><strong>两条硬约束</strong></p>
+<h3 id="两条硬约束">两条硬约束</h3>
 <ul>
 <li><strong>SQLite 不要走网络文件系统共享</strong>（SMB / NFS 挂 <code>data/wallet_link.db</code>）。Tailscale 做法下只有一台跑服务、其余用浏览器，天然规避；别尝试把数据库文件直接放共享盘让两台同时写，会损坏。</li>
 <li><strong>git 只同步导出的 JSON 同步包，绝不同步 <code>.db</code> 文件</strong>——SQLite 二进制无法干净合并，提交它只会制造冲突和损坏。<code>.gitignore</code> 已把 <code>data/</code> 排除，保持这样即可。</li>
 </ul>
-<p><strong>整理 / 修复污染（两种做法都适用）</strong></p>
+<h3 id="整理-修复污染两种做法都适用">整理 / 修复污染（两种做法都适用）</h3>
 <p>两台机器的库反复互相导入后，即使地址不重复（地址在库里唯一），也可能残留一些“看着别扭”的脏数据。地址库清单工具栏点 <strong>「整理地址库」</strong> 可以一次修干净：</p>
 <ul>
 <li>会先弹出预览，告诉你“将修正 N 条、具体是哪几类”，<strong>确认后才落库</strong>；整理完可以点 <strong>「撤回上次导入」</strong> 整体还原。</li>
@@ -1170,7 +1222,8 @@ git reset --hard origin/main
 <li>历史自定义分类（旧 CSV 导入时留下的、已不在分类表里的名字）<strong>不会被当成孤立项清掉</strong>，因为 <code>categories()</code> 会把“地址记录里出现过的分类名”视为合法，保护你原有的分类。</li>
 </ul>
 <hr />
-<h2 id="十一常见问题">十一、常见问题</h2>
+<hr />
+<h2 id="十二常见问题">十二、常见问题</h2>
 <p><strong>Q：启动时提示 <code>The '&lt;' operator is reserved for future use</code>，或者满屏 <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt; HEAD</code>？</strong>
 这是 Git 合并冲突没解决，冲突标记留在 <code>start.ps1</code> 里了，跟程序本身没关系。在文件夹里打开命令行执行 <code>git status</code> 看哪些文件冲突，然后 <code>git checkout origin/main -- start.ps1 launch_desktop.ps1</code> 恢复成仓库版本即可。详见 <a href="#用-github-同步到另一台电脑">十、拷贝到另一台电脑</a>。</p>
 <p><strong>Q：升级到新版本后，地址库里还是没有预置验证者／点「同步验证者地址」还是报错？</strong>
@@ -1191,6 +1244,8 @@ git reset --hard origin/main
 先确认输入的是<strong>主机当前这一版</strong>的口令——点过「重置口令」的话，旧口令会立即失效。在主机上执行 <code>python run.py --remote</code>，启动面板会打印当前口令；也可以主机上直接访问 <a href="http://127.0.0.1:8766/api/access/token">http://127.0.0.1:8766/api/access/token</a> 查看。仍然不行的话，检查是不是用了 <code>http://127.0.0.1:8766</code> 访问——<code>127.0.0.1</code> 在手机 / 另一台电脑上指的是那台设备自己，必须用面板里打印的 Tailscale 或局域网地址。</p>
 <p><strong>Q：从别的设备打开页面，提示「无法连接到服务」？</strong>
 逐项排查：① 主机是否还在跑（主机上打开 <a href="http://127.0.0.1:8766/api/health">http://127.0.0.1:8766/api/health</a> 看有没有返回）；② 主机启动时是不是没用 <code>--remote</code>——只监听 <code>127.0.0.1</code> 时外部设备根本连不上；③ 两台设备是否在同一个 Tailscale 网络（<code>tailscale status</code> 看两边是否都 online）；④ Windows 防火墙是否拦了 8766 端口（首次启动时弹出的允许提示要勾「专用网络」）；⑤ 主机休眠了——甲方案依赖主机在线。</p>
+<p><strong>Q：昨天那个 <code>trycloudflare.com</code> 网址，今天打不开了 / 提示 502？</strong>
+临时隧道的网址是<strong>每次启动随机分配的</strong>：关掉窗口、电脑重启、隧道进程重连，网址就作废。在主机上看一下当前窗口（或 <code>logs\cloudflared.url</code> 文件）里印的新网址，用新的打开即可。想让网址固定，需要按 <a href="#十一多设备访问">十一、多设备访问</a> 里「主机重启 / 关窗口之后，隧道地址会不会变？」的表格配命名隧道。</p>
 <p><strong>Q：巡检进度一直不动？</strong>
 0.8.11 起手动查询优先，巡检会主动让路：查询进行中（包括轮间 62 秒等待）以及查询结束后 120 秒内，巡检都不推进，面板会显示「已让路：手动查询进行中 / 冷却 N 秒」。这是预期行为。如果显示的是僵死提示，说明有条查询任务超过 10 分钟毫无进度，系统已按僵死处理并恢复巡检。</p>
 <p><strong>Q：点「扫描最新块」转很久没反应，或者提示「扫描失败」？</strong>
@@ -1204,7 +1259,7 @@ key 没填、填错，或 key 已在 Taostats 后台被删/重置（0.6.4 起 ke
 <p><strong>Q：怎么彻底卸载？</strong>
 先双击 <code>停止.cmd</code>，删掉整个文件夹和桌面快捷方式即可。没有写注册表、没有后台服务、没有开机自启项。</p>
 <hr />
-<h2 id="十二名词解释">十二、名词解释</h2>
+<h2 id="十三名词解释">十三、名词解释</h2>
 <table>
 <thead>
 <tr>
@@ -1252,7 +1307,7 @@ key 没填、填错，或 key 已在 Taostats 后台被删/重置（0.6.4 起 ke
 </tbody>
 </table>
 <hr />
-<h2 id="十三还想深入看">十三、还想深入看</h2>
+<h2 id="十四还想深入看">十四、还想深入看</h2>
 <table>
 <thead>
 <tr>
