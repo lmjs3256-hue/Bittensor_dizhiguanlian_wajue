@@ -1097,7 +1097,25 @@ git reset --hard origin/main
 <li>想换口令：主机上 <code>POST /api/access/token/rotate</code>，旧口令连同所有已登录设备立即失效；</li>
 <li>口令<strong>只能在主机上查看和重置</strong>，远程设备即使已经登录也不给看。</li>
 </ul>
-<p><strong>安全边界</strong>：口令是防「同网段的其他人误入」，不是防公网。<strong>不要把 8766 端口映射到公网</strong>，只在 Tailscale / 局域网内可达即可。</p>
+<p><strong>安全边界</strong>：口令是防「同网段的其他人误入」，不是防公网。<strong>不要把 8766 端口直接映射到公网</strong>——要在外网用，走下面的「做法三」，让隧道替你挡在前面。</p>
+<p><strong>做法三（外网访问、客户端零安装）：公网隧道</strong></p>
+<p>Tailscale 好是好，但每台手机、每台电脑都得装一遍。如果你只想「打开浏览器就能用」，用 Cloudflare 隧道：</p>
+<ol>
+<li>在主机上双击 <strong><code>启动-公网隧道.cmd</code></strong>；</li>
+<li>首次运行会自动下载一个约 30MB 的隧道程序（<code>tools\cloudflared.exe</code>，只需一次），同时以隧道模式启动服务；</li>
+<li>窗口会打印一个 <code>https://xxxx-xxxx.trycloudflare.com</code> 网址和访问口令；</li>
+<li>手机 / 外网电脑直接打开那个网址，输一次口令，之后记住 90 天。</li>
+</ol>
+<p>需要理解的三件事：</p>
+<ul>
+<li><strong>客户端不用装任何东西，但主机侧必须有个出口</strong>。家里宽带没有公网 IP，外网进不来，所以由主机主动向外连到 Cloudflare，请求顺着这条连接转回来。路由器全程没有接受任何入站连接，公网也看不到你的真实 IP。</li>
+<li><strong>这是临时地址</strong>，关掉窗口就失效，重新启动会换一个新网址（免费、免注册、不限流量）。想要固定网址，需要一个自己的域名（年费几十元）托管到 Cloudflare，用「命名隧道」把 <code>wallet.你的域名.com</code> 固定指向 8766——客户端仍然只是浏览器，把 <code>启动-公网隧道.cmd</code> 换成开机自启的 cloudflared 服务即可。</li>
+<li><strong>再加一道邮箱验证码</strong>：把邮箱作为参数传进去——<code>启动-公网隧道.cmd 你的邮箱@example.com</code>。这样即使网址被别人看到，只有那个邮箱能收到验证码进来。不需要注册 Cloudflare 账号。</li>
+</ul>
+<p><strong>隧道下的口令规则和局域网一样</strong>：只有<strong>真正坐在主机前</strong>的浏览器免口令；经隧道进来的一律要输口令（包括你在主机上用那个 https 网址打开自己）。这条如果有人改坏了，就等于把命令执行权限挂在公网上——<code>tests/test_tunnel_access.py</code> 专门锁死了它。</p>
+<blockquote>
+<p>换成云服务器之后怎么办：把这份代码部署到服务器，用 Nginx + 域名 + 免费证书反代到 8766，客户端还是打开一个网址，什么都不用改。注意 API key 目前用 Windows DPAPI 加密存在 <code>data/settings.json</code> 里，<strong>搬到 Linux 服务器解不开</strong>，需要在服务器页面上重新粘贴一次 key。</p>
+</blockquote>
 <p><strong>为什么不能两台各跑一份</strong></p>
 <table>
 <thead>

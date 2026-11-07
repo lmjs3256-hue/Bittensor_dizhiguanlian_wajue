@@ -2,8 +2,13 @@
     [int]$Port = 8766,
     # 甲方案：让其他设备（家里 / 公司 / 手机）通过 Tailscale 或局域网访问。
     # 会绑定 0.0.0.0 并要求访问口令，口令由 run.py 打印到 logs\wallet-link.stderr.log。
-    [switch]$Remote
+    [switch]$Remote,
+    # 公网隧道模式（cloudflared）：在远程模式之上额外采信代理头里的真实来源，
+    # 否则隧道进来的请求会被当成主机本机而免口令。
+    [switch]$Tunnel
 )
+
+if ($Tunnel) { $Remote = $true }
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -37,11 +42,15 @@ function Show-RemotePanel {
         # run.py 在 PYTHONUTF8=1 下写的是 UTF-8；PowerShell 5.1 的 Get-Content 默认按
         # 系统 ANSI（简中 GBK）读，不指定编码会把中文读成乱码。
         $lines = @(Get-Content -LiteralPath $ErrLog -Encoding UTF8 -ErrorAction SilentlyContinue |
-            Select-String -Pattern '访问口令|Tailscale|局域网|其他网卡|未检测到|提醒|存在 data' |
+            Select-String -Pattern '访问口令|Tailscale|局域网|其他网卡|未检测到|提醒|存在 data|公网入口|本机免验证' |
             ForEach-Object { $_.Line })
     }
     Write-Host ""
-    Write-Host "============== 远程访问已开启 ==============" -ForegroundColor Cyan
+    if ($Tunnel) {
+        Write-Host "============== 公网隧道模式已开启 ==============" -ForegroundColor Cyan
+    } else {
+        Write-Host "============== 远程访问已开启 ==============" -ForegroundColor Cyan
+    }
     if ($lines.Count -gt 0) {
         $lines | ForEach-Object { Write-Host $_ }
     } else {
@@ -89,9 +98,11 @@ try {
             $runningVersion = ''
             if ($null -ne $health.version) { $runningVersion = ([string]$health.version).Trim() }
             $runningRemote = $false
+            $runningTunnel = $false
             try {
                 $accessStatus = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/access/status" -TimeoutSec 2
                 if ($null -ne $accessStatus.remote_mode) { $runningRemote = [bool]$accessStatus.remote_mode }
+                if ($null -ne $accessStatus.trust_proxy) { $runningTunnel = [bool]$accessStatus.trust_proxy }
             } catch {
                 # 旧版本没有这个接口，当作本地模式。
             }
@@ -99,9 +110,10 @@ try {
                 Write-Host "检测到代码已更新：运行中 $runningVersion → 磁盘 $diskVersion"
                 Write-Host "正在重启服务以加载新版本…"
                 $restartNeeded = $true
-            } elseif ($Remote -and -not $runningRemote) {
-                # 之前是本地模式，这次要求远程：必须重启才能改监听地址。
-                Write-Host "检测到当前以本机模式运行，正在切换为远程访问模式…"
+            } elseif (($Remote -and -not $runningRemote) -or ($Tunnel -and -not $runningTunnel)) {
+                # 之前是本地模式（或普通远程模式），这次要求远程/隧道：必须重启才能
+                # 改监听地址、改来源判定。
+                Write-Host "正在切换运行模式（远程访问 / 公网隧道）…"
                 $restartNeeded = $true
             } elseif ((-not $Remote) -and $runningRemote) {
                 Write-Host "提示：服务当前以「远程访问」模式运行（已开启访问口令）。"
@@ -189,8 +201,11 @@ try {
 }
 
 $env:PYTHONUTF8 = '1'
-# --remote 会自己把 host 改成 0.0.0.0（并打印访问口令面板），这里不再重复传 --host。
-$runArgs = if ($Remote) {
+# --remote / --tunnel 会自己把 host 改成 0.0.0.0（并打印访问口令面板），
+# 这里不再重复传 --host。
+$runArgs = if ($Tunnel) {
+    @((Join-Path $Root 'run.py'), '--tunnel', '--port', $Port)
+} elseif ($Remote) {
     @((Join-Path $Root 'run.py'), '--remote', '--port', $Port)
 } else {
     @((Join-Path $Root 'run.py'), '--host', '127.0.0.1', '--port', $Port)

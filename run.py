@@ -56,7 +56,7 @@ def _is_tailscale(address: str) -> bool:
         return False
 
 
-def _print_remote_banner(port: int) -> None:
+def _print_remote_banner(port: int, tunnel: bool = False) -> None:
     """远程模式下把「怎么连、口令是多少」直接打出来。"""
 
     from app import access
@@ -76,25 +76,35 @@ def _print_remote_banner(port: int) -> None:
     lines = [
         "",
         "─" * 62,
-        " 远程访问已开启（其余设备只当浏览器客户端）",
+        " 公网隧道已开启（客户端只当浏览器，不需要装任何软件）"
+        if tunnel
+        else " 远程访问已开启（其余设备只当浏览器客户端）",
         "",
         f" 访问口令   {token}" + ("   ← 本次新生成" if created else ""),
         "            （存在 data/settings.json，主机页面也能查看）",
         "",
         f" 本机       http://127.0.0.1:{port}",
     ]
-    if tailscale:
-        for address in tailscale:
-            lines.append(f" Tailscale  http://{address}:{port}")
+    if tunnel:
+        # 隧道地址由 cloudflared 现分配，这里只解释位置和注意事项。
+        lines += [
+            " 公网入口   见隧道程序打印的 https://…trycloudflare.com",
+            "            经隧道进来的请求同样要输上面的口令——",
+            "            「本机免验证」只对真正坐在这台电脑前的浏览器成立。",
+        ]
     else:
-        lines.append(" Tailscale  未检测到 100.64.0.0/10 地址")
-        lines.append("            装了 Tailscale 的话先执行 tailscale up 再重启本服务")
+        if tailscale:
+            for address in tailscale:
+                lines.append(f" Tailscale  http://{address}:{port}")
+        else:
+            lines.append(" Tailscale  未检测到 100.64.0.0/10 地址")
+            lines.append("            装了 Tailscale 的话先执行 tailscale up 再重启本服务")
     if primary:
         lines.append(f" 局域网     http://{primary}:{port}")
     if others:
         lines.append(f" 其他网卡   {' / '.join(f'http://{a}:{port}' for a in others)}")
         lines.append("            （虚拟网卡，通常用不到）")
-    if not tailscale and not primary:
+    if not tailscale and not primary and not tunnel:
         lines.append(" 其他设备   未探测到非回环地址，检查网络连接")
     lines += [
         "",
@@ -150,6 +160,11 @@ def main() -> int:
         help="开放给 Tailscale / 局域网访问（自动绑定 0.0.0.0 并要求访问口令）",
     )
     parser.add_argument(
+        "--tunnel",
+        action="store_true",
+        help="公网隧道模式：在 --remote 基础上改看 Cloudflare 传来的真实来源（含 --remote）",
+    )
+    parser.add_argument(
         "--doctor",
         action="store_true",
         help="只做环境自检并打印结果，不启动服务",
@@ -159,6 +174,11 @@ def main() -> int:
         return run_doctor()
 
     host = args.host
+    if args.tunnel:
+        # 隧道是远程模式的超集：同样要绑 0.0.0.0（局域网照样能用），
+        # 额外打开「采信代理头」，否则隧道进来的请求会被当成主机本机而免口令。
+        args.remote = True
+        os.environ["WALLET_LINK_TRUST_PROXY"] = "1"
     if args.remote:
         # 显式指定了 --host 就尊重它，否则绑全网卡：Tailscale 地址和局域网地址
         # 都落在不同网卡上，绑 127.0.0.1 时别的设备根本连不上。
@@ -166,7 +186,7 @@ def main() -> int:
             host = "0.0.0.0"
         # 子进程（--reload）会继承环境变量，所以这里设置就够了。
         os.environ["WALLET_LINK_REMOTE"] = "1"
-        _print_remote_banner(args.port)
+        _print_remote_banner(args.port, tunnel=args.tunnel)
 
     import uvicorn
 
@@ -176,6 +196,12 @@ def main() -> int:
         port=args.port,
         reload=args.reload,
         reload_dirs=[str(Path(__file__).resolve().parent / "app")] if args.reload else None,
+        # 必须显式关掉。uvicorn 默认 proxy_headers=True，会先按 X-Forwarded-For
+        # 改写 scope["client"]——那样「谁在访问」就由 uvicorn 的 forwarded_allow_ips
+        # 决定（该值可被环境变量放宽成 *），局域网设备伪造一个头就能冒充本机
+        # 免口令进来。这里关掉，来源判定统一走 app/access.py 的 client_ip()：
+        # 只在 TCP 对端本身是回环（隧道/反代）时才采信代理头，其余一律看真实对端。
+        proxy_headers=False,
     )
     return 0
 

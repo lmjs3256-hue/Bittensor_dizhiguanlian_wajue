@@ -1,5 +1,30 @@
 # 变更记录
 
+## 0.8.13 · 公网隧道：客户端零安装，打开浏览器就能用 · 2026-11-07
+
+- **背景**：甲方案要外网可用，绕不开「客户端得装点什么」——Tailscale 每台手机、每台电脑都要装 App 并登录。用户诉求是不能装软件，且以后可能把主机迁到服务器。
+- **做法**：加一条公网隧道（cloudflared）。主机主动向 Cloudflare 建出站连接，外网请求顺着这条连接转回 8766。
+  - 客户端只有浏览器：手机 / 外网电脑打开 `https://…trycloudflare.com` 输一次口令即可，不装 App、不配 VPN、不记 IP。
+  - 不需要公网 IP、不开路由器端口：路由器从未接受入站连接，公网也看不到真实 IP。
+  - 免费、免注册（临时隧道），想固定网址才需要自己的域名。
+- **先修掉一个必须修的安全洞**：过去的「主机本机」判定是 `request.client.host` 落在回环段。走隧道后**所有**外部请求的对端都是 `127.0.0.1`，公网访客会被当成坐在主机前——免口令进站，`GET /api/access/token` 甚至能把 16 位口令读走。
+  - 新增 `access.client_ip()`：隧道模式下改看 `CF-Connecting-IP` / `X-Real-IP` / `X-Forwarded-For`（取第一段）。
+  - **只在 TCP 对端本身是回环时才采信这些头**：隧道与反向代理必然是回环连接，而局域网设备直连 `0.0.0.0` 时对端是 `192.168.x.x`，带什么头都不改变结论——否则任何能连上 8766 的人都能自己发一个 `CF-Connecting-IP: 127.0.0.1` 免口令。
+  - 开关是 `WALLET_LINK_TRUST_PROXY`，只有 `--tunnel` 会打开；普通 `--remote` 行为完全不变（`tests/test_tunnel_access.py::test_proxy_headers_ignored_without_tunnel_flag` 锁死）。
+- **`python run.py --tunnel`**：等价于 `--remote` + 采信代理头，启动面板改印「公网隧道已开启」，并明确写出「经隧道进来的请求同样要输口令」。
+- **`启动-公网隧道.cmd`（双击）+ `tunnel.ps1`**：
+  - 首次自动下载 `cloudflared-windows-amd64.exe` 到 `tools\cloudflared.exe`（约 30MB，只需一次），失败时给出直链和手动放置路径。
+  - 通过子进程调用 `start.ps1 -Tunnel` 启动服务（`start.ps1` 内含 `exit`，直接 `&` 调用会把当前窗口一起结束）。
+  - 从 cloudflared 日志里抓 `https://…trycloudflare.com`，把**网址 + 访问口令 + 邮箱门禁状态**打成一个面板，网址另存 `logs\cloudflared.url`。
+  - 可选邮箱门禁：`启动-公网隧道.cmd 你的邮箱@example.com` → 传 `--allowed-mail`，只有该邮箱能收到 Cloudflare 一次性验证码进入（同样免注册）。旧版 cloudflared 不认识这个参数时会自动退回「仅口令」并提示原因。
+  - 隧道进程退出会明确告知「公网地址已失效，本机仍可访问」，不会让人对着空窗口猜。
+- **`start.ps1 -Tunnel`**：模式切换检测里加入 `trust_proxy` 比对，之前以普通远程模式运行时再点隧道会自动重启换模式。
+- **`/api/access/status`** 新增 `trust_proxy` / `via_tunnel`，`client` 改报**真实来源**（隧道下直接显示 `127.0.0.1` 会误导演示成「从主机访问」）。
+- **实测抓到一个隐蔽的越权路径**：首轮真机验证时 `client` 已经是真实公网 IP，但 `via_tunnel` 却是 `False`——说明显式解析根本没执行，是 **uvicorn 默认 `proxy_headers=True`** 先按 `X-Forwarded-For` 改写了 `scope["client"]`。这等于把「谁在访问」交给了 `forwarded_allow_ips`（可被环境变量放宽成 `*`），一旦放宽，局域网设备伪造一个头就能冒充本机免口令。现已在 `uvicorn.run()` 里显式 `proxy_headers=False`，来源判定只走 `access.client_ip()` 一条路径。
+- **实测结论（cloudflared 2026.10.7，公网侧发起）**：`client=183.253.129.204` / `via_tunnel=True` / `required=True`；`/api/library` 401、`/api/access/token` 401（未登录）与 403（已登录）、登录后 200、首页 27145 bytes、健康检查 200；本机回环仍 200 免口令；局域网直连并伪造 `CF-Connecting-IP: 127.0.0.1` 被判为 `local=False, required=True`——头被忽略。
+- **迁移提示**：API key 目前用 Windows DPAPI 加密存在 `data/settings.json`（`"enc": "dpapi"`），搬到 Linux 服务器**解不开**，需要在服务器上重新粘贴一次。`使用说明.md` 已写明。
+- **测试**：新增 `tests/test_tunnel_access.py` 9 例（隧道请求需口令、header/Cookie 两条放行路径、隧道下读不到口令、局域网伪造头无效、主机浏览器仍免口令、XFF 兜底、未开隧道时不看头、状态上报真实来源）。全量 **375 passed / 0 failed**。
+
 ## 0.8.12 · 多机协同（甲方案）：一台主机跑服务，其余设备当客户端 · 2026-11-07
 
 - **为什么不做「每台各跑一份 + 同步地址库」**：同一把 Taostats key 只允许一个进程在用。

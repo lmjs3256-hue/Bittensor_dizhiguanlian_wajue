@@ -12,8 +12,13 @@ Tailscale 网络里的任何人都能打开页面用你的 Taostats key、改地
 - 口令第一次需要时自动生成，落在 ``data/settings.json``，跟备份一起走；
 - 口令只以 HttpOnly Cookie 下发，页面脚本读不到，避免被 XSS 顺走。
 
-这层不是用来对抗公网攻击的（本来就不该把 8766 暴露到公网），而是防止
-Tailscale 网络里共享了节点的设备、或同一 Wi-Fi 下的其他人误入。
+第二种入口是公网隧道（``--tunnel``，cloudflared 把外网请求转到本机 8766）。
+隧道带来的麻烦是：所有请求的对端都是 127.0.0.1，看起来像「坐在主机前」。
+所以隧道模式额外打开 :func:`trust_proxy`，改看 Cloudflare 写进来的真实来源；
+未开隧道时一律不看请求头，避免局域网设备伪造。
+
+这层不是用来对抗公网攻击的（本来就不该把 8766 裸奔到公网），而是防止
+同一 Wi-Fi 下的其他人、或隧道 URL 被转发出去后陌生人误入。
 """
 
 from __future__ import annotations
@@ -29,11 +34,19 @@ from . import settings_store
 
 
 REMOTE_ENV = "WALLET_LINK_REMOTE"
+# 公网隧道模式（cloudflared）：连接从本机回环进来，真实来源在请求头里。
+# 这个开关只在 --tunnel 启动时打开，默认关闭——否则任何能直连 0.0.0.0 的
+# 局域网设备都能靠伪造一个请求头把自己说成「本机」。
+TRUST_PROXY_ENV = "WALLET_LINK_TRUST_PROXY"
 COOKIE_NAME = "wl_access"
 # 记住 90 天：手机浏览器每次都要手输 16 位口令的话没人愿意用。
 COOKIE_MAX_AGE = 90 * 24 * 3600
 # 回环地址：这些来源视为「坐在主机前」，免口令。
 LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "ip6-localhost", "::ffff:127.0.0.1"})
+# 隧道 / 反代在这几个头里写真实来源，按可信度排序。
+# CF-Connecting-IP 由 Cloudflare 边缘写入并覆盖客户端自带的值；
+# X-Forwarded-For 是逗号链，第一段才是最初的客户端。
+FORWARD_HEADERS = ("cf-connecting-ip", "x-real-ip", "x-forwarded-for")
 # 去掉容易看错的 I / O / 0 / 1，手机上手输不容易出错。
 _TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _TOKEN_LENGTH = 16
@@ -45,13 +58,54 @@ def remote_enabled() -> bool:
     return os.getenv(REMOTE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def trust_proxy() -> bool:
+    """是否采信反向代理传来的真实来源（公网隧道模式）。"""
+
+    return os.getenv(TRUST_PROXY_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _peer(request: Request) -> str:
+    """TCP 连接的对端地址，也就是「谁真的连上了我」。"""
+
+    client = request.client
+    return client.host if client else ""
+
+
+def client_ip(request: Request) -> str:
+    """判断访问者身份时应该用的地址。
+
+    走隧道时所有请求的对端都是 127.0.0.1——如果直接拿它做判断，公网上的
+    任何人都会被当成「坐在主机前」，免口令进站，还能读到口令本身。所以
+    隧道模式下要看 Cloudflare 写进来的真实来源。
+
+    但请求头是可以伪造的，因此**只有对端本身是回环**时才采信：隧道和本机
+    反向代理必然是回环连接；局域网设备直连 0.0.0.0 时对端是 192.168.x.x，
+    它带任何头都不改变结论。
+    """
+
+    peer = _peer(request)
+    if not trust_proxy() or peer not in LOCAL_HOSTS:
+        return peer
+    for name in FORWARD_HEADERS:
+        value = (request.headers.get(name) or "").strip()
+        if not value:
+            continue
+        candidate = value.split(",")[0].strip()
+        if candidate:
+            return candidate
+    return peer
+
+
 def is_local(request: Request) -> bool:
     """请求是否来自主机本机。"""
 
-    client = request.client
-    if client is None:
-        return False
-    return client.host in LOCAL_HOSTS
+    return client_ip(request) in LOCAL_HOSTS
+
+
+def via_tunnel(request: Request) -> bool:
+    """本次请求是否经隧道转进来（对端是回环，但真实来源在外网/局域网）。"""
+
+    return trust_proxy() and _peer(request) in LOCAL_HOSTS and not is_local(request)
 
 
 def _generate() -> str:
@@ -124,10 +178,14 @@ def status(request: Request) -> dict[str, Any]:
     granted = (not enabled) or local or authenticated
     payload: dict[str, Any] = {
         "remote_mode": enabled,
+        # 隧道模式：前端可以据此把「远程访问」角标说得更准确。
+        "trust_proxy": trust_proxy(),
+        "via_tunnel": via_tunnel(request),
         "local": local,
         "authenticated": granted,
         "required": enabled and not granted,
-        "client": request.client.host if request.client else "",
+        # 展示真实来源：走隧道时对端永远是 127.0.0.1，直接显示会误导。
+        "client": client_ip(request),
     }
     # 只有已经取得访问权才给口令线索；未认证的远程请求不泄漏任何信息。
     if granted:

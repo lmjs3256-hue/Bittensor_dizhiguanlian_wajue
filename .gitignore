@@ -35,5 +35,9 @@ license.key
 # 外发包（由 tools/make_release.py 生成，不进仓库）
 *.zip
 .pytest_tmp*/
+.pytest_*.xml
+# 公网隧道程序：首次运行 启动-公网隧道.cmd 时自动下载（约 55MB），不入库
+/tools/cloudflared.exe
+/tools/cloudflared.exe.part
 .probe/
 .workbuddy/
