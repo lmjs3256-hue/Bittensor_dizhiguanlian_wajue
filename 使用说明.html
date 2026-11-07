@@ -1074,20 +1074,22 @@ git reset --hard origin/main
 <h3 id="多设备协同家里-公司-手机">多设备协同（家里 / 公司 / 手机）</h3>
 <p>先说结论：<strong>让一台电脑跑服务，其他设备只开浏览器访问</strong>。不要在每台电脑各跑一份再同步地址库——那样会互相踩死，原因见下面「为什么不能两台各跑一份」。</p>
 <p><strong>做法一（推荐）：一台主机跑服务，其余设备当客户端</strong></p>
-<pre><code class="language-bash">python run.py --remote
-</code></pre>
-<p>启动后终端会打印一个小面板，包含访问口令和各设备该用的地址：</p>
+<p>在那台<strong>尽量常开</strong>的电脑（下面叫「主机」）上，双击 <strong><code>启动-远程访问.cmd</code></strong>（想用命令行就是 <code>python run.py --remote</code>）。</p>
+<p>启动窗口会打印一个小面板，包含访问口令和各设备该用的地址：</p>
 <pre><code> 访问口令   ABCD-EFGH-IJKL-MNOP   ← 本次新生成
  本机       http://127.0.0.1:8766
  Tailscale  http://100.101.102.103:8766
  局域网     http://192.168.1.20:8766
 </code></pre>
 <ol>
-<li>选一台<strong>尽量常开</strong>的电脑（下面叫「主机」）跑上面的命令；</li>
 <li>家里 / 公司 / 手机浏览器打开面板里对应的地址；</li>
 <li>第一次会要求输入访问口令，输一次记住 90 天，之后不用再输；</li>
 <li>只有主机需要激活授权——其他设备只是浏览器在调主机的接口。</li>
 </ol>
+<blockquote>
+<p>窗口关掉也不丢：口令和面板都在 <code>logs\wallet-link.stderr.log</code> 里。
+双击 <code>启动.cmd</code> 仍是原来的「只允许本机」模式；两种模式随时切换，切换时脚本会自动重启服务。</p>
+</blockquote>
 <p><strong>访问口令是什么</strong>：<code>--remote</code> 会把服务从「只听本机」放开到「全网卡」，同一个 Wi-Fi 或同一个 Tailscale 网络里的人就都能打开页面、用你的 key、改你的地址库。所以加了一道门：主机本机（<code>127.0.0.1</code>）打开免验证，从别的设备进来必须带口令。</p>
 <ul>
 <li>口令首次自动生成，存在 <code>data/settings.json</code>，和备份一起搬走；</li>

@@ -1,5 +1,8 @@
 ﻿param(
-    [int]$Port = 8766
+    [int]$Port = 8766,
+    # 甲方案：让其他设备（家里 / 公司 / 手机）通过 Tailscale 或局域网访问。
+    # 会绑定 0.0.0.0 并要求访问口令，口令由 run.py 打印到 logs\wallet-link.stderr.log。
+    [switch]$Remote
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,6 +27,30 @@ function Test-PortFree {
     } finally {
         if ($null -ne $listener) { $listener.Stop() }
     }
+}
+
+function Show-RemotePanel {
+    # run.py 把「访问口令 + 各设备该用的地址」写进了 stderr 日志（本脚本重定向了输出），
+    # 这里回显到当前窗口——不然用户为了一个口令还得去翻日志文件。
+    $lines = @()
+    if (Test-Path -LiteralPath $ErrLog) {
+        # run.py 在 PYTHONUTF8=1 下写的是 UTF-8；PowerShell 5.1 的 Get-Content 默认按
+        # 系统 ANSI（简中 GBK）读，不指定编码会把中文读成乱码。
+        $lines = @(Get-Content -LiteralPath $ErrLog -Encoding UTF8 -ErrorAction SilentlyContinue |
+            Select-String -Pattern '访问口令|Tailscale|局域网|其他网卡|未检测到|提醒|存在 data' |
+            ForEach-Object { $_.Line })
+    }
+    Write-Host ""
+    Write-Host "============== 远程访问已开启 ==============" -ForegroundColor Cyan
+    if ($lines.Count -gt 0) {
+        $lines | ForEach-Object { Write-Host $_ }
+    } else {
+        Write-Host "口令与访问地址见日志：$ErrLog" -ForegroundColor Yellow
+    }
+    Write-Host "===========================================" -ForegroundColor Cyan
+    Write-Host "记下上面的访问口令。窗口关闭后仍可在这个文件里找到：" -ForegroundColor Yellow
+    Write-Host "  $ErrLog" -ForegroundColor Yellow
+    Write-Host ""
 }
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
@@ -61,10 +88,25 @@ try {
             }
             $runningVersion = ''
             if ($null -ne $health.version) { $runningVersion = ([string]$health.version).Trim() }
+            $runningRemote = $false
+            try {
+                $accessStatus = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/access/status" -TimeoutSec 2
+                if ($null -ne $accessStatus.remote_mode) { $runningRemote = [bool]$accessStatus.remote_mode }
+            } catch {
+                # 旧版本没有这个接口，当作本地模式。
+            }
             if ($diskVersion -and $runningVersion -and ($diskVersion -ne $runningVersion)) {
                 Write-Host "检测到代码已更新：运行中 $runningVersion → 磁盘 $diskVersion"
                 Write-Host "正在重启服务以加载新版本…"
                 $restartNeeded = $true
+            } elseif ($Remote -and -not $runningRemote) {
+                # 之前是本地模式，这次要求远程：必须重启才能改监听地址。
+                Write-Host "检测到当前以本机模式运行，正在切换为远程访问模式…"
+                $restartNeeded = $true
+            } elseif ((-not $Remote) -and $runningRemote) {
+                Write-Host "提示：服务当前以「远程访问」模式运行（已开启访问口令）。"
+                Write-Host "      如需切回只允许本机访问，请先双击 停止.cmd 再双击 启动.cmd。"
+                exit 0
             } else {
                 "Service is already running at http://127.0.0.1:$Port"
                 exit 0
@@ -147,8 +189,14 @@ try {
 }
 
 $env:PYTHONUTF8 = '1'
+# --remote 会自己把 host 改成 0.0.0.0（并打印访问口令面板），这里不再重复传 --host。
+$runArgs = if ($Remote) {
+    @((Join-Path $Root 'run.py'), '--remote', '--port', $Port)
+} else {
+    @((Join-Path $Root 'run.py'), '--host', '127.0.0.1', '--port', $Port)
+}
 $process = Start-Process -FilePath $Python `
-    -ArgumentList @((Join-Path $Root 'run.py'), '--host', '127.0.0.1', '--port', $Port) `
+    -ArgumentList $runArgs `
     -WorkingDirectory $Root `
     -WindowStyle Hidden `
     -RedirectStandardOutput $OutLog `
@@ -170,7 +218,8 @@ while ((Get-Date) -lt $deadline) {
             $readyRoot = ''
             if ($null -ne $health.root) { $readyRoot = ([string]$health.root).TrimEnd('\') }
             if ($readyRoot -eq '' -or $readyRoot -ieq $Root.TrimEnd('\')) {
-                "Ready: http://127.0.0.1:$Port"
+                Write-Host "Ready: http://127.0.0.1:$Port"
+                if ($Remote) { Show-RemotePanel }
                 exit 0
             }
         }

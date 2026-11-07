@@ -1,5 +1,7 @@
 ﻿param(
-    [int]$Port = 8766
+    [int]$Port = 8766,
+    # 远程访问模式（甲方案）：主机跑服务，其他设备用浏览器连过来。
+    [switch]$Remote
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,7 +64,7 @@ if (-not (Test-Path -LiteralPath $Python)) {
 
 $startError = $null
 try {
-    & (Join-Path $Root "start.ps1") -Port $Port
+    & (Join-Path $Root "start.ps1") -Port $Port -Remote:$Remote
 } catch {
     # start.ps1 可能只是等超时了（首次启动被杀软拖慢），进程其实已经在跑，
     # 所以先记下错误，接着再探一次页面，能探到就照常打开浏览器。
@@ -122,5 +124,13 @@ if (Open-InBrowser -Url $url) {
     Write-Host "  $url" -ForegroundColor Cyan
 }
 
-Write-Host "（这个窗口 5 秒后自动关闭，服务继续在后台运行）"
-Start-Sleep -Seconds 5
+if ($Remote) {
+    Write-Host ""
+    Write-Host "远程访问已开启：其他设备用启动窗口里打印的地址打开，首次需输入访问口令。" -ForegroundColor Cyan
+    Write-Host "本机仍使用：$url" -ForegroundColor Cyan
+    Write-Host "（这个窗口 30 秒后自动关闭，服务继续在后台运行）" -ForegroundColor Yellow
+    Start-Sleep -Seconds 30
+} else {
+    Write-Host "（这个窗口 5 秒后自动关闭，服务继续在后台运行）"
+    Start-Sleep -Seconds 5
+}
