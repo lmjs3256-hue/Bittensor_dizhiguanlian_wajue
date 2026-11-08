@@ -1466,6 +1466,37 @@ function scanPayload(seed) {
   };
 }
 
+/* -- 起始地址记忆 ----------------------------------------------------------
+   用户天天查的还是那几个地址，每次打开都要重新粘贴很烦。记在浏览器本地
+   （localStorage），只存地址本身、不上传，多设备各自独立。
+
+   故意不记"用户正在输入的草稿"：只在真正发起查询时写入，否则一个打错的
+   半截地址也会被留下，下次打开还占着输入框。 */
+const SEED_STORAGE_KEY = "wallet-link-last-seed";
+
+function rememberSeed(seed) {
+  const value = String(seed || "").trim();
+  if (!value) return;
+  try {
+    localStorage.setItem(SEED_STORAGE_KEY, value);
+  } catch (error) {
+    // 隐私模式 / 存储被禁用时静默跳过：记忆是便利功能，不该影响查询。
+  }
+}
+
+function restoreSeed() {
+  const input = $("#seed");
+  if (!input || input.value.trim()) return;
+  let saved = "";
+  try {
+    saved = localStorage.getItem(SEED_STORAGE_KEY) || "";
+  } catch (error) {
+    return;
+  }
+  saved = saved.trim();
+  if (saved) input.value = saved;
+}
+
 async function runRelations(keepRemovals = false) {
   const seed = $("#seed").value.trim();
   if (!seed) { toast("请先输入起始地址。", true); return; }
@@ -1473,6 +1504,8 @@ async function runRelations(keepRemovals = false) {
     focusTaostatsKey("还没保存 Taostats API key：先粘贴 key 并点「保存 API key」；或取消勾选「使用 Taostats 历史索引」只查本地索引。");
     return;
   }
+  // 记下这次查的起始地址：刷新页面 / 关掉浏览器再打开，输入框还在原处。
+  rememberSeed(seed);
   const button = $("#run-scan");
   button.disabled = true;
   button.textContent = "扫描中…";
@@ -4374,6 +4407,8 @@ $("#copy-machine").addEventListener("click", async () => {
 (async function bootstrap() {
   loadAmountFilter();
   syncAmountFilterControls();
+  // 取回上次查询用的起始地址（纯前端记忆，与登录/授权无关）。
+  restoreSeed();
   // 甲方案：主机跑服务，其余设备只当浏览器客户端。先过访问口令再谈业务。
   const access = await loadAccessStatus();
   applyAccessStatus(access);
