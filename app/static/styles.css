@@ -1098,3 +1098,19 @@ header { align-items:flex-start; }
   .api-key-panel .keypool-add #keypool-new-label { flex:1 1 100%; }
   .api-key-panel .keypool-add button { flex:1 1 100%; }
 }
+
+/* 关联强度：表头做成可点击排序（0.8.28）
+   用户要求"直接在关联强度上做功能，不另外加按钮"，所以排序入口就是这个
+   表头本身：点击依次切换 默认 → 高到低 → 低到高 → 默认。 */
+.strength-head { padding:0; }
+.strength-sort {
+  display:inline-flex; align-items:center; gap:4px;
+  width:100%; padding:9px 6px; cursor:pointer;
+  font:inherit; font-weight:650; color:var(--muted);
+  background:transparent; border:0; border-radius:6px;
+  white-space:nowrap;
+}
+.strength-sort:hover { color:var(--accent); background:var(--accent-soft); }
+.strength-sort.active { color:var(--accent); }
+.sort-arrow { font-size:10px; opacity:.85; }
+.strength-sort.active .sort-arrow { opacity:1; font-weight:700; }

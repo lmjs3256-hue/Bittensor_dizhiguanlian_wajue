@@ -10,6 +10,10 @@ const state = {
   librarySearch: "",
   libraryRole: "",
   depthFilter: "all",
+  // 强度筛选：all / strong（强及以上）/ mid（中及以上）/ weak（含弱）
+  strengthFilter: "all",
+  // 强度排序：null 不排序（后端原始顺序）→ "desc" 高到低 → "asc" 低到高
+  strengthSort: null,
   // 关联层级上限：默认 3 级，最高 10 级。层级只决定 BFS 向下走多少跳，
   // 单边门槛、累计门槛、交易所/公共地址截止等规则在每一级都一样。
   maxDepth: 10,
@@ -1034,6 +1038,26 @@ function validatorDecisionControl(row) {
 
 const STRENGTH_CLASS = { "极强": "s4", "强": "s3", "中": "s2", "弱": "s1", "未知": "s0" };
 
+// 强度的数值等级：筛选与排序都按它算，避免各写一套映射。
+const STRENGTH_RANK = { "极强": 4, "强": 3, "中": 2, "弱": 1, "未知": 0 };
+
+function strengthOf(row) {
+  const label = String(row?.strength || "").trim() || fallbackStrength(row);
+  return Object.prototype.hasOwnProperty.call(STRENGTH_RANK, label) ? label : "未知";
+}
+
+function strengthRank(row) {
+  return STRENGTH_RANK[strengthOf(row)] ?? 0;
+}
+
+// 筛选门槛（含该等级本身）：强及以上 ≥3、中及以上 ≥2、含弱 ≥1。
+const STRENGTH_FLOOR = { strong: 3, mid: 2, weak: 1 };
+
+function rowPassesStrengthFilter(row, floor) {
+  if (!floor) return true;
+  return strengthRank(row) >= floor;
+}
+
 // 老版本存下的历史结果没有 strength 字段，这里按同一套规则现算一份，
 // 保证「查看记录」打开时也有强度标签（不影响排序顺序）。
 function fallbackStrength(row) {
@@ -1054,7 +1078,7 @@ function strengthBadge(row) {
 
 function relatedTable(rows) {
   if (!rows.length) return '<div class="placeholder">没有达到过滤条件的关联地址。</div>';
-  return `<table><thead><tr><th>关联钱包地址</th><th>当前余额 TAO</th><th>层级</th><th title="按累计转账金额分档：≥1000 极强、≥100 强、≥30 中，其余弱；间接关联降一档">关联强度</th><th>流入 TAO</th><th>流出 TAO</th><th>累计转账 TAO</th><th>地址库</th><th>备注</th></tr></thead><tbody>${rows.map((row) => {
+  return `<table><thead><tr><th>关联钱包地址</th><th>当前余额 TAO</th><th>层级</th><th class="strength-head"><button class="strength-sort${state.strengthSort ? " active" : ""}" data-sort-strength type="button" aria-label="按关联强度排序" title="点击切换排序：高到低 → 低到高 → 默认顺序">关联强度<span class="sort-arrow">${state.strengthSort === "desc" ? "↓" : state.strengthSort === "asc" ? "↑" : "↕"}</span></button></th><th>流入 TAO</th><th>流出 TAO</th><th>累计转账 TAO</th><th>地址库</th><th>备注</th></tr></thead><tbody>${rows.map((row) => {
     const role = row.address_role
       ? `<span class="tag role-tag" title="${esc(row.role_reason || "")}">${esc(row.address_role)}</span>`
       : "";
@@ -1235,8 +1259,11 @@ try {
 // 层级 / 手动移除 / 交易所剪枝：不涉及金额的基础可见集合。
 function relatedBaseRows() {
   const allRows = state.lastResult?.related || [];
+  const floor = STRENGTH_FLOOR[state.strengthFilter] || 0;
   return allRows.filter((row) => {
     if (state.depthFilter !== "all" && String(row.depth) !== state.depthFilter) return false;
+    // 强度筛选与层级筛选同口径：都是"基础可见集合"，建库与导出共用。
+    if (!rowPassesStrengthFilter(row, floor)) return false;
     if (state.removedAddresses.has(row.address)) return false;
     if (state.exchangePruned.has(row.address)) return false;
     return true;
@@ -1244,7 +1271,17 @@ function relatedBaseRows() {
 }
 
 function relatedVisibleRows() {
-  return relatedBaseRows().filter(rowPassesAmountFilter);
+  return sortByStrength(relatedBaseRows().filter(rowPassesAmountFilter));
+}
+
+// 强度排序：只在表格显示层做，不改 state.lastResult 的原始顺序，
+// 所以关掉排序后立刻回到后端给的顺序（层级越浅越靠前）。
+function sortByStrength(rows) {
+  const dir = state.strengthSort;
+  if (!dir) return rows;
+  const sign = dir === "asc" ? 1 : -1;
+  // 同级里保持原有顺序（稳定排序），避免同强度地址来回跳。
+  return [...rows].sort((a, b) => sign * (strengthRank(a) - strengthRank(b)));
 }
 
 function renderAmountFilterHint(total, visible) {
@@ -1265,9 +1302,29 @@ function renderAmountFilterHint(total, visible) {
   hint.classList.remove("hidden");
 }
 
+/* 强度筛选提示。与金额提示分开显示：两者都会缩小可见集合，
+   混在一行里"总条数"到底指扣掉哪个之前会让人算不清。 */
+function renderStrengthFilterHint(visibleCount) {
+  const box = $("#related-strength-hint");
+  if (!box) return;
+  const floor = STRENGTH_FLOOR[state.strengthFilter] || 0;
+  if (!floor) {
+    box.classList.add("hidden");
+    box.textContent = "";
+    return;
+  }
+  const total = (state.lastResult?.related || []).length;
+  box.textContent =
+    `强度筛选：${strengthLabelOf(floor)}；当前显示 ${number(visibleCount)} 条（全部 ${number(total)} 条）。` +
+    "只影响表格显示、建库与导出，不重新查询。";
+  box.classList.remove("hidden");
+}
+
 function refreshRelatedTable() {
   const baseRows = relatedBaseRows();
-  const visible = baseRows.filter(rowPassesAmountFilter);
+  // 必须走 relatedVisibleRows()：它在金额筛选之后再做强度排序。
+  // 直接用 baseRows.filter(...) 会绕过排序，点了表头顺序不变。
+  const visible = relatedVisibleRows();
   // 建库提示按"当前条件"算，筛选一变就得跟着变，否则提示数量会和实际导入不一致。
   updateBookHint();
   $("#count-related").textContent = number(visible.length);
@@ -1278,6 +1335,7 @@ function refreshRelatedTable() {
   $("#related").innerHTML = relatedTable(visible.slice(start, start + state.pageSize));
   renderRelatedPagination(visible.length, totalPages);
   renderAmountFilterHint(baseRows.length, visible.length);
+  renderStrengthFilterHint(visible.length);
   const removedNote = $("#removed-note");
   if (removedNote) {
     const notes = [];
@@ -1496,6 +1554,9 @@ function renderResult(data) {
     state.depthFilter = "all";
   }
   $("#related-depth-filter").value = state.depthFilter;
+  // 新结果到达时，强度筛选控件也要反映 state（例如上一轮设过"强及以上"）。
+  const strengthSelect = $("#related-strength-filter");
+  if (strengthSelect) strengthSelect.value = state.strengthFilter;
   syncAmountFilterControls();
   $("#cutoff").textContent = data.data_cutoff_block ? number(data.data_cutoff_block) : "-";
   const seedHit = $("#seed-library-hit");
@@ -4121,6 +4182,8 @@ function describeCurrentFilters() {
   // 层级：建库跟随「关联地址」的层级筛选，导出跟随「导出层级」下拉。
   const relatedDepth = state.depthFilter === "all" ? null : state.depthFilter;
   lines.push(`层级：${depthLabelOf(relatedDepth)}`);
+  const strengthFloor = STRENGTH_FLOOR[state.strengthFilter] || 0;
+  lines.push(`强度：${strengthLabelOf(strengthFloor)}`);
   if (amountFilterActive()) {
     lines.push(
       `金额：${amountModeLabel()} ≥ ${number(amountMinValue())} TAO（低于此值的关联地址已隐藏）`
@@ -4168,7 +4231,7 @@ function confirmScope({ title, rows, detail, confirmText }) {
    与建库的区别：导出走「导出层级」下拉，**不套用结果表的金额筛选**
    （导出的是完整记录，交给下游自己再筛）。这里如实说明，免得有人以为
    导出也会跟着金额筛选走。 */
-function confirmExportScope({ title, rows }) {
+function confirmExportScope({ title, rows, strengthFloor = 0 }) {
   const { addresses, skippedExchange, skippedValidator, skippedPublic } =
     selectExportableAddresses(rows);
   if (!addresses.length) return { rows: [], confirmed: false, empty: true };
@@ -4176,7 +4239,8 @@ function confirmExportScope({ title, rows }) {
   const lines = [
     title,
     "",
-    "导出按「导出层级」下拉，不含金额筛选、也不含手动移除。",
+    "导出按「导出层级」与「导出强度」下拉，不含金额筛选、也不含手动移除。",
+    `· 强度：${strengthLabelOf(strengthFloor)}`,
     "",
     `地址清单将包含 ${addresses.length} 个地址`,
   ];
@@ -4381,6 +4445,12 @@ $("#related-depth-filter").addEventListener("change", (event) => {
   state.depthFilter = event.target.value;
   refreshRelatedTable();
 });
+// 强度筛选：与层级筛选同口径，只重排当前表格（不重新查询）。
+$("#related-strength-filter").addEventListener("change", (event) => {
+  state.strengthFilter = event.target.value || "all";
+  state.page = 1;
+  refreshRelatedTable();
+});
 // 金额筛选：改方式或阈值都只重排当前表格（局部刷新，不重新查询）。
 $("#related-amount-mode").addEventListener("change", (event) => {
   state.amountFilter.mode = event.target.value;
@@ -4469,6 +4539,17 @@ document.addEventListener("click", (event) => {
   if (accessCopy) copyAddress(accessCopy.dataset.copyValue, accessCopy);
   const pathToggle = event.target.closest("[data-path-toggle]");
   if (pathToggle) togglePathDetail(pathToggle.dataset.pathToggle);
+  const sortStrength = event.target.closest("[data-sort-strength]");
+  if (sortStrength) {
+    // 三态循环：默认 → 高到低 → 低到高 → 默认。不额外占用工具栏位置。
+    state.strengthSort = state.strengthSort === null ? "desc" : state.strengthSort === "desc" ? "asc" : null;
+    state.page = 1;
+    refreshRelatedTable();
+    const label = state.strengthSort === "desc" ? "已按关联强度从高到低排序"
+      : state.strengthSort === "asc" ? "已按关联强度从低到高排序"
+      : "已恢复默认顺序";
+    toast(label, false);
+  }
   const pageJump = event.target.closest("[data-page-jump]");
   if (pageJump) gotoRelatedPage(pageJump.dataset.pageJump);
   const removeRelationButton = event.target.closest("[data-remove-relation]");
@@ -4729,6 +4810,20 @@ function exportDepth() {
   return value === "all" ? null : Number(value);
 }
 
+// 导出强度门槛：与结果区的强度筛选同一套等级，但用独立控件，
+// 因为「导出层级」本来就是独立下拉，强度也要能单独定。
+function exportStrengthFloor() {
+  const value = $("#export-strength") ? $("#export-strength").value : "all";
+  return STRENGTH_FLOOR[value] || 0;
+}
+
+function strengthLabelOf(floor) {
+  if (floor >= 3) return "强及以上";
+  if (floor >= 2) return "中及以上";
+  if (floor >= 1) return "含弱";
+  return "全部强度";
+}
+
 function depthTag(depth) {
   return depth ? `-d${depth}` : "";
 }
@@ -4738,12 +4833,16 @@ $("#export-json").addEventListener("click", () => {
   const depth = exportDepth();
   // JSON 也走一次条件确认：导出层级用的是「导出层级」下拉，和结果表的层级
   // 筛选是两个控件，不确认极易导错范围。
+  const strengthFloorJson = exportStrengthFloor();
   const depthRows = (state.lastResult.related || []).filter(
-    (row) => depth === null || String(row.depth) === String(depth)
+    (row) =>
+      (depth === null || String(row.depth) === String(depth)) &&
+      rowPassesStrengthFilter(row, strengthFloorJson)
   );
   const jsonScope = confirmExportScope({
-    title: `导出 JSON（层级：${depthLabelOf(depth)}）`,
+    title: `导出 JSON（层级：${depthLabelOf(depth)}｜强度：${strengthLabelOf(strengthFloorJson)}）`,
     rows: depthRows,
+    strengthFloor: strengthFloorJson,
   });
   if (jsonScope.empty) {
     toast(`没有 ${depth === null ? "" : `${depth} 级`}关联地址可导出；可把导出层级改回「全部层级」。`, true);
@@ -4760,6 +4859,7 @@ $("#export-json").addEventListener("click", () => {
     seed_balance_tao: state.lastResult.seed_balance_tao,
     policy: state.lastResult.policy,
     export_depth: depth === null ? "all" : depth,
+    export_strength: strengthLabelOf(strengthFloorJson),
     related: rows.map((row) => ({
       address: row.address,
       depth: row.depth,
@@ -4820,11 +4920,15 @@ function selectExportableAddresses(rows) {
 $("#export-addresses").addEventListener("click", () => {
   if (!state.lastResult) { toast("先完成一次关联扫描。", true); return; }
   const depth = exportDepth();
+  const strengthFloor = exportStrengthFloor();
   const depthRows = (state.lastResult.related || []).filter(
     (row) => depth === null || String(row.depth) === String(depth)
   );
-  // 地址 TXT 跟随当前金额筛选：筛掉轻微关联后导出的清单就是干净的待跟进列表。
-  const rows = depthRows.filter(rowPassesAmountFilter);
+  // 地址 TXT 跟随当前金额筛选与导出的强度门槛：筛掉轻微关联后就是
+  // 干净的待跟进列表。层级 / 强度 / 金额三者可叠加。
+  const rows = depthRows.filter(
+    (row) => rowPassesStrengthFilter(row, strengthFloor) && rowPassesAmountFilter(row)
+  );
   const amountSkipped = depthRows.length - rows.length;
   const amountNote = amountSkipped > 0 ? `，金额筛选隐藏 ${amountSkipped} 个轻微关联` : "";
   const { addresses, skippedExchange, skippedValidator, skippedPublic } = selectExportableAddresses(rows);
@@ -4833,6 +4937,7 @@ $("#export-addresses").addEventListener("click", () => {
       `导出地址 TXT（层级：${depthLabelOf(depth)}）`,
       "",
       `· 层级：${depthLabelOf(depth)}`,
+      `· 强度：${strengthLabelOf(strengthFloor)}`,
       `· 金额：${amountFilterActive() ? `${amountModeLabel()} ≥ ${number(amountMinValue())} TAO` : "不限"}`,
     ];
     if (amountSkipped > 0) lines.push(`· 金额筛选隐藏 ${amountSkipped} 个轻微关联`);

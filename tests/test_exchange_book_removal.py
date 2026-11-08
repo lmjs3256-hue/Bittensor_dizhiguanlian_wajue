@@ -698,3 +698,119 @@ def test_adopt_note_only_skips_system_roles():
             assert "PUBLIC" in row["categories"]
         finally:
             database.engine.dispose()
+
+
+# -- 0.8.28：关联强度筛选与排序（静态断言，锁住口径） --------------------
+
+def _app_js():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    return (root / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+
+def test_strength_filter_is_part_of_base_visible_rows():
+    """强度筛选必须进 relatedBaseRows()。
+
+    只有进这里，建库（relatedVisibleRows）和导出才会自动跟着走；
+    如果只在前端表格里过滤，建库就会把被强度筛掉的地址也导进去。
+    """
+
+    js = _app_js()
+    start = js.index("function relatedBaseRows()")
+    block = js[start: js.index("\n}\n", start)]
+    assert "rowPassesStrengthFilter" in block, "强度筛选必须并入基础可见集合"
+    assert "strengthFilter" in block
+
+
+def test_strength_floor_values_are_ordered():
+    """门槛定义必须单调：强及以上 3 > 中及以上 2 > 含弱 1。"""
+
+    js = _app_js()
+    start = js.index("const STRENGTH_FLOOR = {")
+    block = js[start: js.index("};", start)]
+    assert "strong: 3" in block
+    assert "mid: 2" in block
+    assert "weak: 1" in block
+
+
+def test_table_renders_through_sorted_rows():
+    """表格必须走 relatedVisibleRows()（含排序）。
+
+    这里防的是"点了表头顺序不变"这类回归：直接用 baseRows.filter 会绕过
+    sortByStrength，状态变了但界面没变。
+    """
+
+    js = _app_js()
+    start = js.index("function refreshRelatedTable()")
+    block = js[start: js.index("\n}\n", start)]
+    assert "relatedVisibleRows()" in block, "表格渲染必须经过排序函数"
+    assert "baseRows.filter(rowPassesAmountFilter)" not in block
+
+
+def test_strength_header_is_the_sort_control():
+    """用户要求"直接在关联强度上做功能，不另外加按钮"。"""
+
+    js = _app_js()
+    assert "data-sort-strength" in js
+    # 表头本身就是 button，不能另起一个独立排序按钮
+    assert "strength-head" in js
+    assert 'class="strength-sort' in js
+
+
+# -- 0.8.28：关联强度筛选与排序（静态断言，锁住口径） --------------------
+
+def _app_js():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    return (root / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+
+def test_strength_filter_is_part_of_base_visible_rows():
+    """强度筛选必须进 relatedBaseRows()。
+
+    只有进这里，建库（relatedVisibleRows）和导出才会自动跟着走；
+    如果只在前端表格里过滤，建库就会把被强度筛掉的地址也导进去。
+    """
+
+    js = _app_js()
+    start = js.index("function relatedBaseRows()")
+    block = js[start: js.index("\n}\n", start)]
+    assert "rowPassesStrengthFilter" in block, "强度筛选必须并入基础可见集合"
+    assert "strengthFilter" in block
+
+
+def test_strength_floor_values_are_ordered():
+    """门槛定义必须单调：强及以上 3 > 中及以上 2 > 含弱 1。"""
+
+    js = _app_js()
+    start = js.index("const STRENGTH_FLOOR = {")
+    block = js[start: js.index("};", start)]
+    assert "strong: 3" in block
+    assert "mid: 2" in block
+    assert "weak: 1" in block
+
+
+def test_table_renders_through_sorted_rows():
+    """表格必须走 relatedVisibleRows()（含排序）。
+
+    这里防的是"点了表头顺序不变"这类回归：直接用 baseRows.filter 会绕过
+    sortByStrength，状态变了但界面没变。
+    """
+
+    js = _app_js()
+    start = js.index("function refreshRelatedTable()")
+    block = js[start: js.index("\n}\n", start)]
+    assert "relatedVisibleRows()" in block, "表格渲染必须经过排序函数"
+    assert "baseRows.filter(rowPassesAmountFilter)" not in block
+
+
+def test_strength_header_is_the_sort_control():
+    """用户要求"直接在关联强度上做功能，不另外加按钮"。"""
+
+    js = _app_js()
+    assert "data-sort-strength" in js
+    # 表头本身就是 button，不能另起一个独立排序按钮
+    assert "strength-head" in js
+    assert 'class="strength-sort' in js
