@@ -318,3 +318,60 @@ def test_endpoints_port_comes_from_request_not_hardcoded(isolated_settings, lice
     assert _request_port(FakeRequest(None, "127.0.0.1:8899")) == 8899
     # 都没有就用默认值，不能抛异常
     assert _request_port(FakeRequest(None)) == 8766
+
+
+# -- 远程面板可折叠 + 指标在标题栏（0.8.23）--------------------------------
+
+def _html():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    return (root / "app" / "templates" / "index.html").read_text(encoding="utf-8")
+
+
+def _js():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    return (root / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+
+def test_remote_panel_has_toggle_wired_to_body():
+    """折叠按钮必须连着 remote-body，且带 aria-expanded（可访问性）。"""
+
+    html = _html()
+    assert 'id="remote-toggle"' in html
+    assert 'id="remote-body"' in html
+    # 按钮要声明它控制哪一块、当前是否展开，读屏软件据此播报。
+    assert 'aria-controls="remote-body"' in html
+    assert "aria-expanded=" in html
+    js = _js()
+    assert "REMOTE_FOLD_KEY" in js, "折叠状态应持久化到 localStorage"
+    assert "setRemoteFolded" in js and "restoreRemoteFold" in js
+
+
+def test_index_metrics_moved_into_header():
+    """三个索引指标必须在 header 里，且已从 hero 面板移出。"""
+
+    html = _html()
+    header = html[html.index("<header>"): html.index("</header>")]
+    hero_start = html.index('class="panel hero"')
+    hero_end = html.index("</section>", hero_start)
+    hero = html[hero_start:hero_end]
+
+    for ident in ("metric-transfers", "metric-range", "metric-cursor"):
+        assert ident in header, f"{ident} 应在 header 里"
+        assert ident not in hero, f"{ident} 不应再出现在 hero 面板里"
+
+
+def test_remote_fold_default_is_expanded():
+    """默认必须展开：第一次来的人得先看见地址。
+
+    只断言"默认值不是折叠"——具体实现可以在 restoreRemoteFold 里读存储，
+    但存储没值时不能返回 folded=true。
+    """
+
+    js = _js()
+    start = js.index("function restoreRemoteFold()")
+    block = js[start: js.index("\n}", start)]
+    assert "= false" in block, "没有存储时默认应为展开（folded=false）"

@@ -342,6 +342,39 @@ function applyAccessStatus(status) {
 /* 页面顶部「远程访问」面板：地址一行一个，行尾带复制按钮。
    数据只在本机访问时才有（后端只对回环请求返回 endpoints），远程设备拿到的是
    空值 —— 别人的局域网地址和访问口令不该外泄。 */
+/* 远程面板可折叠。折叠状态记在浏览器本地——天天用的人收起一次就够了，
+   不该每次刷新都重新展开一遍。默认展开：第一次来的人得先看见地址。 */
+const REMOTE_FOLD_KEY = "wallet-link-remote-folded";
+
+function setRemoteFolded(folded, persist = true) {
+  const body = $("#remote-body");
+  const button = $("#remote-toggle");
+  if (!body || !button) return;
+  body.classList.toggle("hidden", folded);
+  button.setAttribute("aria-expanded", folded ? "false" : "true");
+  const text = button.querySelector(".remote-toggle-text");
+  const chevron = button.querySelector(".remote-chevron");
+  if (text) text.textContent = folded ? "展开" : "收起";
+  // 箭头：展开时朝上（点它收起），折叠时朝下。
+  if (chevron) chevron.textContent = folded ? "⌄" : "⌃";
+  if (!persist) return;
+  try {
+    localStorage.setItem(REMOTE_FOLD_KEY, folded ? "1" : "0");
+  } catch (error) {
+    // 隐私模式下写不进去，不影响功能，只是刷新后恢复默认。
+  }
+}
+
+function restoreRemoteFold() {
+  let folded = false;
+  try {
+    folded = localStorage.getItem(REMOTE_FOLD_KEY) === "1";
+  } catch (error) {
+    folded = false;
+  }
+  setRemoteFolded(folded, false);
+}
+
 function renderAccessEndpoints(status) {
   const list = $("#access-list");
   const title = $("#remote-title");
@@ -3951,6 +3984,12 @@ $("#taostats-api-key").addEventListener("keydown", (event) => {
   if (event.key === "Enter") saveTaostatsKey();
 });
 $("#run-scan").addEventListener("click", () => runRelations(false));
+// 远程面板折叠/展开（状态记在 localStorage，见 setRemoteFolded）。
+$("#remote-toggle").addEventListener("click", () => {
+  const body = $("#remote-body");
+  if (!body) return;
+  setRemoteFolded(!body.classList.contains("hidden"));
+});
 // 保存阈值：按钮 + 回车，跟 API key 那套交互一致。
 $("#save-thresholds").addEventListener("click", saveScanThresholds);
 ["#min-edge", "#min-total"].forEach((selector) => {
@@ -4466,6 +4505,8 @@ $("#copy-machine").addEventListener("click", async () => {
   syncAmountFilterControls();
   // 取回上次查询用的起始地址（纯前端记忆，与登录/授权无关）。
   restoreSeed();
+  // 远程面板的折叠状态也要在首次渲染前恢复，否则会闪一下再收起。
+  restoreRemoteFold();
   // 甲方案：主机跑服务，其余设备只当浏览器客户端。先过访问口令再谈业务。
   const access = await loadAccessStatus();
   applyAccessStatus(access);

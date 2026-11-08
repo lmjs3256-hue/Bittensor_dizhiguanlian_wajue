@@ -953,3 +953,48 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
   .access-value { flex:1 1 auto; font-size:12px; }
   .access-copy { padding:6px 13px; }
 }
+
+/* ============================================================================
+   标题栏指标 + 远程面板折叠（0.8.23）
+   --------------------------------------------------------------------
+   索引转账 / 区块范围 / 索引水位从 hero 移到标题栏右侧：它们是"这台机器现在
+   有多少数据"的常量信息，不是操作区，放标题栏能一直可见又不占主区高度。
+   ============================================================================ */
+
+header { align-items:flex-start; }
+.header-main { min-width:0; }
+.header-side { display:flex; flex-direction:column; align-items:flex-end; gap:12px; flex:0 0 auto; }
+
+/* 标题栏里的紧凑指标：三列等宽、标签在上数值在下，与主题/状态同一竖排。 */
+.header-metrics { display:grid; grid-template-columns:repeat(3,auto); gap:18px; }
+.header-metrics div { display:flex; flex-direction:column; gap:2px; text-align:right; }
+.header-metrics span { color:var(--muted); font-size:11px; white-space:nowrap; }
+.header-metrics b { font-family:var(--mono); font-size:14px; font-weight:650; overflow-wrap:anywhere; }
+
+/* 折叠头：标题 + 展开/收起按钮，同一行左右分开。 */
+.remote-head { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
+.remote-head h2 { margin-bottom:0; }
+.remote-toggle {
+  display:inline-flex; align-items:center; gap:5px; flex:0 0 auto;
+  font-size:11.5px; padding:5px 11px; cursor:pointer;
+  color:var(--muted); background:transparent;
+  border:1px solid var(--line); border-radius:7px;
+}
+.remote-toggle:hover { color:var(--accent); border-color:var(--accent); }
+.remote-chevron { font-size:11px; line-height:1; }
+.remote-body { margin-top:12px; }
+/* 折叠后 hero 不需要底部留白，否则会留一条空带 */
+.hero:has(.remote-body.hidden) { padding-bottom:18px; }
+
+@media (max-width:950px) {
+  /* 窄屏：指标从标题右侧挪到标题下方，横排三列 */
+  header { flex-direction:column; gap:14px; }
+  .header-side { align-items:stretch; width:100%; }
+  .header-actions { justify-content:flex-start; }
+  .header-metrics { grid-template-columns:repeat(3,1fr); gap:12px; }
+  .header-metrics div { text-align:left; }
+}
+@media (max-width:560px) {
+  .header-metrics b { font-size:13px; }
+  .header-metrics span { font-size:10.5px; }
+}

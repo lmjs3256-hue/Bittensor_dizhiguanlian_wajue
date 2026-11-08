@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.22">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.23">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -71,28 +71,41 @@
     </aside>
     <main>
       <header>
-        <div><div class="eyebrow">EVIDENCE-BASED ADDRESS GRAPH</div><h1>Bittensor 地址关联挖掘</h1>
+        <div class="header-main">
+          <div class="eyebrow">EVIDENCE-BASED ADDRESS GRAPH</div>
+          <h1>Bittensor 地址关联挖掘</h1>
           <p class="header-scope"><b>数据口径</b> <code id="hero-title">Balances.Transfer</code> 的 from → to 才算资金边；结果只显示关联钱包、层级、金额和地址库标签。</p>
         </div>
-        <div class="header-actions">
-          <label class="theme-select"><span>主题</span><select id="theme-select" aria-label="界面主题"><option value="system">跟随系统</option><option value="warm">护眼 · 暖色</option><option value="darkgray">护眼 · 深灰</option></select></label>
-          <div class="live-pill"><span class="dot" id="index-dot"></span><span id="index-status">本地索引加载中</span></div>
+        <div class="header-side">
+          <div class="header-actions">
+            <label class="theme-select"><span>主题</span><select id="theme-select" aria-label="界面主题"><option value="system">跟随系统</option><option value="warm">护眼 · 暖色</option><option value="darkgray">护眼 · 深灰</option></select></label>
+            <div class="live-pill"><span class="dot" id="index-dot"></span><span id="index-status">本地索引加载中</span></div>
+          </div>
+          <div class="header-metrics">
+            <div><span>本地索引转账</span><b id="metric-transfers">-</b></div>
+            <div><span>区块范围</span><b id="metric-range">-</b></div>
+            <div><span>索引水位</span><b id="metric-cursor">-</b></div>
+          </div>
         </div>
       </header>
 
       <section class="panel hero">
         <div class="hero-remote">
-          <span class="label">远程访问</span>
-          <h2 id="remote-title">本机使用中</h2>
-          <div class="access-list" id="access-list">
-            <div class="access-row"><span class="access-kind">本机</span><code class="access-value" id="access-local">http://127.0.0.1:8766</code><button class="access-copy" type="button" data-copy-target="access-local" title="复制本机地址">复制</button></div>
+          <div class="remote-head">
+            <div>
+              <span class="label">远程访问</span>
+              <h2 id="remote-title">本机使用中</h2>
+            </div>
+            <button class="remote-toggle" id="remote-toggle" type="button" aria-expanded="true" aria-controls="remote-body">
+              <span class="remote-toggle-text">收起</span><span class="remote-chevron">⌃</span>
+            </button>
           </div>
-          <p class="access-note" id="access-note">远程地址、公网隧道和访问口令会显示在这里（仅主机可见）。</p>
-        </div>
-        <div class="metrics">
-          <div><span>本地索引转账</span><b id="metric-transfers">-</b></div>
-          <div><span>区块范围</span><b id="metric-range">-</b></div>
-          <div><span>索引水位</span><b id="metric-cursor">-</b></div>
+          <div class="remote-body" id="remote-body">
+            <div class="access-list" id="access-list">
+              <div class="access-row"><span class="access-kind">本机</span><code class="access-value" id="access-local">http://127.0.0.1:8766</code><button class="access-copy" type="button" data-copy-target="access-local" title="复制本机地址">复制</button></div>
+            </div>
+            <p class="access-note" id="access-note">远程地址、公网隧道和访问口令会显示在这里（仅主机可见）。</p>
+          </div>
         </div>
       </section>
 
@@ -251,6 +264,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.22"></script>
+  <script src="/static/app.js?v=0.8.23"></script>
 </body>
 </html>
