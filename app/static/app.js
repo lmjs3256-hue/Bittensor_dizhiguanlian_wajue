@@ -5093,6 +5093,50 @@ $("#export-addresses").addEventListener("click", () => {
   toast(`已导出 ${depthText} ${addresses.length} 个地址（每行一个）；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个、公共地址 ${skippedPublic} 个${amountNote}。`);
 });
 $("#seed").addEventListener("keydown", (event) => { if (event.key === "Enter") runRelations(); });
+
+/* 起始地址框：聚焦时自动全选原有地址，粘贴新地址直接覆盖。
+   每次查新地址都要先删掉旧的，很烦；选中之后 Ctrl+V 就直接替换。
+
+   为什么要等 mouseup：鼠标点击输入框的默认行为是"把光标放到点击位置并
+   清掉选区"，在 focus 里 select() 会被这次点击立刻撤销。所以要延到
+   mouseup 之后（同一帧内用 setTimeout(0)）再选一次。
+   键盘 Tab 进入时不会有 mouseup 的问题，focus 里直接选就行。 */
+(function enableSeedAutoSelect() {
+  const input = $("#seed");
+  if (!input) return;
+  let pointerSelecting = false;
+
+  input.addEventListener("focus", () => {
+    // 用键盘进入（Tab / 快捷键）时没有鼠标操作，直接全选。
+    if (pointerSelecting) return;
+    if (input.value) input.select();
+  });
+
+  input.addEventListener("mousedown", () => {
+    // 已经聚焦的情况下再点，用户可能想改中间某个字符，不强行全选。
+    pointerSelecting = input === document.activeElement;
+  });
+
+  input.addEventListener("mouseup", () => {
+    if (pointerSelecting) { pointerSelecting = false; return; }
+    pointerSelecting = false;
+    // 未聚焦 → 这次点击聚焦：等点击的默认行为跑完再全选。
+    if (input.value) window.setTimeout(() => input.select(), 0);
+  });
+
+  // 失焦时收起选区，避免"看起来一直高亮"的错觉。
+  input.addEventListener("blur", () => {
+    const value = input.value;
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    if (start !== null && end !== null && start !== end) {
+      // 延迟到焦点真正移走后取消选区（同步取消会被浏览器忽略）。
+      window.setTimeout(() => {
+        try { input.setSelectionRange(value.length, value.length); } catch (e) { /* 忽略 */ }
+      }, 0);
+    }
+  });
+})();
 $("#license-activate").addEventListener("click", activateLicense);
 const accessLoginButton = $("#access-login");
 if (accessLoginButton) accessLoginButton.addEventListener("click", submitAccessToken);

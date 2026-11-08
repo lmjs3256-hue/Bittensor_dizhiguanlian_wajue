@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.29">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.30">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -130,7 +130,7 @@
       <div id="view-scan">
         <section class="panel controls">
           <div class="control-grid">
-            <div class="wide seed-field"><label for="seed">起始地址</label><div class="seed-row"><input id="seed" placeholder="输入 Bittensor SS58 地址（48 位）" autocomplete="off" spellcheck="false"><button class="primary cta" id="run-scan" type="button">扫描关联</button></div><div id="job-progress" class="job-progress hidden" aria-live="polite"><span class="job-dot"></span><div class="job-body"><span id="job-text">分轮查询准备中…</span><small id="job-plan"></small></div><button class="ghost" id="cancel-job" type="button">停止续查</button></div></div>
+            <div class="wide seed-field"><label for="seed">起始地址</label><div class="seed-row"><input id="seed" placeholder="输入 Bittensor SS58 地址（48 位）" autocomplete="off" spellcheck="false" title="点击输入框会自动选中整个地址，直接粘贴即可覆盖"><button class="primary cta" id="run-scan" type="button">扫描关联</button></div><div id="job-progress" class="job-progress hidden" aria-live="polite"><span class="job-dot"></span><div class="job-body"><span id="job-text">分轮查询准备中…</span><small id="job-plan"></small></div><button class="ghost" id="cancel-job" type="button">停止续查</button></div></div>
             <label class="field-compact">最大层级<select id="depth" aria-label="最大关联层级"></select></label>
             <label class="field-compact">单边最低 TAO<input id="min-edge" value="1" inputmode="decimal" aria-label="单边最低 TAO"></label>
             <label class="field-compact">累计最低 TAO<input id="min-total" value="1" inputmode="decimal" aria-label="累计最低 TAO"></label>
@@ -282,6 +282,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.29"></script>
+  <script src="/static/app.js?v=0.8.30"></script>
 </body>
 </html>

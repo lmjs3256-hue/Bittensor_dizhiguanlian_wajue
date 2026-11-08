@@ -856,3 +856,20 @@ def test_local_rebuild_uses_reachability_not_blocking():
     block = js[start: js.index("\n}\n", start)]
     assert "reachable" in block, "必须用可达性判断，而不是把移除地址当墙"
     assert "state.removedAddresses.has(next)" in block
+
+
+# -- 0.8.30：起始地址框点击即全选 ----------------------------------------
+
+def test_seed_input_selects_all_on_focus():
+    """点起始地址框应自动全选，粘贴直接覆盖。
+
+    关键是**不能只在 focus 里 select()**：鼠标点击的默认行为会把光标放到
+    点击位置并清掉选区，所以鼠标路径必须等 mouseup 之后再选。
+    """
+
+    js = _app_js()
+    start = js.index("function enableSeedAutoSelect()")
+    block = js[start: js.index("\n})();", start)]
+    assert "input.select()" in block
+    assert 'addEventListener("mouseup"' in block, "鼠标点击要等 mouseup 后再全选"
+    assert "pointerSelecting" in block, "已聚焦后再点不应强制全选"
