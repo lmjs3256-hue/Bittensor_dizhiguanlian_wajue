@@ -32,6 +32,9 @@ const state = {
   // 手动「移除关联」的地址：本次会话内刷新重查时作为 removed_addresses 传给后端，
   // 这些地址及其线索的下游都不会再出现。新查询（非刷新）会清空。
   removedAddresses: new Set(),
+  // 勾选「过滤交易所/验证者/公共地址」后本地隐藏的地址 → 原始行。
+  // 与 removedAddresses 分开：过滤是可逆的显示开关，不是删除决定。
+  filteredOut: new Map(),
   // 本次会话被「标为交易所」的地址：它们下游只经由该地址连通的关联地址先在
   // 页面上隐藏（不发回后端，避免误伤还有别的通路的地址）；刷新重查由后端按终点规则处理。
   exchangePruned: new Set(),
@@ -1345,6 +1348,9 @@ function refreshRelatedTable() {
     if (state.exchangePruned.size) {
       notes.push(`已按「标为交易所」隐藏 ${state.exchangePruned.size} 个只经由交易所连通的地址（刷新后由后端确认）`);
     }
+    if (state.filteredOut.size) {
+      notes.push(`已按过滤条件隐藏 ${state.filteredOut.size} 个交易所/验证者/公共地址（取消勾选即可恢复；要连下游一起消失请重新扫描）`);
+    }
     if (notes.length) {
       removedNote.textContent = notes.join("；");
       removedNote.classList.remove("hidden");
@@ -1804,6 +1810,8 @@ async function runRelations(keepRemovals = false) {
   if (!keepRemovals) {
     state.removedAddresses.clear();
     state.exchangePruned.clear();
+    // 新一轮结果自带服务端过滤，本地的"已隐藏"记录不再适用。
+    state.filteredOut.clear();
     state.page = 1;
   }
   try {
@@ -3319,6 +3327,65 @@ async function copyAddress(address, button) {
 
    返回被剔掉的地址数，调用方提示用户。注意这是**本地剪枝**，不会补出新
    地址；想看最新的链上情况仍要点「扫描关联」。 */
+/* 按「过滤交易所 / 验证者 / 公共地址」勾选，立即在本地隐藏或恢复。
+   ------------------------------------------------------------------------
+   以前这四个勾选框**只在发起查询时被读取**，没有绑定任何 change 事件——
+   勾上之后界面毫无变化，必须重新点「扫描关联」才生效。用户看到的就是
+   "勾了过滤但没隐藏"。
+
+   过滤本质上是显示开关：地址库里已经有身份信息（EXCHANGE/VALIDATOR/PUBLIC
+   分类），据此就能立刻判断哪些该隐藏，不需要再问一次 API。所以这里做本地
+   过滤，并把被隐藏的行存进 state.filteredOut，取消勾选时原样放回。
+
+   注意：交易所只过滤**已人工确认**的（与查询口径一致）；"疑似交易所（待确认）"
+   会保留，否则会把只是像交易所的正常地址一起吞掉。 */
+function applyLocalFilters() {
+  const data = state.lastResult;
+  if (!data) return { hidden: 0, shown: 0 };
+  const wantExchange = Boolean($("#filter-exchanges")?.checked);
+  const wantValidator = Boolean($("#filter-validators")?.checked);
+  const wantPublic = Boolean($("#filter-publics")?.checked);
+
+  const namesOf = (row) =>
+    [row.library_category, ...(row.library_categories || [])]
+      .map((value) => String(value || "").toUpperCase());
+
+  const shouldHide = (row) => {
+    const names = namesOf(row);
+    if (wantPublic && names.includes("PUBLIC")) return true;
+    if (wantValidator && names.includes("VALIDATOR")) return true;
+    if (wantExchange && names.includes("EXCHANGE") && row.exchange_confirmed && !row.exchange_rejected) {
+      return true;
+    }
+    return false;
+  };
+
+  // 先恢复：之前被隐藏、但现在不该隐藏的，放回去。
+  let shown = 0;
+  const restored = [];
+  for (const [address, row] of state.filteredOut) {
+    const nowHide = shouldHide(row);
+    if (!nowHide) { restored.push(row); state.filteredOut.delete(address); shown += 1; }
+  }
+  if (restored.length) {
+    data.related = [...data.related, ...restored];
+  }
+
+  // 再隐藏：当前该隐藏、但还在结果里的。
+  let hidden = 0;
+  const kept = [];
+  for (const row of data.related) {
+    if (shouldHide(row) && !state.removedAddresses.has(row.address)) {
+      state.filteredOut.set(row.address, row);
+      hidden += 1;
+      continue;
+    }
+    kept.push(row);
+  }
+  data.related = kept;
+  return { hidden, shown };
+}
+
 function rebuildRelationsLocally() {
   const data = state.lastResult;
   if (!data) return { pruned: 0, kept: 0 };
@@ -4553,6 +4620,32 @@ $("#refresh-result").addEventListener("click", () => {
   }
 });
 $("#cancel-job").addEventListener("click", cancelActiveJob);
+/* 四个过滤勾选框：勾上/取消立即在本地隐藏或恢复，不用重查。
+   以前它们只在发起查询时被读取，没有 change 监听——勾了看不到任何变化，
+   像是"点了没反应"。 */
+["#filter-exchanges", "#filter-validators", "#filter-publics"].forEach((selector) => {
+  const box = $(selector);
+  if (!box) return;
+  box.addEventListener("change", () => {
+    if (!state.lastResult) {
+      toast("过滤器会在下次扫描时生效；先完成一次关联查询。", false);
+      return;
+    }
+    const { hidden, shown } = applyLocalFilters();
+    state.page = 1;
+    refreshRelatedTable();
+    if (hidden && shown) {
+      toast(`已隐藏 ${hidden} 个、恢复 ${shown} 个。要连下游一起消失，请重新「扫描关联」。`, false);
+    } else if (hidden) {
+      toast(`已在本地隐藏 ${hidden} 个地址。要连它们下游一起消失，请重新「扫描关联」。`, false);
+    } else if (shown) {
+      toast(`已恢复显示 ${shown} 个地址。`, false);
+    } else {
+      toast("当前结果里没有需要隐藏的地址。", false);
+    }
+  });
+});
+
 $("#taostats-source").addEventListener("change", () => {
   $("#multi-round").disabled = !$("#taostats-source").checked;
 });

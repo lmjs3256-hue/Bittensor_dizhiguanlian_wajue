@@ -873,3 +873,47 @@ def test_seed_input_selects_all_on_focus():
     assert "input.select()" in block
     assert 'addEventListener("mouseup"' in block, "鼠标点击要等 mouseup 后再全选"
     assert "pointerSelecting" in block, "已聚焦后再点不应强制全选"
+
+
+# -- 0.8.31：过滤勾选必须即时生效（本地隐藏/恢复） -----------------------
+
+def test_filter_checkboxes_are_wired_to_local_apply():
+    """勾选过滤必须立即隐藏，不能只在下次查询时生效。
+
+    历史问题：这几个 checkbox 只在拼请求体时被读取，没有任何 change 监听，
+    用户勾完看不到变化，以为"点了没反应"。
+    """
+
+    js = _app_js()
+    assert "function applyLocalFilters()" in js
+    for selector in ("#filter-exchanges", "#filter-validators", "#filter-publics"):
+        # 三个框都要出现在监听列表里
+        assert selector in js, f"{selector} 未绑定监听"
+    start = js.index('["#filter-exchanges", "#filter-validators", "#filter-publics"]')
+    block = js[start: start + 900]
+    assert 'addEventListener("change"' in block
+    assert "applyLocalFilters()" in block
+
+
+def test_filtered_rows_are_restorable_not_deleted():
+    """过滤是可逆的显示开关，不能混进"手动移除"。"""
+
+    js = _app_js()
+    assert "filteredOut" in js
+    start = js.index("function applyLocalFilters()")
+    block = js[start: js.index("\n}\n", start)]
+    # 必须能把隐藏的行放回去
+    assert "restored.push(row)" in block
+    assert "state.filteredOut.delete" in block
+    # 不能用 removedAddresses 记录过滤结果（那是删除决定）
+    assert "state.removedAddresses.add" not in block
+
+
+def test_filter_applies_only_confirmed_exchanges():
+    """只过滤已人工确认的交易所，待确认的保留（与查询口径一致）。"""
+
+    js = _app_js()
+    start = js.index("function applyLocalFilters()")
+    block = js[start: js.index("\n}\n", start)]
+    assert "exchange_confirmed" in block
+    assert "exchange_rejected" in block
