@@ -210,8 +210,10 @@ def test_group_addresses_endpoint_and_exchange_endpoint(monkeypatch):
                 )
                 assert rejected.status_code == 200
                 assert rejected.json()["item"]["exchange_rejected"] is True
-                # 接口默认不传 label，原有的组名要保留
-                assert rejected.json()["item"]["label"] == "接口库"
+                # 0.8.18 起否定也移出库：库名复制来的标签归位到「人工否定交易所」组
+                # （以前是"否定不改分组、保留原库名"，那条规则已按用户要求改掉）。
+                assert rejected.json()["item"]["book"] == ""
+                assert rejected.json()["item"]["label"] == "人工否定交易所"
 
                 fixed = client.post(
                     "/api/library/confirm-exchange-address",
@@ -275,8 +277,10 @@ def test_group_addresses_endpoint_and_exchange_endpoint(monkeypatch):
                 )
                 assert rejected.status_code == 200
                 assert rejected.json()["item"]["exchange_rejected"] is True
-                # 接口默认不传 label，原有的组名要保留
-                assert rejected.json()["item"]["label"] == "接口库"
+                # 0.8.18 起否定也移出库：库名复制来的标签归位到「人工否定交易所」组
+                # （以前是"否定不改分组、保留原库名"，那条规则已按用户要求改掉）。
+                assert rejected.json()["item"]["book"] == ""
+                assert rejected.json()["item"]["label"] == "人工否定交易所"
 
                 fixed = client.post(
                     "/api/library/confirm-exchange-address",

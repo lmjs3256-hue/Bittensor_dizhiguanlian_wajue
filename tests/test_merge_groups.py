@@ -43,7 +43,10 @@ def test_merge_into_new_name_keeps_facts_and_drops_source_books():
         database, service = build_service(directory)
         try:
             seed_two_books(service, database)
+            # 0.8.18 起否定交易所会把地址移出库，这里改用"人工否定"的写法：
+            # 先否定拿到 exchange_rejected，再手动加回库（模拟"以后另行添加"）。
             service.decide_exchange_address(A2, "reject")
+            service.add_group_addresses(A2, book="羊A", move_existing=True)
 
             result = service.merge_address_groups(
                 [{"kind": "book", "name": "羊A"}, {"kind": "book", "name": "羊B"}],

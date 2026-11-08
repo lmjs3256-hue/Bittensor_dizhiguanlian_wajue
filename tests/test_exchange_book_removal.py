@@ -208,8 +208,12 @@ def test_book_derived_label_ignores_manual_and_mismatched():
             database.engine.dispose()
 
 
-def test_reject_does_not_move_out_of_book():
-    """否定交易所只是清掉候选身份，不该把人整理好的库归属拆掉。"""
+def test_reject_moves_out_of_book():
+    """否定交易所同样把地址移出库（0.8.18 起的规则）。
+
+    理由：这个地址已经有明确结论（不是交易所），不该继续占着人工整理的库；
+    以后关联到别的库时再单独加回去。标签归位到「人工否定交易所」组。
+    """
 
     with TemporaryDirectory() as directory:
         database, service = build_service(directory)
@@ -218,8 +222,10 @@ def test_reject_does_not_move_out_of_book():
             item = service.decide_exchange_address(A, "reject")["item"]
 
             assert item["exchange_rejected"] is True
-            assert item["book"] == BOOK
-            assert item["label"] == BOOK
+            assert item["book"] == ""
+            assert item["label"] == "人工否定交易所"
+            # 库被搬空，台账一并清掉。
+            assert service.address_books() == []
         finally:
             database.engine.dispose()
 
@@ -240,10 +246,11 @@ def test_confirm_then_reject_relabels_to_rejection_group():
             database.engine.dispose()
 
 
-def test_unmark_public_restores_original_book():
-    """取消公共标记要把地址还回原来的库，不能变成一个「公共地址」孤儿。
+def test_unmark_public_moves_out_of_book():
+    """取消公共标记同样直接移出库，不再把地址还回原库（0.8.18 起的规则）。
 
-    标记时若把库搬空了，台账会被清掉；取消时得把台账一并重建。
+    理由：已经判定"公共地址不成立"的地址，不该继续占着人工整理的那个库；
+    以后关联到别的库时再单独加回去。标签回到未命名，按分类归组。
     """
 
     with TemporaryDirectory() as directory:
@@ -255,12 +262,11 @@ def test_unmark_public_restores_original_book():
 
             item = service.decide_public_address(A, False)["item"]
 
-            assert item["label"] == "6NCK"
-            assert item["book"] == "6NCK"
-            # 原库名标记用完即清，别留在备注里当噪音。
-            assert "[原库]" not in (item["note"] or "")
-            books = service.address_books()
-            assert [(b["name"], b["count"]) for b in books] == [("6NCK", 1)]
+            assert item["book"] == ""
+            # 自动标签被清掉，回到未命名（按分类归组）。
+            assert item["label_custom"] is False
+            # 库不复活：不再为"还回去"重建台账。
+            assert service.address_books() == []
         finally:
             database.engine.dispose()
 
@@ -317,3 +323,65 @@ def test_public_and_exchange_paths_behave_the_same():
     assert exchange["group_name_is_label"] is True
     assert public["group_name_is_label"] is True
     assert exchange["books_left"] == public["books_left"] == []
+
+
+def test_reset_moves_out_of_book_and_clears_auto_label():
+    """重置为待确认也移出库，并把自动标签清成未命名（否则名字与结论自相矛盾）。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(name=BOOK, seed=A, addresses=[], category="大V")
+            service.decide_exchange_address(A, "confirm")
+            item = service.decide_exchange_address(A, "reset")["item"]
+
+            assert item["exchange_confirmed"] is False
+            assert item["exchange_rejected"] is False
+            assert item["book"] == ""
+            assert item["label_custom"] is False
+            assert service.address_books() == []
+        finally:
+            database.engine.dispose()
+
+
+def test_reject_keeps_hand_written_label():
+    """拒否定时人工起的名字不受影响（只移库）。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(name=BOOK, seed=A, addresses=[], category="大V")
+            service.import_rows(
+                [{"address": A, "label": "我起的名字", "book": BOOK}], "manual"
+            )
+            item = service.decide_exchange_address(A, "reject")["item"]
+
+            assert item["label"] == "我起的名字"
+            assert item["book"] == ""
+        finally:
+            database.engine.dispose()
+
+
+def test_row_id_entry_reject_also_moves_out():
+    """地址库清单那条入口（row_id）的否定也必须移出库，与地址入口一致。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(name=BOOK, seed=A, addresses=[], category="大V")
+            with database.session() as db:
+                row = db.scalar(
+                    select(AddressLibrary).where(AddressLibrary.address == A)
+                )
+                row.category = "EXCHANGE"
+                row.categories = '["EXCHANGE"]'
+                db.flush()
+                row_id = row.id
+
+            item = service.decide_exchange(row_id, "reject")["item"]
+
+            assert item["exchange_rejected"] is True
+            assert item["book"] == ""
+            assert item["label"] == "人工否定交易所"
+        finally:
+            database.engine.dispose()

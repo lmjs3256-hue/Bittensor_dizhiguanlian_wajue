@@ -407,64 +407,37 @@ def book_derived_label(row: AddressLibrary) -> str:
     return label if label == book else ""
 
 
-def replace_book_derived_label(row: AddressLibrary, replacement: str) -> str:
-    """把「只是库名复制」的 label 换成 ``replacement``，并把地址移出该库。
+PUBLIC_LABEL_TEXT = "公共地址"
 
-    返回被替换的旧标签；返回空串表示没动（标签是人工起的名字）。
 
-    ``replacement`` 决定这个地址在「地址库清单」里落到哪个组：确认交易所时传
-    「人工确认交易所」——这样它才会出现在用户预期的那个分组里，而不是变成
-    "交易所 · 未命名"。
+def move_out_of_book(row: AddressLibrary, group_label: str) -> str:
+    """把地址移出它所在的用户地址库，并归位到结论分组。
+
+    ``group_label`` 是它之后在「地址库清单」里所属的组名（如「人工确认交易所」
+    /「人工否定交易所」/「公共地址」）。
+
+    需要注意 label 有两种来源，不能一视同仁：
+
+    * **库名复制品**（``label == book``，由 ``create_address_book`` 写入）：
+      归位到 ``group_label``。不这么做的话，它仍会以旧库名出现在清单分组和
+      扫描结果的库名徽标里，看起来像"没移出去"。
+    * **人工起的名字**（``label != book``）：用户自己的命名，保留不动——它本来
+      就不代表"属于哪个库"，移库不该把它抹掉。
+
+    返回被移出的库名（没有库则空串），调用方据此清理空库台账。
     """
 
-    old = book_derived_label(row)
-    if not old:
+    book = (row.book or "").strip()
+    derived = book_derived_label(row)
+    if not book:
+        # 本来就不在库里；只有库名复制品才需要改标签（正常不会发生）。
+        if derived:
+            row.label = group_label
         return ""
+    if derived:
+        row.label = group_label
     row.book = ""
-    row.label = replacement
-    return old
-
-
-PUBLIC_LABEL_TEXT = "公共地址"
-# 标记公共地址时把「原来的库名」记进 note，取消标记时据此还原归属。
-# 用 note 而不是新字段：不改表结构，也能跟着导出/导入一起走。
-_PUBLIC_ORIGIN_PREFIX = "[原库]"
-
-
-def public_origin_book(note: str) -> str:
-    """从 note 里取出「标记公共地址前的原库名」，没有则返回空串。"""
-
-    for line in str(note or "").splitlines():
-        line = line.strip()
-        if line.startswith(_PUBLIC_ORIGIN_PREFIX):
-            return line[len(_PUBLIC_ORIGIN_PREFIX) :].strip()
-    return ""
-
-
-def with_public_origin(note: str, book: str) -> str:
-    """在 note 里记下原库名（已有则替换），返回新的 note。"""
-
-    name = (book or "").strip()
-    if not name:
-        return note
-    kept = [
-        line
-        for line in str(note or "").splitlines()
-        if not line.strip().startswith(_PUBLIC_ORIGIN_PREFIX)
-    ]
-    kept.append(f"{_PUBLIC_ORIGIN_PREFIX}{name}")
-    return "\n".join(line for line in kept if line.strip())
-
-
-def drop_public_origin_marker(note: str) -> str:
-    """取消标记时把原库名标记从 note 里去掉。"""
-
-    kept = [
-        line
-        for line in str(note or "").splitlines()
-        if not line.strip().startswith(_PUBLIC_ORIGIN_PREFIX)
-    ]
-    return "\n".join(line for line in kept if line.strip())
+    return book
 
 
 def prune_empty_book(db: Any, name: str) -> bool:
@@ -1840,25 +1813,23 @@ class LinkService:
                 raise InputError("交易所状态只能是 confirm、reject 或 reset")
             current.exchange_confirmed = decision == "confirm"
             current.exchange_rejected = decision == "reject"
-            # 与 decide_exchange_address 保持一致：确认交易所即归入交易所分组、
-            # 移出用户自建库，并把「只是库名复制」的标签一并归位（否则清单里
-            # 仍会以旧库名分组显示，扫描结果的库名徽标也不会变）。
-            if decision == "confirm":
-                current.category = "EXCHANGE"
-                old_book = (current.book or "").strip()
-                if not replace_book_derived_label(current, "人工确认交易所"):
-                    if current.book:
-                        current.book = ""
-                if old_book:
-                    prune_empty_book(db, old_book)
-            elif decision == "reject":
-                current.category = "EXCHANGE"
-                # 否定不改分组：它仍在原库里，只是不再是交易所候选。
-                if not current.exchange_confirmed:
-                    # 从"已确认"改判成否定时，之前可能已经把它移出库并改名为
-                    # 「人工确认交易所」，这时把标签跟着改成否定组。
-                    if (current.label or "").strip() == "人工确认交易所":
-                        current.label = "人工否定交易所"
+            # 与 decide_exchange_address 保持一致：三种人工结论（确认 / 否定 /
+            # 重置）都把地址移出用户地址库，并把「只是库名复制」的标签归位到
+            # 结论分组——否则清单里仍会以旧库名分组显示，扫描结果的库名徽标
+            # 也不会变。以后关联到别的库时再单独加回去。
+            current.category = "EXCHANGE"
+            group_label = {
+                "confirm": "人工确认交易所",
+                "reject": "人工否定交易所",
+            }.get(decision, "")
+            if decision == "reset" and (current.label or "").strip() in {
+                "人工确认交易所",
+                "人工否定交易所",
+            }:
+                current.label = ""
+            old_book = move_out_of_book(current, group_label)
+            if old_book:
+                prune_empty_book(db, old_book)
             payload = {"saved": True, "item": address_dict(current)}
             changed_address = current.address
         # 确认为交易所 = 新增一个关联终点：把以前从该地址继续展开出来的
@@ -1937,20 +1908,19 @@ class LinkService:
                     )
                 current.exchange_confirmed = decision == "confirm"
                 current.exchange_rejected = decision == "reject"
-                # 确认交易所即归入交易所分组，移出用户自建库（与公共地址同理）。
-                if decision == "confirm":
-                    # 建库时 label 也被写成了库名（create_address_book 的
-                    # label=book_name）。只清 book 不清 label，这个地址就会继续
-                    # 以旧库名出现在「地址库清单」分组和扫描结果的库名徽标里，
-                    # 看起来就是"确认了交易所、也移出了库，但组名还挂着"。
-                    # 必须在清 book 之前判断，判据是 label == book。
-                    old_book = (current.book or "").strip()
-                    if not replace_book_derived_label(current, "人工确认交易所"):
-                        if current.book:
-                            current.book = ""
-                    # 库被搬空了就把台账记录也删掉，别留一个「0 个地址」的空库。
-                    if old_book:
-                        prune_empty_book(db, old_book)
+                # 三种人工结论（确认 / 否定 / 重置）一律把地址移出用户地址库：
+                # 这类地址已经有了明确的身份结论，不该再混在人工整理的库里；
+                # 以后关联到别的库时再单独加回去。移库时把「只是库名复制」的
+                # 标签归位到结论分组，否则清单分组和扫描结果的库名徽标仍显示旧库名。
+                #
+                # 顺序很重要：必须先带着原 label 调用（内部靠 label==book 判断
+                # 是否为库名复制品），再把重置时该清掉的自动标签清成未命名。
+                old_book = move_out_of_book(current, default_label)
+                if decision == "reset" and (current.label or "").strip() in auto_labels:
+                    current.label = ""
+                # 库被搬空了就把台账记录也删掉，别留一个「0 个地址」的空库。
+                if old_book:
+                    prune_empty_book(db, old_book)
             payload = {"saved": True, "item": address_dict(current)}
         if decision == "confirm":
             payload["correction"] = self.reconcile_history(addresses=[address], watch=False)
@@ -1992,7 +1962,6 @@ class LinkService:
                 db.add(row)
                 db.flush()
             elif marked:
-                old_book = (row.book or "").strip()
                 if not row_has_category(row, PUBLIC_CATEGORY):
                     row.categories = encode_categories(
                         [*row_categories(row), PUBLIC_CATEGORY]
@@ -2001,13 +1970,7 @@ class LinkService:
                 # 否则它仍挂在某个自建库（如 6NCK）下，和人工整理的地址混在一起。
                 # 与确认交易所完全相同的处理：库名被复制成 label 的也一并归位，
                 # 否则清单里仍会按旧库名分组显示，看起来像没移出去。
-                # 记下原库名，取消标记时还回去（见下面取消分支）。
-                derived = book_derived_label(row)
-                if derived:
-                    row.note = with_public_origin(row.note, derived)
-                if not replace_book_derived_label(row, PUBLIC_LABEL_TEXT):
-                    if row.book:
-                        row.book = ""
+                old_book = move_out_of_book(row, PUBLIC_LABEL_TEXT)
                 if old_book:
                     prune_empty_book(db, old_book)
             else:
@@ -2020,27 +1983,18 @@ class LinkService:
                     row.category = DEFAULT_CATEGORY
                     remaining = [DEFAULT_CATEGORY, *remaining]
                 row.categories = encode_categories(remaining or [DEFAULT_CATEGORY])
-                # 取消标记：把当初因「标记公共地址」而从库里搬走的地址还回去。
-                # 库名记在 note 里（见下面标记分支），撤销时据此还原，否则这个
-                # 地址会孤零零地留在「公共地址」标签组里，原库归属也丢了。
-                origin = public_origin_book(row.note)
-                if origin and (row.label or "").strip() == PUBLIC_LABEL_TEXT:
-                    registry = db.scalar(
-                        select(AddressBook).where(AddressBook.name == origin)
-                    )
-                    if registry is None:
-                        # 标记时若把这个库搬空了，台账会被清掉（prune_empty_book）。
-                        # 取消标记要还回去，就把台账一并重建，否则地址会变成
-                        # 一个孤零零的「未命名」条目，原库归属也丢了。
-                        registry = AddressBook(name=origin, note="取消公共地址标记时自动恢复")
-                        db.add(registry)
-                        db.flush()
-                    row.book = origin
-                    row.label = origin
-                    row.note = drop_public_origin_marker(row.note)
-                elif (row.label or "").strip() == PUBLIC_LABEL_TEXT:
-                    # 不是从库里搬来的（原本就没有库）：去掉组名，回到按分类归组。
+                # 取消标记同样直接移出库（用户 0.8.18 明确要求）：这个地址已经
+                # 被判定为"公共地址不成立"，就不该继续占着人工整理的那个库；
+                # 以后关联到别的库时再单独加回去。
+                # 顺序很重要：必须先用原 label 判断"是不是库名复制品"（移库函数
+                # 内部依赖这个判据），再把残留的结论性标签清成未命名。
+                auto = {PUBLIC_LABEL_TEXT, "人工确认交易所", "人工否定交易所"}
+                was_auto = (row.label or "").strip() in auto
+                old_book = move_out_of_book(row, "")
+                if was_auto:
                     row.label = ""
+                if old_book:
+                    prune_empty_book(db, old_book)
             payload = {"saved": True, "item": address_dict(row), "marked": bool(marked)}
         # 标记为公共地址同样新增一个关联终点，历史结果里它的下游就是噪音。
         if marked:
