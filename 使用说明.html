@@ -1341,6 +1341,9 @@ key 没填、填错，或 key 已在 Taostats 后台被删/重置（0.6.4 起 ke
 可以，但需要手动建环境：装 Python 3.10–3.13，执行 <code>python -m venv .venv</code>、<code>.venv/bin/pip install -r requirements.txt</code>、<code>.venv/bin/python run.py</code>，然后访问同一地址。一键脚本只适配 Windows。</p>
 <p><strong>Q：数据存在哪？要不要备份？</strong>
 全部在 <code>data\wallet_link.db</code> 一个文件里（SQLite）。备份就复制这个文件；换电脑就带着 <code>data\</code> 文件夹。</p>
+<blockquote>
+<p><strong>要把服务搬到另一台常开的电脑上长期使用？</strong> 换机器不只是拷文件夹：授权码绑机器、API key 加密绑用户，两样都得重做。完整步骤见 <code>docs\固定主机迁移.md</code>。</p>
+</blockquote>
 <p><strong>Q：怎么彻底卸载？</strong>
 先双击 <code>停止.cmd</code>，删掉整个文件夹和桌面快捷方式即可。没有写注册表、没有后台服务、没有开机自启项。</p>
 <hr />

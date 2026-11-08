@@ -787,3 +787,142 @@ Set-Location G:\bittensor-wallet-link-intel
 - **验收**：全量 **311 passed**（新增 1 条）。探针 `.probe/chk_path_addr_085.py`，真实历史记录 #59 逐跳地址 `5Gy8…jEbt / 5HDo…D7QQ / 5FUR…tzHe / 5GBn…iEUi` 全部 9 字符、`anyLegacy13=false`、主表与明细同地址文本一致、路径列无折行。
 - **探针踩的坑**：手搓 `renderResult({related, seed})` 会崩在 `data.warnings is not iterable`（`renderResult` 还要读 `warnings` / `limitations` / `depth_distribution` 等一批字段）。正确做法是直接调页面自己的 `viewHistoryRecord(id)` 走完整流程，别自己拼一个半成品 result 对象。
 
+
+---
+
+# 第二部分：0.8.6 – 0.8.19（2026-11-07 ～ 11-08）
+
+> 这一批版本围绕三件事展开：**地址库归属正确性**、**多设备/远程访问**、**网络出站可靠性**。
+> 每条都记录了「为什么这么做」和「改坏了会怎样」，接手时优先看这些而不是看代码。
+
+## 50. 0.8.6 地址库清单搜索 / 角色筛选，以及"标记即归系统分组"
+
+- **用户现场**：把一条 Thor 结尾的地址标为公共地址，去「已知地址库」按公共地址找却找不到；更糟的是当时新建的库（6NCK）把这条公共地址也收进去了。
+- **两层根因**（以后遇到"标记了但找不到"先查这两条）：
+  1. **可发现性**：清单只有一个「按地址库」下拉，上千条里定位一条标记过的地址只能肉眼翻。→ 新增搜索框（匹配地址/名称/地址库/备注/角色）+ 角色筛选（公共地址/交易所/验证者），与「按地址库」可叠加。
+  2. **归属**：`decide_public_address` 从来不清理 `book`，标记后地址仍挂在用户自建库下；而「新建地址库并导入」的排除逻辑**误用了系统分类常量 `"系统"`**，公共地址用 `PUBLIC` 永远匹配不上，于是被误收进库。
+- **修复口径**：系统角色集合统一为 `{EXCHANGE, VALIDATOR, PUBLIC}`。标记公共地址 / 确认交易所时清空 `book`，归入系统身份分组；新建库、导出 TXT 一律按这个集合排除。
+- **别改回去**：`SYSTEM_CATEGORIES` 曾同时承担"系统分类"和"排除名单"两个语义，是这次误收的根源。凡是要"排除系统角色"，用角色集合，不要用单个分类常量去比。
+
+## 51. 0.8.7 / 0.8.8 地址掩码统一 + 跨机同步包 LWW
+
+- **0.8.7**：地址库清单的地址列从完整 48 位改成 `头4…尾4`（`shortAddr()`），旁边配「复制」按钮复制完整地址，整行 `nowrap` 不再折行。全站地址截断**只有 `shortAddr()` 一处真源**，别在别处再写 `slice(`。
+- **0.8.8**：导出同步包 `schema_version` 升到 **2**，每条地址带 `created_at` / `updated_at`，导入走**最后写入优先**：
+  - `book` 允许被较新空值清空（专治"某台把公共地址移出用户库后，另一台残留的旧 book 清不掉"）；
+  - `label` / `note` 取较新一方，但**空值不覆盖非空**（防止误清人工备注）；
+  - `categories` 取并集（分类是附加信息，不丢）。
+- **向后兼容**：无时间戳的旧包（TXT / 老 CSV / v1 JSON）仍走原保守合并。这条必须保住——用户手里有大量旧包。
+
+## 52. 0.8.9 「整理地址库」一键修复污染
+
+- 跨机同步、多次导入之后会残留三类脏数据，工具栏「整理地址库」一次修干净：
+  1. 多分类里的**孤立分类名**（不在分类表、也不是系统分类）；
+  2. **系统角色误挂用户库**（交易所/验证者/公共地址残留 `book`）；
+  3. **残留的交易所锁定标记**（`exchange_confirmed` 为真但已不是交易所）。
+- **只做安全规整**：不删地址、不改人工标签/备注；官方名单与内置固定名单的结论**一律不动**。
+- **接口** `POST /api/library/tidy`，`dry_run` 先预览再落库；落库写 `kind="tidy"` 快照，复用「撤回上次导入」还原。
+- **一个差点误伤的点**：第一版把"空 `categories`"也当污染，真实库报出 **370 条**要改——全是空字段误报。收紧为**只比较有效分类集合**后才 `changed=0`。以后加规整规则，先在真实库上 `dry_run` 看数量，别信单元测试。
+
+## 53. 0.8.10 「扫描最新块」必然超时的真凶
+
+- **现象**：重启服务后点扫描连续失败，界面只显示 `RPC scan failed:`（冒号后是空的，因为 `TimeoutError.__str__()` 是空串）。
+- **根因**：`RPCCollector.collect_range()` 用**同一个 25 秒超时**去等两件量级完全不同的事——读一个块（1~6 秒）和 `init_runtime()` 拉 runtime WASM/metadata（冷启动实测 **25~133 秒**）。所以每次都在读第一块之前就超时。
+- **为什么是重启触发的**：runtime 缓存随进程消失，冷启动必然重拉。改地址库功能本身没碰扫描代码，但**重启让这个长期潜伏的设置暴露了**。
+- **修复**：拆成独立预热阶段（`warmup_timeout_seconds` 默认 240 秒）+ 单块读取仍 25 秒；结果回传 `warmup_seconds`；租约 3 分钟→8 分钟；错误信息带异常类型。
+- **顺带修第二个坑**：被 `taskkill` 强杀后，`ScanJob` 残留 `running` + `ScanLock` 租约还在，新进程一点扫描就 409 卡 8 分钟。现在 `Database.initialize()` 调 `recover_interrupted_scans()` 清理。
+- **教训（重要）**：用户当时质疑"你改坏了什么"，查 `git log -S "timeout_seconds: float = 25.0"` 证明该超时来自 **0.1.0**，0.8.9 没碰 collector.py——**是重启暴露的旧缺陷，不是新引入的**。遇到"升级后坏了"，先查这个值来自哪个版本。
+
+## 54. 0.8.11 巡检给手动查询让路（用户自定规则）
+
+- **背景**：Taostats 每分钟 5 次，巡检和手动查询共用**同一个进程级滑动窗口**，先到先得、满了抛错不排队。巡检每 30 秒固定推进 1 个地址（约 4 次/分钟），用户点查询时往往只剩 1 次配额。
+- **规则（用户原话定的口径，别自行简化）**：
+  - 判定不是"有没有 running"，而是**任务有没有收尾**：`pending / running / waiting / finalizing` 全算占用，**轮间 62 秒的 waiting 也算**（否则会趁这 62 秒插进去抢配额）。
+  - 收尾后再静默 **120 秒**才恢复（覆盖"用户紧接着再点一次"），冷却从**最后一条** `finished_at` 起算。
+  - 锚点用 `finished_at` 而不是"tick 时看没看到"：tick 是 30 秒一次，秒回的查询会在两次 tick 之间溜过去。
+- **僵死兜底**：用**进度签名**（状态/轮次/请求数/待查队列）判定，连续 **10 分钟**毫无变化才按僵死放行；合法长任务（补录跑几小时）照常让路。
+- **顺带修掉一个吞地址的 bug**：`_check_address()` 在 `rate_limited` 时仍写 `last_checked_at` 和 `checked_count += 1`，等于把"一个数据都没拿到"的地址标成已巡检，要等约 2 天才会再查。现在限速时游标原地不动、不入库。
+- **参数**：`BITTENSOR_WATCH_QUIET_SECONDS`(120) / `BITTENSOR_WATCH_STALL_SECONDS`(600)。
+
+## 55. 0.8.12 / 0.8.13 多设备与远程访问（当前形态）
+
+- **结论先行（甲方案）**：**一台主机跑服务与巡检，其余设备只开浏览器**。不要每台各跑一份再同步库。
+- **为什么**（三条硬理由，别再试第二种）：
+  1. 限速器 `_reserve_request()` 是**进程级** deque，两台各跑一份 = 同一把 key 合计 10 次/分钟 → 429，两边都显示"被限流"；
+  2. 巡检每地址 2 请求 × 685 地址，双跑 = 同一批查两遍，额度翻倍、产出为零；
+  3. SQLite 单写，想"看到同一个库"只能访问同一个进程；git 同步包是定期对账，不是协同。
+- **`run.py --remote`**：host 自动改 `0.0.0.0`，打印本机/Tailscale(`100.64.0.0/10`)/局域网地址 + 访问口令。
+- **访问口令**（`app/access.py`）：16 位（去掉易混的 I/O/0/1），存 `data/settings.json` 的 `access_token`；回环免验证，其余凭 HttpOnly Cookie(90 天) 或 `X-Access-Token`；`hmac.compare_digest` 防时序试探。
+- **中间件顺序不能反**：`request_guard` 先口令后授权。反了会把"有没有激活、机器码是多少"漏给同网段任何人。
+- **0.8.13 公网隧道**：`启动-公网隧道.cmd` → `tunnel.ps1` 下载并运行 cloudflared，主机**主动出站**连 Cloudflare，不开端口、不需公网 IP、客户端零安装。
+- **同时修掉一个必须修的越权洞**：隧道把所有外部请求的对端都变成 `127.0.0.1`，原来的"回环即本机"判定会让公网访客**免口令进站**、甚至 `GET /api/access/token` 把口令读走。现在只在**TCP 对端本身是回环**时才采信 `CF-Connecting-IP` / `X-Forwarded-For`，局域网设备伪造同样的头无效（`WALLET_LINK_TRUST_PROXY` 仅 `--tunnel` 打开）。
+- **实测抓到 uvicorn 的默认值坑**：`client` 已显示真实公网 IP 但 `via_tunnel=False`，说明显式解析没生效——是 **uvicorn 默认 `proxy_headers=True`** 抢先按 XFF 改写了 `scope["client"]`。等于把判定权交给 `forwarded_allow_ips`（可被环境变量放宽成 `*`）。已显式 `proxy_headers=False`。
+
+## 56. 0.8.14 手机排版：整页空白的真凶是 `height:100vh`
+
+- **现象**：手机打开近乎全空白，只有一条导航横条**悬在屏幕中央**，内容要再滚一整屏。
+- **根因**：基础样式 `.sidebar { height:100vh }` 只该属于桌面端。≤950px 断点把侧栏改成横向条，但**高度没重置**，仍占满一屏；`align-items:center` 把导航垂直居中，`main` 从一整屏之下才开始。
+- **另外三处**（共性都是 flex 不换行 + 中文按字符断行）：`.section-title` 标题被压成一字一行；`.library-actions` 不换行 → 撤销/合并/整理/导出被切出屏外（实测右缘 410 > 视口 390）；地址库分组组名被挤成竖排。
+- **取证方法（以后排查前端直接复用，别靠肉眼看）**：桌面 Chrome 的 `--window-size` **最小宽度是 500px**，直接传 390 会被钳住、量出来全是假象。必须用无头 Chromium + CDP `Emulation.setDeviceMetricsOverride`（width/height/deviceScaleFactor/mobile）。脚本模板见 `.probe/overflow_probe.js`（node 原生 WebSocket，无第三方依赖）。
+- **验证口径**：三个标签页 `overflowX` 全部 false；1400px 桌面回归截图与修复前一致。
+
+## 57. 0.8.15 说明文档结构（内容在但看不到）
+
+- 远程访问/隧道内容 0.8.12 就写进《使用说明》了，但挂在 `## 十、拷贝到另一台电脑` 下面的 `### 三级标题`，而离线 HTML 目录（`build_usage_html.py` 用 markdown toc）**只收二级标题**——用户翻目录找不到，反馈"文档没更新"。
+- 已提为 `## 十一、多设备访问`，并纠正做法编号错序（原"做法三 公网隧道"排在做二之前）。
+- **文档结构原则**：会被读者"按目录找"的内容，必须是 `##` 级。三级标题只用于同一主题下的细分。
+
+## 58. 0.8.16 查询失败被误报成"没有 API key"——出站必须走代理
+
+- **这是本项目最隐蔽的一个坑，务必读完**。
+- **现象**：查询失败提示"没有可用的 API key"，但 key 明明配着（`/api/overview` 返回 `taostats_configured=true`）。
+- **真因**：这台机器**直连 taostats.io 超时**（同一时刻实测：直连 `ReadTimeout 8.5s`；经本机 Clash `127.0.0.1:7890` **HTTP 200 / 1.2s**）。而 **httpx 只认环境变量、不读 Windows 系统代理设置**，服务一直在直连 → 全部超时 → 查询静默退回本地索引（`api_requests=0`、`LOCAL_FALLBACK`）→ 前端把"0 次请求 + 退回本地"判成"没有可用的 API key"，**把排查方向带偏了整整一轮**。
+- **修复三层**：
+  1. `app/taostats.py` 新增出站决策层：`WALLET_LINK_HTTP_PROXY`（`none`=强制直连）→ **WinINET 注册表系统代理** → `HTTPS_PROXY/HTTP_PROXY/ALL_PROXY` → 直连；失败**拉黑 600 秒自动换路**并打 `[taostats] 出站请求走 …：原因`；`trust_env=False`。所有出站收敛到 `_http_get()` 单一接缝（测试只需替换这一个函数）。
+  2. `api_error_kind`（`auth` / `network` / 空）从 crawl → service → jobs → 前端贯通，两种失败给完全不同的提示。
+  3. `/api/diagnose` 新增「出站网络（taostats.io）」检查项，逐条 HEAD 探测（不带 key、不占额度，60 秒缓存）。
+- **测试迁移坑**：改 `httpx.get` → `_http_get` 后 13 处旧桩失效，统一迁到 `tests/http_stub.py::as_http_get`。**用正则批量插 import 会插进多行 import 中间**，必须按括号深度定位。
+- **并发陷阱**：某用例单独跑过、和其他用例一起跑就卡 90 秒超时——前一个用例把 key 留成已配置，后一个真发外网。而且**只桩 `service_module.get_transfer_page` 不够**，`get_stake_transfer_page` 是另一个独立引用。定位手法：给 `socket.socket.connect` 打 traceback 钩子（见 `tests/_net_trace.py` 的写法），直接看到调用栈。
+
+## 59. 0.8.17 – 0.8.19 地址库归属的最终规则（**当前生效，改前必须读**）
+
+- **根因（一句话）**：`create_address_book()` 建库时把库名**同时**写进 `book` 和 `label`（`label=book_name`）。而地址库清单的分组（`library_group_key`）和扫描结果的库名徽标**读的都是 `label`**。所以"只清 `book`"是不够的。
+- **判据（极其重要，别改错）**：只有 **`label == book`** 才算"库名复制品"，且必须在清 `book` **之前**判断。仅凭"label 有值"会把**人工命名**（用户自己起的名字）和**官方交易所名单**（Kraken/Binance 的 label 就是交易所名）一起误伤。真实库验证：12 条候选里 11 条是官方名单（`is_book_name=0`），只有 1 条命中。
+- **五种操作的统一行为（0.8.18 定型，用户明确要求）**：
+
+  | 操作 | 移出库 | 标签归位 |
+  | --- | --- | --- |
+  | 确认交易所 | ✅ | 人工确认交易所 |
+  | 否定交易所 | ✅ | 人工否定交易所 |
+  | 重置为待确认 | ✅ | 清成未命名，按分类归组 |
+  | 标记公共地址 | ✅ | 公共地址 |
+  | 取消公共标记 | ✅ | 清成未命名，按分类归组 |
+
+  口径是"**只要下了人工结论就移出库**，以后关联到别的库再单独加回去"。
+- **两条入口必须一致**：`decide_exchange_address()`（扫描结果按地址）与 `decide_exchange(row_id)`（地址库清单按行）都走同一个 `move_out_of_book()`。历史上这两条出现过不一致（后者漏清 `book`），**加任何新结论入口都要走这个函数**。
+- **顺序坑**：必须**带原 label** 调用 `move_out_of_book`（内部靠 `label == book` 判断是否复制品），**然后**才把该清掉的自动标签清成未命名。反过来先清 label 会导致判据失效、库归属残留。
+- **库搬空要清台账**：`prune_empty_book()` 否则「按地址库筛选」里会留一个"N 个地址"实际为 0 的空壳。
+- **历史数据修复工具**：`tools/fix_exchange_label_residue.py`，只处理"已确认/已标公共 + 已不在库 + label 恰为现存库名"，**默认只预览**，`--apply` 才写库。
+- **0.8.19**：启动面板直接印出公网网址。以前只印"见隧道程序打印的 https://…"，而 cloudflared 是**隐藏窗口的后台进程**——用户看不到那个打印，等于没给地址。现在从 `logs/cloudflared.url` 读并直接显示，且**只在 `cloudflared.exe` 存活时显示**（进程退了文件还留着，不能拿死链接骗人）。
+
+---
+
+## 附：当前基线（0.8.19）
+
+| 项 | 值 |
+| --- | --- |
+| 版本 | 0.8.19 |
+| 测试 | **413 passed / 0 failed**（42 个测试文件） |
+| Python | 3.12（`installers/` 内置安装器 + wheels，可离线装） |
+| 依赖 | FastAPI / SQLAlchemy 2.x / httpx / async-substrate-interface / cryptography |
+| 入口 | `run.py`（`--remote` / `--tunnel` / `--doctor`）、`start.ps1`、`tunnel.ps1` |
+| app 模块 | access / builtin_addresses / collector / config / crawl / db / diagnostics / inputs / interlink / jobs / license / main / relation / relation_config / service / settings_store / taostats / validation / version_info / watch |
+| 数据 | `data/wallet_link.db`（SQLite）+ `data/settings.json`（key DPAPI 加密 + 访问口令 + 阈值 + 巡检配置） |
+
+**跑测试的正确姿势**（退出码经常不可信）：
+
+```bash
+env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy \
+  .venv/Scripts/python.exe -m pytest -q --junitxml=.pytest_full.xml
+```
+
+**pytest 退出码 1 常常是 safe-delete 钩子拦截临时目录，不是测试失败**——以 JUnit 里 `failures=0` 为准。
