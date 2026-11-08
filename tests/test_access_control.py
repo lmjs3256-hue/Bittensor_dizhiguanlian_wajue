@@ -364,14 +364,18 @@ def test_index_metrics_moved_into_header():
         assert ident not in hero, f"{ident} 不应再出现在 hero 面板里"
 
 
-def test_remote_fold_default_is_expanded():
-    """默认必须展开：第一次来的人得先看见地址。
+def test_remote_fold_default_follows_screen_width():
+    """没有存储时的默认值：桌面展开、手机收起（0.8.25 起）。
 
-    只断言"默认值不是折叠"——具体实现可以在 restoreRemoteFold 里读存储，
-    但存储没值时不能返回 folded=true。
+    桌面屏幕够宽，第一次来的人得先看见地址；手机纵向本来就紧，远程面板
+    默认收起才能把首屏让给 key 面板和起始地址。两种情况都必须以用户
+    点过之后的选择为准，所以这里同时断言"读存储优先"。
     """
 
     js = _js()
     start = js.index("function restoreRemoteFold()")
     block = js[start: js.index("\n}", start)]
-    assert "= false" in block, "没有存储时默认应为展开（folded=false）"
+    assert "matchMedia" in block, "默认值应根据屏幕宽度决定"
+    assert "max-width: 700px" in block, "窄屏（手机）应默认收起"
+    # 有存储值时必须以存储为准，不能被屏幕宽度覆盖掉
+    assert "stored === null" in block, "有存储时应优先用存储的折叠偏好"

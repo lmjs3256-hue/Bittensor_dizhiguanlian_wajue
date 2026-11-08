@@ -385,3 +385,247 @@ def test_row_id_entry_reject_also_moves_out():
             assert item["label"] == "人工否定交易所"
         finally:
             database.engine.dispose()
+
+
+# -- 0.8.25：备注不移库 + 验证者人工标记 -------------------------------------
+
+def test_note_never_changes_book_membership():
+    """备注只是角色标注，绝不能改库归属（用户明确要求）。
+
+    三个真实案例：在 DSV 库里给地址写「中转地址 / 币安中转地址」备注，
+    它们必须原地不动、仍在 DSV。
+    """
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(
+                name="DSV", seed=A, addresses=[B, C], category="群友"
+            )
+            before = {
+                row["address"]: (row["book"], row["label"], row["category"])
+                for row in service.library()
+            }
+            for address, note in ((A, "中转地址"), (B, "币安中转地址"), (C, "币安中转地址")):
+                service.save_note(address, note)
+
+            after = {
+                row["address"]: (row["book"], row["label"], row["category"])
+                for row in service.library()
+            }
+            assert before == after, "写备注前后库归属必须完全一致"
+            assert all(row["book"] == "DSV" for row in service.library())
+            notes = {row["address"]: row["note"] for row in service.library()}
+            assert notes[A] == "中转地址"
+            assert notes[B] == notes[C] == "币安中转地址"
+        finally:
+            database.engine.dispose()
+
+
+def test_note_on_unknown_address_is_not_a_book():
+    """给不在库里的地址写备注：不能凭空造出「其他地址库」。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            item = service.save_note(C, "某个不在库的地址")["item"]
+            assert item["book"] == ""
+            assert item["note_only"] is True, "仅备注记录要能被前端识别出来"
+            assert service.address_books() == [], "不该因此产生任何地址库"
+        finally:
+            database.engine.dispose()
+
+
+def test_note_only_flag_clears_once_address_joined_a_book():
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.save_note(C, "先写备注")
+            assert service.address_books() == []
+            service.create_address_book(name="DSV", seed=C, addresses=[], category="群友")
+
+            row = next(item for item in service.library() if item["address"] == C)
+            assert row["book"] == "DSV"
+            assert row["note_only"] is False
+            assert row["note"] == "先写备注", "入库不该冲掉已写的备注"
+        finally:
+            database.engine.dispose()
+
+
+def test_mark_validator_moves_out_of_book():
+    """验证者与交易所/公共地址同口径：下结论即移出库。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(name=BOOK, seed=A, addresses=[], category="大V")
+            item = service.decide_validator_address(A, True)["item"]
+
+            assert item["book"] == ""
+            assert "VALIDATOR" in item["categories"]
+            assert item["label"] == "验证者地址"
+            assert service.address_books() == []
+        finally:
+            database.engine.dispose()
+
+
+def test_unmark_validator_moves_out_and_clears_auto_label():
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(name=BOOK, seed=A, addresses=[], category="大V")
+            service.decide_validator_address(A, True)
+            item = service.decide_validator_address(A, False)["item"]
+
+            assert item["book"] == ""
+            assert "VALIDATOR" not in item["categories"]
+            assert item["label_custom"] is False
+        finally:
+            database.engine.dispose()
+
+
+def test_three_terminating_roles_share_the_same_behaviour():
+    """会终止关联的只有这三类，且行为必须一致（用户明确要求）。"""
+
+    def run(kind):
+        with TemporaryDirectory() as directory:
+            database, service = build_service(directory)
+            try:
+                service.create_address_book(name=BOOK, seed=A, addresses=[], category="大V")
+                if kind == "exchange":
+                    item = service.decide_exchange_address(A, "confirm")["item"]
+                elif kind == "validator":
+                    item = service.decide_validator_address(A, True)["item"]
+                else:
+                    item = service.decide_public_address(A, True)["item"]
+                return item["book"], bool(service.address_books()), item["label"]
+            finally:
+                database.engine.dispose()
+
+    for kind in ("exchange", "validator", "public"):
+        book, books_left, label = run(kind)
+        assert book == "", f"{kind} 应移出库"
+        assert books_left is False, f"{kind} 的库搬空后台账应清理"
+        assert label, f"{kind} 应有结论性标签"
+
+
+# -- 0.8.25：备注不移库 + 验证者人工标记 -------------------------------------
+
+def test_note_never_changes_book_membership():
+    """备注只是角色标注，绝不能改库归属（用户明确要求）。
+
+    三个真实案例：在 DSV 库里给地址写「中转地址 / 币安中转地址」备注，
+    它们必须原地不动、仍在 DSV。
+    """
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(
+                name="DSV", seed=A, addresses=[B, C], category="群友"
+            )
+            before = {
+                row["address"]: (row["book"], row["label"], row["category"])
+                for row in service.library()
+            }
+            for address, note in ((A, "中转地址"), (B, "币安中转地址"), (C, "币安中转地址")):
+                service.save_note(address, note)
+
+            after = {
+                row["address"]: (row["book"], row["label"], row["category"])
+                for row in service.library()
+            }
+            assert before == after, "写备注前后库归属必须完全一致"
+            assert all(row["book"] == "DSV" for row in service.library())
+            notes = {row["address"]: row["note"] for row in service.library()}
+            assert notes[A] == "中转地址"
+            assert notes[B] == notes[C] == "币安中转地址"
+        finally:
+            database.engine.dispose()
+
+
+def test_note_on_unknown_address_is_not_a_book():
+    """给不在库里的地址写备注：不能凭空造出「其他地址库」。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            item = service.save_note(C, "某个不在库的地址")["item"]
+            assert item["book"] == ""
+            assert item["note_only"] is True, "仅备注记录要能被前端识别出来"
+            assert service.address_books() == [], "不该因此产生任何地址库"
+        finally:
+            database.engine.dispose()
+
+
+def test_note_only_flag_clears_once_address_joined_a_book():
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.save_note(C, "先写备注")
+            assert service.address_books() == []
+            service.create_address_book(name="DSV", seed=C, addresses=[], category="群友")
+
+            row = next(item for item in service.library() if item["address"] == C)
+            assert row["book"] == "DSV"
+            assert row["note_only"] is False
+            assert row["note"] == "先写备注", "入库不该冲掉已写的备注"
+        finally:
+            database.engine.dispose()
+
+
+def test_mark_validator_moves_out_of_book():
+    """验证者与交易所/公共地址同口径：下结论即移出库。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(name=BOOK, seed=A, addresses=[], category="大V")
+            item = service.decide_validator_address(A, True)["item"]
+
+            assert item["book"] == ""
+            assert "VALIDATOR" in item["categories"]
+            assert item["label"] == "验证者地址"
+            assert service.address_books() == []
+        finally:
+            database.engine.dispose()
+
+
+def test_unmark_validator_moves_out_and_clears_auto_label():
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(name=BOOK, seed=A, addresses=[], category="大V")
+            service.decide_validator_address(A, True)
+            item = service.decide_validator_address(A, False)["item"]
+
+            assert item["book"] == ""
+            assert "VALIDATOR" not in item["categories"]
+            assert item["label_custom"] is False
+        finally:
+            database.engine.dispose()
+
+
+def test_three_terminating_roles_share_the_same_behaviour():
+    """会终止关联的只有这三类，且行为必须一致（用户明确要求）。"""
+
+    def run(kind):
+        with TemporaryDirectory() as directory:
+            database, service = build_service(directory)
+            try:
+                service.create_address_book(name=BOOK, seed=A, addresses=[], category="大V")
+                if kind == "exchange":
+                    item = service.decide_exchange_address(A, "confirm")["item"]
+                elif kind == "validator":
+                    item = service.decide_validator_address(A, True)["item"]
+                else:
+                    item = service.decide_public_address(A, True)["item"]
+                return item["book"], bool(service.address_books()), item["label"]
+            finally:
+                database.engine.dispose()
+
+    for kind in ("exchange", "validator", "public"):
+        book, books_left, label = run(kind)
+        assert book == "", f"{kind} 应移出库"
+        assert books_left is False, f"{kind} 的库搬空后台账应清理"
+        assert label, f"{kind} 应有结论性标签"

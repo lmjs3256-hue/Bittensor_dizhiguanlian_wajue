@@ -408,6 +408,7 @@ def book_derived_label(row: AddressLibrary) -> str:
 
 
 PUBLIC_LABEL_TEXT = "公共地址"
+VALIDATOR_LABEL_TEXT = "验证者地址"
 
 
 def move_out_of_book(row: AddressLibrary, group_label: str) -> str:
@@ -430,8 +431,10 @@ def move_out_of_book(row: AddressLibrary, group_label: str) -> str:
     book = (row.book or "").strip()
     derived = book_derived_label(row)
     if not book:
-        # 本来就不在库里；只有库名复制品才需要改标签（正常不会发生）。
-        if derived:
+        # 本来就不在库里。仍然要把「没有人工命名」的地址归位到结论组——
+        # 下了结论却不体现，清单里它就是一条「其他 · 未命名」，看不出它已经
+        # 被判定为交易所 / 验证者 / 公共地址。人工起的名字照旧保留。
+        if derived or not (row.label or "").strip():
             row.label = group_label
         return ""
     if derived:
@@ -464,6 +467,30 @@ def prune_empty_book(db: Any, name: str) -> bool:
     return True
 
 
+NOTE_ONLY_SOURCE = "relation-note"
+
+
+def is_note_only_row(row: AddressLibrary) -> bool:
+    """这条记录是否只是因为「在扫描结果里写了备注」才产生的。
+
+    扫描结果的备注框对所有关联地址开放，很多地址本来不在地址库。写备注时
+    为了不丢内容必须落一条记录，但那条记录**不代表任何库归属**：
+    ``book`` 为空、也没有人工命名。
+
+    用户明确要求过：备注只是标注「这个地址在某库里是什么角色」，不是入库
+    动作。所以这类记录在清单里要单独成组（仅备注），不能伪装成「其他地址
+    库」，否则看起来就像"备注一下就被移库并新建了一个库"。
+    """
+
+    if (getattr(row, "book", "") or "").strip():
+        return False
+    if (row.label or "").strip():
+        return False
+    if row_has_category(row, "EXCHANGE") or row_has_category(row, "PUBLIC"):
+        return False
+    return str(row.source or "").startswith(NOTE_ONLY_SOURCE)
+
+
 def address_dict(row: AddressLibrary) -> dict[str, Any]:
     label = row.label.strip()
     official = is_official_exchange_row(row)
@@ -480,6 +507,10 @@ def address_dict(row: AddressLibrary) -> dict[str, Any]:
         "note": row.note,
         "source": row.source,
         "book": getattr(row, "book", "") or "",
+        # 「只为写备注而建」的记录：它没有归入任何地址库，也不属于任何分类组。
+        # 前端据此把它单独归到「仅备注」组，而不是混进「其他地址库」——
+        # 备注只是给这个地址标一个角色说明，不代表它属于哪个库。
+        "note_only": is_note_only_row(row),
         "exchange_confirmed": bool(row.exchange_confirmed),
         "exchange_rejected": bool(row.exchange_rejected),
         # 官方名单同步来的交易所：判定固定，界面不给改判入口，接口也会拒绝。
@@ -1177,7 +1208,18 @@ class LinkService:
         return self.import_rows(rows, path.name)
 
     def save_note(self, address: str, note: str) -> dict[str, Any]:
-        """Save a user note without changing an existing library category."""
+        """给地址写备注。
+
+        **备注绝不参与库归属判定**：已有记录只改 ``note`` 字段，``book`` /
+        ``label`` / ``category`` / ``categories`` 一律不动——用户说得很明确，
+        备注只是标注"这个地址在某库里是什么角色"，不是入库或移库动作。
+
+        地址本来不在库时，为了不丢内容仍要落一条记录，但这条记录不带库归属
+        （``book`` 为空、无人工命名、``source=relation-note``），界面上会归到
+        单独的「仅备注（未归入地址库）」组。以前它按 ``DEFAULT_CATEGORY``
+        落成「其他」分类，清单里就出现一个「其他地址库」，看起来像备注一下
+        就被移库并新建了库。
+        """
 
         address = address.strip()
         note = note.strip()
@@ -1196,12 +1238,14 @@ class LinkService:
                     label="",
                     category=DEFAULT_CATEGORY,
                     note=note,
-                    source="relation-note",
+                    source=NOTE_ONLY_SOURCE,
                 )
                 db.add(current)
                 db.flush()
                 created = True
             else:
+                # 只碰备注。别"顺手"把 book/label 清掉——那是移库操作，
+                # 由确认交易所 / 标记公共地址那几条显式路径负责。
                 current.note = note
             return {"saved": True, "created": created, "item": address_dict(current)}
 
@@ -1999,6 +2043,76 @@ class LinkService:
         # 标记为公共地址同样新增一个关联终点，历史结果里它的下游就是噪音。
         if marked:
             payload["correction"] = self.reconcile_history(addresses=[address], watch=False)
+        return payload
+
+    def decide_validator_address(self, address: str, marked: bool = True) -> dict[str, Any]:
+        """人工标记 / 取消「验证者」。
+
+        与交易所、公共地址同一套口径（用户明确要求）：这三类地址都会终止
+        关联扩展，也都**一旦下结论就移出用户自建库**，以后关联到别的库时
+        再单独加回去。备注不参与任何归属判定，只有这里才动库归属。
+
+        标记只写进多分类，主分类（大V / 群友 / 其他…）保持用户原来的整理
+        方式；取消标记则回到未命名、按分类归组。
+        """
+
+        address = address.strip()
+        if not is_valid_ss58(address):
+            raise InputError("invalid SS58 address")
+        with self.database.session() as db:
+            row = db.scalar(
+                select(AddressLibrary).where(AddressLibrary.address == address)
+            )
+            if row is None and not marked:
+                return {"saved": True, "item": None, "marked": False}
+            if row is not None and not marked and is_builtin_row(row):
+                raise InputError("该地址来自内置固定名单（验证者），不能取消标记")
+            old_book = ""
+            if row is None:
+                row = AddressLibrary(
+                    address=address,
+                    label=VALIDATOR_LABEL_TEXT,
+                    category="VALIDATOR",
+                    categories=encode_categories(["VALIDATOR"]),
+                    note="由关联扫描结果人工标记为验证者（查到即截止，不再向下扩展）",
+                    source="manual:validator-address",
+                )
+                db.add(row)
+                db.flush()
+            elif marked:
+                if not row_has_category(row, "VALIDATOR"):
+                    row.categories = encode_categories(
+                        [*row_categories(row), "VALIDATOR"]
+                    )
+                # 与交易所 / 公共地址一致：下结论就移出用户自建库，并把
+                # 「只是库名复制」的标签归位到结论分组。顺序必须先判后清。
+                old_book = move_out_of_book(row, VALIDATOR_LABEL_TEXT)
+            else:
+                remaining = [
+                    name
+                    for name in row_categories(row)
+                    if name.upper() != "VALIDATOR"
+                ]
+                if str(row.category or "").strip().upper() == "VALIDATOR":
+                    row.category = DEFAULT_CATEGORY
+                    remaining = [DEFAULT_CATEGORY, *remaining]
+                row.categories = encode_categories(remaining or [DEFAULT_CATEGORY])
+                auto = {VALIDATOR_LABEL_TEXT, "人工确认交易所", "人工否定交易所"}
+                was_auto = (row.label or "").strip() in auto
+                old_book = move_out_of_book(row, "")
+                if was_auto:
+                    row.label = ""
+            if old_book:
+                prune_empty_book(db, old_book)
+            payload = {
+                "saved": True,
+                "item": address_dict(row),
+                "marked": bool(marked),
+            }
+        if marked:
+            payload["correction"] = self.reconcile_history(
+                addresses=[address], watch=False
+            )
         return payload
 
     def ensure_builtin_addresses(self) -> dict[str, Any]:

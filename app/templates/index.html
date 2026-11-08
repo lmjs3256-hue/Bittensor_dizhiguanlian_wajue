@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.24">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.25">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -109,6 +109,24 @@
         </div>
       </section>
 
+<section class="panel api-key-panel">
+  <div class="api-key-head">
+    <div><b>Taostats API key</b><small class="api-key-count" id="api-key-count">还没有 key</small></div>
+    <span id="taostats-key-status" aria-live="polite"></span>
+    <button class="ghost api-key-toggle" id="toggle-api-key" type="button" aria-expanded="true" aria-controls="api-key-body">收起</button>
+  </div>
+  <div class="api-key-body" id="api-key-body">
+    <div class="keypool-list" id="keypool-list"></div>
+    <div class="keypool-add">
+      <input id="keypool-new-key" type="password" autocomplete="new-password" placeholder="粘贴 API key（每把各自 5 次/分钟，多把可叠加额度）" aria-label="新的 Taostats API key">
+      <input id="keypool-new-label" type="text" maxlength="40" placeholder="备注名（选填）" aria-label="这把 key 的备注名">
+      <button class="secondary" id="keypool-add" type="button">添加</button>
+      <button class="primary" id="save-taostats-keys" type="button">保存全部 key</button>
+    </div>
+    <small class="api-key-hint">key 加密保存在本机，不会回显。还没有 key？<a href="https://taostats.io/zh/pro/api-keys" target="_blank" rel="noopener">登录后到「API 密钥」页创建</a>（免费档即可）。多把 key 时各占一份额度，别人查询不会把你挤掉。</small>
+  </div>
+</section>
+
       <div id="view-scan">
         <section class="panel controls">
           <div class="control-grid">
@@ -119,20 +137,7 @@
             <label class="field-compact">方向<select id="direction"><option value="both" selected>流入 + 流出</option><option value="outgoing">仅流出</option><option value="incoming">仅流入</option></select></label>
             <div class="threshold-save"><button class="secondary" id="save-thresholds" type="button" title="把「单边最低 TAO」「累计最低 TAO」保存到本机，下次打开页面自动填回。层级调到 4 级以上时，浅层的零星小额会灌满结果，通常要把这两个值一起抬高（例如 10 / 50）。">保存阈值</button></div>
           </div>
-          <div class="source-choice"><div class="source-row"><label class="source-toggle"><input id="taostats-source" type="checkbox" checked> 使用 Taostats 历史索引</label><div class="round-options"><label class="multi-round-choice" title="每分钟自动再查一轮，从上次没查完的地址继续，直到全部查完或达到轮数上限"><input id="multi-round" type="checkbox" checked> 自动分轮续查</label><label class="round-limit-choice" for="max-rounds" title="每轮最多 5 次 API 请求；轮数用完会停止并返回已查到的关联，可调高后继续">最多查询轮数<input id="max-rounds" type="number" min="1" max="100" value="5" inputmode="numeric"><small id="round-hint">≈ 25 次请求</small></label></div><span id="taostats-status" class="source-status">密钥状态读取中</span></div><div class="filter-choice"><label><input id="filter-exchanges" type="checkbox"> 过滤交易所地址</label><label><input id="filter-validators" type="checkbox"> 过滤验证者地址</label><label><input id="filter-publics" type="checkbox"> 过滤公共地址</label><label><input id="filter-systems" type="checkbox"> 过滤系统地址</label><small>只有地址库中“已人工确认”的 EXCHANGE 地址才允许过滤；“疑似交易所（待确认）”会保留在结果中。验证者优先使用地址库中的 VALIDATOR 分类，并在有 Taostats key 时尝试读取当前验证者名单。「公共地址」和「系统」分类无论是否勾选过滤，查到即作为关联终点不再向下扩展；勾选后连它本身也从结果和导出中排除。公共地址（中转、发币池、公共充值地址等）会和大量不确定钱包往来，不截止会把结果灌满噪音。</small></div><div class="api-key-settings" id="api-key-settings">
-  <div class="api-key-head"><b>Taostats API key</b><span id="taostats-key-status" aria-live="polite"></span><button class="ghost api-key-toggle" id="toggle-api-key" type="button">管理 key</button></div>
-  <div class="api-key-body hidden" id="api-key-body">
-    <div class="keypool-head"><span>每把 key 各自 5 次/分钟，池子按空闲度调度</span><b id="keypool-capacity">-</b></div>
-    <div class="keypool-list" id="keypool-list"></div>
-    <div class="keypool-add">
-      <input id="keypool-new-key" type="password" autocomplete="new-password" placeholder="粘贴新的 API key" aria-label="新的 Taostats API key">
-      <input id="keypool-new-label" type="text" maxlength="40" placeholder="备注名（选填，如 主号）" aria-label="这把 key 的备注名">
-      <button class="secondary" id="keypool-add" type="button">添加</button>
-    </div>
-    <div class="api-key-actions"><button class="primary" id="save-taostats-keys" type="button">保存全部 key</button></div>
-    <small class="api-key-hint">还没有 key？<a href="https://taostats.io/zh/pro/api-keys" target="_blank" rel="noopener">登录后打开「API 密钥」页创建</a>（免费档即可，注册入口 <a href="https://taostats.io/zh/pro" target="_blank" rel="noopener">Taostats Pro</a>）；不确定怎么点，看<a href="https://taostats.io/zh/docs/start-here/getting-started-with-taostats-api" target="_blank" rel="noopener">官方图文步骤</a>。多把 key 时每人各占一份额度，别人查询不会把你挤掉；同一把 key 只算一次。</small>
-  </div>
-</div><div class="usage-card"><div class="section-title"><b>Taostats 查询次数</b><span class="tag">本机持久统计</span></div><div class="usage-grid"><div><span>今日查询</span><b id="usage-today">-</b></div><div><span>本月查询</span><b id="usage-month">-</b></div><div><span>累计查询</span><b id="usage-total">-</b></div><div><span>本月参考上限</span><b id="usage-limit">-</b></div><div><span>本月剩余参考</span><b id="usage-remaining">-</b></div></div><small id="usage-note">统计本机实际发起的 Taostats 网络请求；缓存命中不计数。公开免费档按 credits 计费，参考上限不等同账号精确剩余次数。</small></div><small>密码框内容只在保存请求时发送到本机服务；key 会加密保存在本机 data\settings.json（Windows DPAPI，绑定当前用户），重启服务后自动恢复，不会回显。用「清除」可以删掉本机保存的 key。免费档额度以<a href="https://taostats.io/zh/pro" target="_blank" rel="noopener">官方套餐说明</a>为准；接口字段见<a href="https://taostats.io/zh/docs/new/transfers/get-transfers" target="_blank" rel="noopener">转账 API 文档</a>。单次关联最多发起 5 个 API 请求；部分结果会显示提示。</small></div>
+          <div class="source-choice"><div class="source-row"><label class="source-toggle"><input id="taostats-source" type="checkbox" checked> 使用 Taostats 历史索引</label><div class="round-options"><label class="multi-round-choice" title="每分钟自动再查一轮，从上次没查完的地址继续，直到全部查完或达到轮数上限"><input id="multi-round" type="checkbox" checked> 自动分轮续查</label><label class="round-limit-choice" for="max-rounds" title="每轮最多 5 次 API 请求；轮数用完会停止并返回已查到的关联，可调高后继续">最多查询轮数<input id="max-rounds" type="number" min="1" max="100" value="5" inputmode="numeric"><small id="round-hint">≈ 25 次请求</small></label></div><span id="taostats-status" class="source-status">密钥状态读取中</span></div><div class="filter-choice"><label><input id="filter-exchanges" type="checkbox"> 过滤交易所地址</label><label><input id="filter-validators" type="checkbox"> 过滤验证者地址</label><label><input id="filter-publics" type="checkbox"> 过滤公共地址</label><label><input id="filter-systems" type="checkbox"> 过滤系统地址</label><small>只有地址库中“已人工确认”的 EXCHANGE 地址才允许过滤；“疑似交易所（待确认）”会保留在结果中。验证者优先使用地址库中的 VALIDATOR 分类，并在有 Taostats key 时尝试读取当前验证者名单。「公共地址」和「系统」分类无论是否勾选过滤，查到即作为关联终点不再向下扩展；勾选后连它本身也从结果和导出中排除。公共地址（中转、发币池、公共充值地址等）会和大量不确定钱包往来，不截止会把结果灌满噪音。</small></div><div class="usage-card"><div class="section-title"><b>Taostats 查询次数</b><span class="tag">本机持久统计</span></div><div class="usage-grid"><div><span>今日查询</span><b id="usage-today">-</b></div><div><span>本月查询</span><b id="usage-month">-</b></div><div><span>累计查询</span><b id="usage-total">-</b></div><div><span>本月参考上限</span><b id="usage-limit">-</b></div><div><span>本月剩余参考</span><b id="usage-remaining">-</b></div></div><small id="usage-note">统计本机实际发起的 Taostats 网络请求；缓存命中不计数。公开免费档按 credits 计费，参考上限不等同账号精确剩余次数。</small></div><small>密码框内容只在保存请求时发送到本机服务；key 会加密保存在本机 data\settings.json（Windows DPAPI，绑定当前用户），重启服务后自动恢复，不会回显。用「清除」可以删掉本机保存的 key。免费档额度以<a href="https://taostats.io/zh/pro" target="_blank" rel="noopener">官方套餐说明</a>为准；接口字段见<a href="https://taostats.io/zh/docs/new/transfers/get-transfers" target="_blank" rel="noopener">转账 API 文档</a>。单次关联最多发起 5 个 API 请求；部分结果会显示提示。</small></div>
           <div class="actions export-actions"><label class="result-filter export-depth-control">导出层级<select id="export-depth" data-depth-options aria-label="导出层级"><option value="all">全部层级</option></select></label><button class="secondary" id="export-json">导出 JSON</button><button class="secondary" id="export-addresses" title="每行一个地址，已排除地址库中已确认的交易所地址、验证者地址和「系统」分类地址；按左侧选择的层级导出">导出地址 TXT</button></div>
         </section>
 
@@ -277,6 +282,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.24"></script>
+  <script src="/static/app.js?v=0.8.25"></script>
 </body>
 </html>

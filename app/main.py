@@ -1234,6 +1234,23 @@ def mark_public_address(
         raise HTTPException(422, str(exc)) from exc
 
 
+@app.post("/api/library/mark-validator")
+def mark_validator_address(
+    payload: PublicAddressInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """把地址标为 / 取消「验证者」。
+
+    与交易所、公共地址同性质：查询时作为关联终点，不再向下扩展；
+    下结论即移出用户自建库，以后关联到别的库再单独加回去。
+    """
+
+    try:
+        return svc.decide_validator_address(payload.address, payload.marked)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @app.post("/api/library/reconcile")
 def reconcile_history(
     payload: ReconcileInput,

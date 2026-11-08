@@ -20,7 +20,8 @@ const state = {
   amountFilter: { mode: "off", min: "" },
   taostatsConfigured: null,
   taostatsKeyStorage: "",
-  apiKeyBodyOpen: false,
+  apiKeyBodyOpen: true,
+  apiKeyFoldApplied: false,
   // Taostats key 池：已保存的项只有 id/masked/剩余额度，新加的项带 _new + 明文。
   keyPool: [],
   keyPoolPerKey: 5,
@@ -235,7 +236,11 @@ function freshnessLabel(value, data) {
 
 function setApiKeyBody(open) {
   $("#api-key-body").classList.toggle("hidden", !open);
-  $("#toggle-api-key").textContent = open ? "收起" : "填写 / 修改";
+  const toggle = $("#toggle-api-key");
+  if (toggle) {
+    toggle.textContent = open ? "收起" : "管理 key";
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
   state.apiKeyBodyOpen = open;
 }
 
@@ -252,12 +257,19 @@ function showTaostatsKeyStatus(configured, storage) {
   state.taostatsConfigured = configured;
   state.taostatsKeyStorage = storage || state.taostatsKeyStorage || "";
   const count = state.keyPool.length;
+  const perKey = state.keyPoolPerKey || 5;
   if (configured && count > 1) {
-    status.textContent = `API key 已配置（${count} 把，合计 ${count * 5} 次/分钟）`;
+    status.textContent = `已配置 ${count} 把 · 合计 ${count * perKey} 次/分钟`;
   } else {
-    status.textContent = configured ? "API key 已配置" : "尚未设置 API key（无法使用 Taostats 查询）";
+    status.textContent = configured ? "已配置 1 把" : "尚未配置";
   }
   status.classList.toggle("warn-text", !configured);
+  const counter = $("#api-key-count");
+  if (counter) {
+    counter.textContent = count
+      ? `${count} 把 · 每分钟最多 ${count * perKey} 次`
+      : "还没有 key，在下面粘贴一把";
+  }
   if (!configured) {
     detail.textContent = "勾选「使用 Taostats 历史索引」前必须先保存 key，否则查询会被拒绝。";
   } else if (state.taostatsKeyStorage === "dpapi") {
@@ -267,8 +279,31 @@ function showTaostatsKeyStatus(configured, storage) {
   } else {
     detail.textContent = "key 只存在当前进程内存：服务重启后需要重新输入。";
   }
-  setApiKeyBody(!configured);
+  // 不再因为「没配置」就自动折叠：没 key 的人最需要看到添加入口。
+  // 只在首次进入时按存储的折叠偏好设置一次，之后的开关交给用户。
+  if (!state.apiKeyFoldApplied) {
+    state.apiKeyFoldApplied = true;
+    restoreApiKeyFold();
+  }
   renderKeyPool();
+}
+
+/* key 面板的折叠状态：默认展开，记住用户的选择。 */
+const API_KEY_FOLD_KEY = "wallet-link-apikey-folded";
+
+function setApiKeyFolded(folded) {
+  setApiKeyBody(!folded);
+  try {
+    window.localStorage.setItem(API_KEY_FOLD_KEY, folded ? "1" : "0");
+  } catch { /* 隐私模式下 localStorage 可能不可用，忽略即可 */ }
+}
+
+function restoreApiKeyFold() {
+  let folded = false;
+  try {
+    folded = window.localStorage.getItem(API_KEY_FOLD_KEY) === "1";
+  } catch { /* 读不到就按默认展开 */ }
+  setApiKeyBody(!folded);
 }
 
 /* -- Taostats key 池 --------------------------------------------------------
@@ -289,9 +324,11 @@ function renderKeyPool() {
       : "还没有 key";
   }
   if (!items.length) {
-    list.innerHTML = '<div class="keypool-empty">还没有配置 key。粘贴一把到下面，点「添加」，再点「保存全部 key」。</div>';
+    list.classList.add("is-empty");
+    list.innerHTML = '<div class="keypool-empty">还没有配置 key。</div>';
     return;
   }
+  list.classList.remove("is-empty");
   list.innerHTML = items
     .map((item, index) => {
       // 服务端只给尾四位和运行状态；`_new` 表示这把是页面上刚粘贴、还没保存的。
@@ -486,12 +523,16 @@ function setRemoteFolded(folded, persist = true) {
 }
 
 function restoreRemoteFold() {
-  let folded = false;
+  let stored = null;
   try {
-    folded = localStorage.getItem(REMOTE_FOLD_KEY) === "1";
+    stored = localStorage.getItem(REMOTE_FOLD_KEY);
   } catch (error) {
-    folded = false;
+    stored = null;
   }
+  // 手机屏幕窄且纵向本来就紧，远程面板默认收起，把首屏让给 key 面板和
+  // 起始地址；用户点开过之后按他的选择走（stored 有值就以它为准）。
+  const narrow = window.matchMedia("(max-width: 700px)").matches;
+  const folded = stored === null ? narrow : stored === "1";
   setRemoteFolded(folded, false);
 }
 
@@ -970,6 +1011,27 @@ function publicDecisionControl(row) {
   return `<button class="ghost note-save" data-public-decision="mark" data-address="${address}" title="公共地址（中转、发币池、公共充值地址等）会和大量不确定钱包往来；标记后作为关联终点，查到即截止，刷新后其下游不再展开" type="button">标为公共地址</button>`;
 }
 
+function isLibraryValidatorRow(row) {
+  const names = [
+    row.library_category,
+    row.category,
+    ...(row.library_categories || []),
+    ...(row.categories || []),
+  ].map((value) => String(value || "").toUpperCase());
+  return names.includes("VALIDATOR");
+}
+
+// 验证者：与交易所、公共地址同性质——查到即截止，不再向下扩展。
+// 用户明确要求过：会终止关联的只有交易所 / 验证者 / 公共地址这三类，
+// 下结论即移出用户自建库，以后关联到别的库再单独加回去。
+function validatorDecisionControl(row) {
+  const address = esc(row.address);
+  if (isLibraryValidatorRow(row)) {
+    return `<button class="ghost note-save" data-validator-decision="unmark" data-address="${address}" title="取消验证者标记：只移除 VALIDATOR 分类，不影响原有分类" type="button">取消验证者标记</button>`;
+  }
+  return `<button class="ghost note-save" data-validator-decision="mark" data-address="${address}" title="验证者地址会和大量委托往来；标记后作为关联终点，查到即截止，刷新后其下游不再展开" type="button">标为验证者</button>`;
+}
+
 const STRENGTH_CLASS = { "极强": "s4", "强": "s3", "中": "s2", "弱": "s1", "未知": "s0" };
 
 // 老版本存下的历史结果没有 strength 字段，这里按同一套规则现算一份，
@@ -1009,7 +1071,7 @@ function relatedTable(rows) {
       : "";
     const removeButton = `<button class="ghost copy-address remove-relation" data-remove-relation="${esc(row.address)}" title="确认非同一人？移除后点「刷新结果」，这条线索的下游地址也会一并消失" type="button">移除关联</button>`;
     const strength = strengthBadge(row);
-    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main">${addressLink(row.address, shortAddr(row.address))}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${removeButton}${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td>${strength}</td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td><div class="library-decision-cell">${library}${exchangeActions}${publicDecisionControl(row)}</div></td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
+    return `<tr data-related-address="${esc(row.address)}"><td class="address related-address-cell"><div class="address-main">${addressLink(row.address, shortAddr(row.address))}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button>${removeButton}${role}</div></td><td class="amount">${esc(formatTao(row.balance_tao))}</td><td><span class="depth-cell">${row.depth}${pathButton}</span></td><td>${strength}</td><td class="amount">${esc(formatTao(row.incoming_tao))}</td><td class="amount">${esc(formatTao(row.outgoing_tao))}</td><td class="amount">${esc(formatTao(row.total_tao))}</td><td><div class="library-decision-cell">${library}${exchangeActions}${publicDecisionControl(row)}${validatorDecisionControl(row)}</div></td><td><div class="note-editor"><textarea data-relation-note-input placeholder="备注此地址" maxlength="2000">${esc(row.library_note || "")}</textarea><button class="ghost note-save" data-save-relation-note type="button">保存备注</button></div></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 
@@ -1939,21 +2001,25 @@ function libraryTable(rows) {
     const customLabel = Boolean(row.label_custom);
     const label = (customLabel ? row.label : `${categoryLabel(row.category)} · 未命名`).trim();
     // 标签组按「组名」归并：同一组的地址分类可以不同（分类是地址属性，不是组属性）。
-    const key = row.book
-      ? `book\u0000${row.book}`
-      : customLabel
-        ? `label\u0000${label}`
-        : `category\u0000${row.category}`;
+    // 「只为写备注而建」的记录单独成组：备注是角色标注，不是入库动作，
+    // 混进「其他地址库」会让人以为备注一下就被移库并新建了一个库。
+    const key = row.note_only
+      ? "noteonly\u0000仅备注"
+      : row.book
+        ? `book\u0000${row.book}`
+        : customLabel
+          ? `label\u0000${label}`
+          : `category\u0000${row.category}`;
     if (!groups.has(key)) {
       groups.set(key, {
-        label: row.book || label,
-        book: row.book || "",
+        label: row.note_only ? "仅备注（未归入地址库）" : (row.book || label),
+        book: row.note_only ? "" : (row.book || ""),
         categories: new Set(),
         // 组的主分类（第一条记录的主分类）：整组改分类时默认只勾它，
         // 避免“把 其他 换成 群友”时忘了取消而变成多分类。
         primaryCategory: row.category,
         // 只有「自建库」和人工命名的标签组可以整组改名；未命名分类组不动。
-        canRename: Boolean(row.book || customLabel),
+        canRename: Boolean(!row.note_only && (row.book || customLabel)),
         rows: [],
       });
     }
@@ -3258,6 +3324,49 @@ async function decidePublic(address, decision, button) {
   }
 }
 
+async function decideValidator(address, decision, button) {
+  if (!address) return;
+  button.disabled = true;
+  const marked = decision === "mark";
+  try {
+    const result = await api("/api/library/mark-validator", {
+      method: "POST",
+      body: JSON.stringify({ address, marked }),
+    });
+    const item = result.item;
+    const row = state.lastResult?.related?.find((entry) => entry.address === address);
+    if (row && item) {
+      row.match = true;
+      row.library_label = item.label;
+      row.library_category = item.category;
+      row.library_categories = item.categories || [];
+      row.library_note = item.note;
+      row.library_source = item.source;
+      row.address_role = marked ? "验证者" : "";
+      row.role_reason = marked
+        ? "地址库人工标记为验证者：查到即作为关联终点，不再向下扩展。"
+        : "";
+    }
+    const pruned = marked ? pruneDownstreamOf(address) : 0;
+    const resultPanel = $("#result");
+    if (row && resultPanel && !resultPanel.classList.contains("hidden")) {
+      renderResult(state.lastResult);
+    }
+    await loadLibrary();
+    if (marked) {
+      const corrected = correctionText(result.correction);
+      toast((pruned
+        ? `已标为验证者：其下游 ${pruned} 个关联地址已从列表隐藏，点「刷新结果」重查后不会再展开。`
+        : "已标为验证者：该地址作为关联终点，刷新后不再向下扩展。") + corrected, false);
+    } else {
+      toast("已取消验证者标记（原有分类保持不变）。", false);
+    }
+  } catch (error) {
+    toast(`验证者标记失败：${error.message}`, true);
+    button.disabled = false;
+  }
+}
+
 async function addAddress() {
   const address = $("#lib-address").value.trim();
   if (!address) { toast("请输入地址。", true); return; }
@@ -4062,7 +4171,7 @@ $("#keypool-add").addEventListener("click", addKeyPoolEntry);
 $("#keypool-new-key").addEventListener("keydown", (event) => {
   if (event.key === "Enter") addKeyPoolEntry();
 });
-$("#toggle-api-key").addEventListener("click", () => setApiKeyBody(!state.apiKeyBodyOpen));
+$("#toggle-api-key").addEventListener("click", () => setApiKeyFolded(state.apiKeyBodyOpen));
 $("#run-scan").addEventListener("click", () => runRelations(false));
 // 远程面板折叠/展开（状态记在 localStorage，见 setRemoteFolded）。
 $("#remote-toggle").addEventListener("click", () => {
@@ -4199,6 +4308,8 @@ document.addEventListener("click", (event) => {
   if (exchangeButton) decideExchange(exchangeButton.dataset.address, exchangeButton.dataset.exchangeDecision, exchangeButton);
   const publicButton = event.target.closest("[data-public-decision]");
   if (publicButton) decidePublic(publicButton.dataset.address, publicButton.dataset.publicDecision, publicButton);
+  const validatorButton = event.target.closest("[data-validator-decision]");
+  if (validatorButton) decideValidator(validatorButton.dataset.address, validatorButton.dataset.validatorDecision, validatorButton);
   const copyButton = event.target.closest("[data-copy-address]");
   if (copyButton) copyAddress(copyButton.dataset.copyAddress, copyButton);
   // 顶部远程面板的复制按钮：复制的是地址或口令，不是地址库里的 SS58。

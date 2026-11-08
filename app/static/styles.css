@@ -1028,3 +1028,73 @@ header { align-items:flex-start; }
   .keypool-label { flex:1 1 100%; }
   .keypool-usage { flex:1 1 100%; order:3; }
 }
+
+/* ============================================================================
+   Taostats key 面板独立成块（0.8.25）
+   --------------------------------------------------------------------
+   以前这块塞在「扫描」面板底部，首次打开要滚到 959px 才看得到，用户直接
+   以为"没有添加 key 的按钮"。现在提到远程面板下面，单独一块，默认展开。
+   ============================================================================ */
+.api-key-panel { margin-top:0; }
+.api-key-panel .api-key-head {
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  padding-bottom:10px;
+}
+.api-key-panel .api-key-head > div { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; min-width:0; }
+.api-key-panel .api-key-head b { font-size:13.5px; letter-spacing:.01em; }
+.api-key-count { font-size:11.5px; color:var(--muted); }
+.api-key-panel #taostats-key-status { flex:1 1 auto; font-size:11.5px; color:var(--muted); text-align:right; }
+.api-key-panel .api-key-head .api-key-toggle { flex:0 0 auto; font-size:11.5px; padding:5px 12px; }
+.api-key-panel .api-key-body { padding-top:4px; }
+.api-key-panel .api-key-body.hidden { display:none; }
+.api-key-panel .keypool-head { margin-top:2px; }
+.api-key-panel .keypool-add input { font-size:12.5px; }
+.api-key-panel .api-key-actions { margin-top:10px; }
+.api-key-panel .api-key-actions .primary { min-width:150px; }
+
+@media (max-width:560px) {
+  .api-key-panel #taostats-key-status { flex:1 1 100%; text-align:left; }
+  .api-key-panel .keypool-add input { flex:1 1 100%; }
+  .api-key-panel .keypool-add button { flex:1 1 100%; }
+}
+
+/* 0.8.25：key 面板压缩 + 空列表时把输入行提到最前
+   实测面板在 708px 开始、添加按钮落到 827px，1000px 高的窗口下要滚一点
+   才看得到。这里两手：收紧纵向间距让整块上移，并且在还没有 key 时用
+   order 把「粘贴 → 添加」这一行顶到列表前面——第一次来的人一进来就该
+   看到输入框，而不是一句"还没有配置 key"。 */
+.api-key-panel { padding-top:16px; padding-bottom:16px; }
+.api-key-panel .api-key-head { padding-bottom:8px; }
+.api-key-panel .keypool-head { margin-bottom:6px; }
+.api-key-panel .api-key-body { padding-top:0; }
+.keypool-list:empty { display:none; }
+/* 列表为空（只有那句占位说明）时，让添加行排到前面 */
+.api-key-panel .keypool-list.is-empty { order:-1; margin-bottom:8px; }
+.api-key-panel .api-key-settings { display:flex; flex-direction:column; }
+.api-key-panel .api-key-actions { margin-top:8px; }
+.api-key-panel .api-key-hint { margin-top:8px; line-height:1.5; }
+
+/* 0.8.25：key 面板单行紧凑化
+   实测即使压缩间距，添加按钮仍落在 810px（窗口高 792px），要滚才看得见。
+   根因是"标题行 + 提示行 + 输入行 + 保存行 + 说明"五层纵向堆叠。改成
+   标题行 + 输入行（含两个按钮）+ 一行说明，输入框和两个按钮同一行。 */
+.api-key-panel { padding-top:14px; padding-bottom:14px; }
+.api-key-panel .api-key-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding-bottom:8px; }
+.api-key-panel .api-key-head > div { display:flex; align-items:baseline; gap:8px; min-width:0; }
+.api-key-panel .api-key-head b { font-size:13px; }
+.api-key-count { font-size:11px; color:var(--muted); }
+.api-key-panel #taostats-key-status { flex:1 1 auto; font-size:11px; color:var(--muted); text-align:right; }
+.api-key-panel .keypool-list { margin-bottom:8px; }
+.api-key-panel .keypool-list.is-empty { display:none; }
+.api-key-panel .keypool-add { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.api-key-panel .keypool-add #keypool-new-key { flex:2 1 260px; min-width:0; }
+.api-key-panel .keypool-add #keypool-new-label { flex:1 1 120px; min-width:0; }
+.api-key-panel .keypool-add button { flex:0 0 auto; white-space:nowrap; }
+.api-key-panel .api-key-hint { display:block; margin-top:8px; font-size:11px; line-height:1.5; }
+
+@media (max-width:700px) {
+  .api-key-panel #taostats-key-status { flex:1 1 100%; text-align:left; }
+  .api-key-panel .keypool-add #keypool-new-key,
+  .api-key-panel .keypool-add #keypool-new-label { flex:1 1 100%; }
+  .api-key-panel .keypool-add button { flex:1 1 100%; }
+}
