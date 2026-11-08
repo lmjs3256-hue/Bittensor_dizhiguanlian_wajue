@@ -1118,6 +1118,41 @@ git reset --hard origin/main
 </table>
 <p>两个都在<strong>同一台主机</strong>上跑，同一时刻只用一个。<strong>想在手机上用流量访问，必须用后者</strong>——前者只开局域网，公网进不来。</p>
 </blockquote>
+<p><strong>该用哪个地址？</strong>（按推荐顺序）</p>
+<table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>地址</th>
+<th>什么时候用</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 首选</td>
+<td><code>http://100.x.x.x:8766</code>（Tailscale）</td>
+<td><strong>日常都用这个</strong>，在家 / 在外面都行</td>
+<td>地址<strong>固定不变</strong>，重启也不变，可以直接存成书签；只有你自己账号下的设备能连，外人扫不到端口</td>
+</tr>
+<tr>
+<td>② 临时</td>
+<td><code>https://xxx.trycloudflare.com</code>（隧道）</td>
+<td>需要<strong>借别人的电脑 / 手机</strong>看一眼，对方不想装任何东西</td>
+<td>任意浏览器都能打开，但<strong>每次重启就换网址</strong>，且有口令保护的前提下才安全</td>
+</tr>
+<tr>
+<td>③ 仅同网</td>
+<td><code>http://192.168.x.x:8766</code>（局域网）</td>
+<td>就在家里、且懒得开 Tailscale</td>
+<td>最快，但<strong>只能同一个 Wi-Fi 下用</strong>，出门就废</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>优先用 Tailscale 的理由</strong>：它给你的 <code>100.x.x.x</code> 是<strong>私有网络地址</strong>，互联网上根本路由不到，别人想扫也扫不着；而隧道地址是挂在公网上的，虽然要口令才能进，但「有个门」和「门不存在」的安全性不是一个级别。两者都能用的时候，选前者。</p>
+<p><strong>提醒</strong>：手机端 Tailscale 要<strong>保持开启</strong>。iOS 上长时间不用会休眠，回到 Tailscale App 里重新打开一下即可（不用重新登录）。忘了开的话，现象就是页面一直转、最后提示连接超时——这不是工具坏了。</p>
+</blockquote>
 <p>启动窗口会打印一个小面板，包含访问口令和各设备该用的地址：</p>
 <pre><code> 访问口令   ABCD-EFGH-IJKL-MNOP   ← 本次新生成
  本机       http://127.0.0.1:8766
@@ -1274,6 +1309,15 @@ git reset --hard origin/main
 每分钟 5 次请求的限制会让每轮之间等约 1 分钟，属正常现象。如果超过 3 分钟没变化，点“停止续查”保留已有结果，稍后重试。</p>
 <p><strong>Q：手机 / 另一台电脑打开主机地址，一直要求输入访问口令，输对了也进不去？</strong>
 先确认输入的是<strong>主机当前这一版</strong>的口令——点过「重置口令」的话，旧口令会立即失效。在主机上执行 <code>python run.py --remote</code>，启动面板会打印当前口令；也可以主机上直接访问 <a href="http://127.0.0.1:8766/api/access/token">http://127.0.0.1:8766/api/access/token</a> 查看。仍然不行的话，检查是不是用了 <code>http://127.0.0.1:8766</code> 访问——<code>127.0.0.1</code> 在手机 / 另一台电脑上指的是那台设备自己，必须用面板里打印的 Tailscale 或局域网地址。</p>
+<p><strong>Q：用 <code>100.x.x.x</code> 那个 Tailscale 地址打不开，但公网隧道地址能打开？</strong>
+先看<strong>手机/另一台电脑上的 Tailscale 有没有开</strong>——这是最常见的原因，而且现象很像"工具坏了"：页面一直转、最后提示连接超时。iOS 上长时间不用 Tailscale 会休眠，回到 App 里点一下重新连上即可，不用重新登录。</p>
+<p>在主机上执行 <code>tailscale status</code> 能看到每台设备是否 <code>online</code>：</p>
+<ul>
+<li>你那台显示 <code>offline, last seen 71d ago</code> → 它确实没连上，问题在手机端；</li>
+<li>两边都 <code>online</code> 但还是不通 → 在主机上 <code>tailscale ping 100.x.x.x</code> 试一下，通了说明网络没问题，再查防火墙；</li>
+<li>顺带确认别对错设备：<code>tailscale status</code> 里可能有多台历史设备（换过手机、重装过 App 都会留下旧记录），认准当前在用的那台的 IP。</li>
+</ul>
+<p>主机侧这边通常不用动：<code>run.py --remote</code> 本来就监听 <code>0.0.0.0</code>，Tailscale 网卡的 <code>100.x</code> 地址是通的。想确认主机自己没问题，在主机上打开 <a href="http://100.x.x.x:8766/api/health">http://100.x.x.x:8766/api/health</a>（换成你自己的 Tailscale IP）应该能返回版本号。</p>
 <p><strong>Q：从别的设备打开页面，提示「无法连接到服务」？</strong>
 逐项排查：① 主机是否还在跑（主机上打开 <a href="http://127.0.0.1:8766/api/health">http://127.0.0.1:8766/api/health</a> 看有没有返回）；② 主机启动时是不是没用 <code>--remote</code>——只监听 <code>127.0.0.1</code> 时外部设备根本连不上；③ 两台设备是否在同一个 Tailscale 网络（<code>tailscale status</code> 看两边是否都 online）；④ Windows 防火墙是否拦了 8766 端口（首次启动时弹出的允许提示要勾「专用网络」）；⑤ 主机休眠了——甲方案依赖主机在线。</p>
 <p><strong>Q：昨天那个 <code>trycloudflare.com</code> 网址，今天打不开了 / 提示 502？</strong>
