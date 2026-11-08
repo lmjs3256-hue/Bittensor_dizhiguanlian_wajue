@@ -1093,6 +1093,31 @@ git reset --hard origin/main
 <p>先说结论：<strong>让一台电脑跑服务，其他设备只开浏览器访问</strong>。不要在每台电脑各跑一份再同步地址库——那样会互相踩死，原因见下面「为什么不能两台各跑一份」。</p>
 <h3 id="做法一推荐一台主机跑服务其余设备当客户端">做法一（推荐）：一台主机跑服务，其余设备当客户端</h3>
 <p>在那台<strong>尽量常开</strong>的电脑（下面叫「主机」）上，双击 <strong><code>启动-远程访问.cmd</code></strong>（想用命令行就是 <code>python run.py --remote</code>）。</p>
+<blockquote>
+<p><strong>先分清两个脚本，别拿错</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>脚本</th>
+<th>给谁用</th>
+<th>得到的地址</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>启动-远程访问.cmd</code></td>
+<td>同一个 Wi-Fi / 同一个 Tailscale 网络里的设备</td>
+<td><code>http://192.168.x.x:8766</code>、<code>http://100.x.x.x:8766</code></td>
+</tr>
+<tr>
+<td><code>启动-公网隧道.cmd</code></td>
+<td><strong>人在外面、任意网络</strong>（客户端零安装）</td>
+<td><code>https://xxx-xxx.trycloudflare.com</code></td>
+</tr>
+</tbody>
+</table>
+<p>两个都在<strong>同一台主机</strong>上跑，同一时刻只用一个。<strong>想在手机上用流量访问，必须用后者</strong>——前者只开局域网，公网进不来。</p>
+</blockquote>
 <p>启动窗口会打印一个小面板，包含访问口令和各设备该用的地址：</p>
 <pre><code> 访问口令   ABCD-EFGH-IJKL-MNOP   ← 本次新生成
  本机       http://127.0.0.1:8766
@@ -1129,6 +1154,7 @@ git reset --hard origin/main
 <li><strong>客户端不用装任何东西，但主机侧必须有个出口</strong>。家里宽带没有公网 IP，外网进不来，所以由主机主动向外连到 Cloudflare，请求顺着这条连接转回来。路由器全程没有接受任何入站连接，公网也看不到你的真实 IP。</li>
 <li><strong>这是临时地址</strong>，关掉窗口就失效，重新启动会换一个新网址（免费、免注册、不限流量）。想要固定网址，需要一个自己的域名（年费几十元）托管到 Cloudflare，用「命名隧道」把 <code>wallet.你的域名.com</code> 固定指向 8766——客户端仍然只是浏览器，把 <code>启动-公网隧道.cmd</code> 换成开机自启的 cloudflared 服务即可。</li>
 <li><strong>再加一道邮箱验证码</strong>：把邮箱作为参数传进去——<code>启动-公网隧道.cmd 你的邮箱@example.com</code>。这样即使网址被别人看到，只有那个邮箱能收到验证码进来。不需要注册 Cloudflare 账号。</li>
+<li><strong>网址在哪里看</strong>：启动窗口里会直接印一行 <code>公网入口 https://xxx-xxx.trycloudflare.com</code>（0.8.19 起）。如果窗口已经关了，看 <code>logs\cloudflared.url</code> 文件，里面就是当前网址。<strong>网址不是固定的</strong>，每次启动都换，所以别把它存成书签发给别人长期用。</li>
 </ul>
 <p><strong>隧道下的口令规则和局域网一样</strong>：只有<strong>真正坐在主机前</strong>的浏览器免口令；经隧道进来的一律要输口令（包括你在主机上用那个 https 网址打开自己）。这条如果有人改坏了，就等于把命令执行权限挂在公网上——<code>tests/test_tunnel_access.py</code> 专门锁死了它。</p>
 <blockquote>

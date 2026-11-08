@@ -4,6 +4,7 @@ import argparse
 import os
 import socket
 import sys
+import time
 from pathlib import Path
 
 
@@ -42,6 +43,66 @@ def _default_route_address() -> str | None:
         except OSError:
             continue
     return None
+
+
+def _tunnel_url_file() -> Path:
+    """tunnel.ps1 把 cloudflared 分配到的网址写在这个文件里。"""
+
+    return Path(__file__).resolve().parent / "logs" / "cloudflared.url"
+
+
+def _read_tunnel_url(wait_seconds: float = 6.0) -> str:
+    """读当前隧道网址；没有或不是合法地址时返回空串。
+
+    ``wait_seconds``：文件还没写出来时最多等多久。直接 `python run.py --tunnel`
+    手动起服务时隧道可能还在和 Cloudflare 握手，值得等一会儿；只是想"顺便看
+    一眼有没有隧道在跑"的场景就传 0，立即返回。
+
+    只认文件内容不够：隧道进程退出后文件还留着，会让人对着一个死网址折腾。
+    所以先确认 cloudflared 进程还在，再返回网址。
+    """
+
+    path = _tunnel_url_file()
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while True:
+        url = ""
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore").strip()
+        except OSError:
+            text = ""
+        if text.startswith("https://") and ".trycloudflare.com" in text:
+            url = text.split()[0]
+        if url and _cloudflared_running():
+            return url
+        if time.monotonic() >= deadline:
+            return ""
+        time.sleep(0.5)
+
+
+def _cloudflared_running() -> bool:
+    """当前系统里是否有 cloudflared 进程（用来判断网址是否还有效）。"""
+
+    try:
+        if os.name == "nt":
+            import subprocess
+
+            # tasklist 在所有 Windows 版本都有，比依赖 psutil 稳妥。
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq cloudflared.exe", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                errors="ignore",
+            ).stdout
+            return "cloudflared.exe" in out.lower()
+        out = subprocess.run(
+            ["pgrep", "-x", "cloudflared"],
+            capture_output=True,
+            timeout=5,
+        )
+        return out.returncode == 0
+    except Exception:  # noqa: BLE001 - 探测失败就当没有，宁可少显示也不给错地址
+        return False
 
 
 def _is_tailscale(address: str) -> bool:
@@ -86,12 +147,22 @@ def _print_remote_banner(port: int, tunnel: bool = False) -> None:
         f" 本机       http://127.0.0.1:{port}",
     ]
     if tunnel:
-        # 隧道地址由 cloudflared 现分配，这里只解释位置和注意事项。
-        lines += [
-            " 公网入口   见隧道程序打印的 https://…trycloudflare.com",
-            "            经隧道进来的请求同样要输上面的口令——",
-            "            「本机免验证」只对真正坐在这台电脑前的浏览器成立。",
-        ]
+        # 隧道地址由 cloudflared 现分配，tunnel.ps1 会把最终网址写进
+        # logs/cloudflared.url。以前这里只印一句"见隧道程序打印的地址"，
+        # 但 cloudflared 是以隐藏窗口的后台进程跑的——用户根本看不到那个
+        # "打印"，于是点了启动远程也不知道该访问什么。能读到就直接印出来。
+        url = _read_tunnel_url()
+        if url:
+            lines += [
+                f" 公网入口   {url}",
+                "            经隧道进来的请求同样要输上面的口令——",
+                "            「本机免验证」只对真正坐在这台电脑前的浏览器成立。",
+            ]
+        else:
+            lines += [
+                " 公网入口   尚未取得（隧道还在建立，或未以隧道模式启动）",
+                f"            稍后看 {_tunnel_url_file()} 文件里的 https://…trycloudflare.com",
+            ]
     else:
         if tailscale:
             for address in tailscale:
@@ -99,6 +170,13 @@ def _print_remote_banner(port: int, tunnel: bool = False) -> None:
         else:
             lines.append(" Tailscale  未检测到 100.64.0.0/10 地址")
             lines.append("            装了 Tailscale 的话先执行 tailscale up 再重启本服务")
+        # 这几种入口只是"能连"，公网还得靠隧道。如果恰好有隧道在跑，顺手把
+        # 网址也列出来——用户分不清 --remote 和 --tunnel 时，至少不会漏看地址。
+        # 注意：普通远程模式下服务不采信代理头，经隧道进来的请求会被当成外部
+        # 来源而要求口令，这是预期行为，不必在这里展开解释。
+        public_url = _read_tunnel_url(0)
+        if public_url:
+            lines.append(f" 公网入口   {public_url}")
     if primary:
         lines.append(f" 局域网     http://{primary}:{port}")
     if others:

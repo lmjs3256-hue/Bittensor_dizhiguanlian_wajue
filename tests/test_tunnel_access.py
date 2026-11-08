@@ -175,3 +175,93 @@ def test_status_reports_real_client_and_tunnel_flag(isolated_settings, licensed,
     assert payload["local"] is False
     assert payload["client"] == PUBLIC_IP
     assert payload["required"] is True
+
+
+def test_tunnel_url_is_read_from_file(tmp_path, monkeypatch):
+    """面板必须能直接印出公网网址（云窗口隐藏运行，用户看不到它的打印）。"""
+
+    import run
+
+    url_file = tmp_path / "cloudflared.url"
+    url_file.write_text("https://abc-def-ghi.trycloudflare.com\n", encoding="utf-8")
+    monkeypatch.setattr(run, "_tunnel_url_file", lambda: url_file)
+    monkeypatch.setattr(run, "_cloudflared_running", lambda: True)
+
+    assert run._read_tunnel_url(0) == "https://abc-def-ghi.trycloudflare.com"
+
+
+def test_tunnel_url_empty_when_file_missing(tmp_path, monkeypatch):
+    import run
+
+    monkeypatch.setattr(run, "_tunnel_url_file", lambda: tmp_path / "nope.url")
+    monkeypatch.setattr(run, "_cloudflared_running", lambda: True)
+    assert run._read_tunnel_url(0) == ""
+
+
+def test_tunnel_url_ignored_when_process_gone(tmp_path, monkeypatch):
+    """隧道进程已退出时文件还在，不能拿一个死网址去误导用户。"""
+
+    import run
+
+    url_file = tmp_path / "cloudflared.url"
+    url_file.write_text("https://abc-def-ghi.trycloudflare.com", encoding="utf-8")
+    monkeypatch.setattr(run, "_tunnel_url_file", lambda: url_file)
+    monkeypatch.setattr(run, "_cloudflared_running", lambda: False)
+
+    assert run._read_tunnel_url(0) == ""
+
+
+def test_tunnel_url_rejects_garbage(tmp_path, monkeypatch):
+    import run
+
+    url_file = tmp_path / "cloudflared.url"
+    url_file.write_text("not-a-url", encoding="utf-8")
+    monkeypatch.setattr(run, "_tunnel_url_file", lambda: url_file)
+    monkeypatch.setattr(run, "_cloudflared_running", lambda: True)
+
+    assert run._read_tunnel_url(0) == ""
+
+
+def test_tunnel_url_is_read_from_file(tmp_path, monkeypatch):
+    """面板必须能直接印出公网网址（云窗口隐藏运行，用户看不到它的打印）。"""
+
+    import run
+
+    url_file = tmp_path / "cloudflared.url"
+    url_file.write_text("https://abc-def-ghi.trycloudflare.com\n", encoding="utf-8")
+    monkeypatch.setattr(run, "_tunnel_url_file", lambda: url_file)
+    monkeypatch.setattr(run, "_cloudflared_running", lambda: True)
+
+    assert run._read_tunnel_url(0) == "https://abc-def-ghi.trycloudflare.com"
+
+
+def test_tunnel_url_empty_when_file_missing(tmp_path, monkeypatch):
+    import run
+
+    monkeypatch.setattr(run, "_tunnel_url_file", lambda: tmp_path / "nope.url")
+    monkeypatch.setattr(run, "_cloudflared_running", lambda: True)
+    assert run._read_tunnel_url(0) == ""
+
+
+def test_tunnel_url_ignored_when_process_gone(tmp_path, monkeypatch):
+    """隧道进程已退出时文件还在，不能拿一个死网址去误导用户。"""
+
+    import run
+
+    url_file = tmp_path / "cloudflared.url"
+    url_file.write_text("https://abc-def-ghi.trycloudflare.com", encoding="utf-8")
+    monkeypatch.setattr(run, "_tunnel_url_file", lambda: url_file)
+    monkeypatch.setattr(run, "_cloudflared_running", lambda: False)
+
+    assert run._read_tunnel_url(0) == ""
+
+
+def test_tunnel_url_rejects_garbage(tmp_path, monkeypatch):
+    import run
+
+    url_file = tmp_path / "cloudflared.url"
+    url_file.write_text("not-a-url", encoding="utf-8")
+    monkeypatch.setattr(run, "_tunnel_url_file", lambda: url_file)
+    monkeypatch.setattr(run, "_cloudflared_running", lambda: True)
+
+    assert run._read_tunnel_url(0) == ""
