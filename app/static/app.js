@@ -1268,6 +1268,8 @@ function renderAmountFilterHint(total, visible) {
 function refreshRelatedTable() {
   const baseRows = relatedBaseRows();
   const visible = baseRows.filter(rowPassesAmountFilter);
+  // 建库提示按"当前条件"算，筛选一变就得跟着变，否则提示数量会和实际导入不一致。
+  updateBookHint();
   $("#count-related").textContent = number(visible.length);
   const totalPages = Math.max(1, Math.ceil(visible.length / state.pageSize));
   if (state.page > totalPages) state.page = totalPages;
@@ -4084,11 +4086,16 @@ function updateBookHint() {
   if (!hint) return;
   const data = state.lastResult;
   if (!data) { hint.textContent = "先完成一次关联查询。"; return; }
-  const { addresses, skippedExchange, skippedValidator, skippedPublic } = selectExportableAddresses(data.related);
+  // 与真正建库用同一个集合（相关可见行），提示数量才不会和实际导入对不上。
+  const visible = relatedVisibleRows();
+  const { addresses, skippedExchange, skippedValidator, skippedPublic } =
+    selectExportableAddresses(visible);
   const includeSeed = $("#book-include-seed").checked;
   const seedSkipped = includeSeed && seedIsPublicAddress(data);
   const count = addresses.length + (includeSeed && !seedSkipped ? 1 : 0);
-  const parts = [`本次可导入 ${count} 个地址`];
+  const hidden = (data.related || []).length - visible.length;
+  const parts = [`按当前条件可导入 ${count} 个地址`];
+  if (hidden > 0) parts.push(`另有 ${hidden} 个被层级/金额筛选隐藏`);
   if (skippedExchange || skippedValidator || skippedPublic) {
     parts.push(`已排除交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个、公共地址 ${skippedPublic} 个`);
   }
@@ -4097,10 +4104,120 @@ function updateBookHint() {
   hint.textContent = `${parts.join("；")}。`;
 }
 
+/* 建库 / 导出前的条件确认。
+   提交的是「当前结果表里可见的地址」，而可见集合受层级筛选、金额筛选、
+   手动移除共同影响。这些条件在别处设置，点按钮时容易忘——尤其层级筛选
+   是滚动才看到的控件。所以每次落库 / 导出前，把实际生效的条件和最终数量
+   摆出来让人确认一次，避免"我以为全导进去了"。
+
+   返回 null 表示用户取消；否则返回 { addresses, summary }。 */
+function depthLabelOf(depth) {
+  if (depth === null || depth === undefined || depth === "all") return "全部层级";
+  return `仅 ${depth} 级`;
+}
+
+function describeCurrentFilters() {
+  const lines = [];
+  // 层级：建库跟随「关联地址」的层级筛选，导出跟随「导出层级」下拉。
+  const relatedDepth = state.depthFilter === "all" ? null : state.depthFilter;
+  lines.push(`层级：${depthLabelOf(relatedDepth)}`);
+  if (amountFilterActive()) {
+    lines.push(
+      `金额：${amountModeLabel()} ≥ ${number(amountMinValue())} TAO（低于此值的关联地址已隐藏）`
+    );
+  } else {
+    lines.push("金额：不限");
+  }
+  if (state.removedAddresses.size) {
+    lines.push(`已手动移除：${state.removedAddresses.size} 个地址（不会包含）`);
+  }
+  return lines;
+}
+
+function confirmScope({ title, rows, detail, confirmText }) {
+  const { addresses, skippedExchange, skippedValidator, skippedPublic } =
+    selectExportableAddresses(rows);
+  if (!addresses.length) return { addresses: [], confirmed: false, empty: true };
+
+  const lines = [
+    `${title}`,
+    "",
+    ...describeCurrentFilters().map((line) => `· ${line}`),
+    "",
+    `最终将包含 ${addresses.length} 个地址${detail ? `（${detail}）` : ""}`,
+  ];
+  const skipped = [];
+  if (skippedExchange) skipped.push(`交易所 ${skippedExchange}`);
+  if (skippedValidator) skipped.push(`验证者 ${skippedValidator}`);
+  if (skippedPublic) skipped.push(`公共地址 ${skippedPublic}`);
+  if (skipped.length) {
+    const total = skippedExchange + skippedValidator + skippedPublic;
+    lines.push(`已排除：${skipped.join("、")}（共 ${total} 个）`);
+  }
+  lines.push("");
+  lines.push("条件不对可以先取消，回到页面上调整筛选再操作。");
+
+  return {
+    addresses,
+    confirmed: window.confirm(lines.join("\n")),
+    empty: false,
+  };
+}
+
+/* 导出前的条件确认。
+   与建库的区别：导出走「导出层级」下拉，**不套用结果表的金额筛选**
+   （导出的是完整记录，交给下游自己再筛）。这里如实说明，免得有人以为
+   导出也会跟着金额筛选走。 */
+function confirmExportScope({ title, rows }) {
+  const { addresses, skippedExchange, skippedValidator, skippedPublic } =
+    selectExportableAddresses(rows);
+  if (!addresses.length) return { rows: [], confirmed: false, empty: true };
+
+  const lines = [
+    title,
+    "",
+    "导出按「导出层级」下拉，不含金额筛选、也不含手动移除。",
+    "",
+    `地址清单将包含 ${addresses.length} 个地址`,
+  ];
+  const skipped = [];
+  if (skippedExchange) skipped.push(`交易所 ${skippedExchange}`);
+  if (skippedValidator) skipped.push(`验证者 ${skippedValidator}`);
+  if (skippedPublic) skipped.push(`公共地址 ${skippedPublic}`);
+  if (skipped.length) {
+    const total = skippedExchange + skippedValidator + skippedPublic;
+    lines.push(`已从地址清单排除：${skipped.join("、")}（共 ${total} 个）`);
+  }
+  lines.push("");
+  lines.push("条件不对可以先取消，改好「导出层级」再操作。");
+
+  return {
+    rows,
+    confirmed: window.confirm(lines.join("\n")),
+    empty: false,
+  };
+}
+
 async function createBookFromResult() {
   if (!state.lastResult) { toast("先完成一次关联查询。", true); return; }
   const name = $("#book-name").value.trim();
   if (!name) { toast("请先填写地址库名称。", true); $("#book-name").focus(); return; }
+
+  // 建库按「当前可见条件」走：层级筛选 + 金额筛选 + 手动移除。
+  // 以前这里直接提交 related 全量，既忽略层级也忽略金额，用户按层级筛选后
+  // 建库会莫名其妙把更深的地址也带进去。
+  const rows = relatedVisibleRows();
+  const scope = confirmScope({
+    title: `按当前条件新建地址库「${name}」`,
+    rows,
+    detail: $("#book-include-seed").checked ? "另有发起地址" : "",
+  });
+  if (scope.empty) {
+    toast("当前筛选条件下没有可导入的地址；调整层级或金额筛选后再试。", true);
+    return;
+  }
+  if (!scope.confirmed) return;
+
   const button = $("#create-book");
   button.disabled = true;
   button.textContent = "导入中…";
@@ -4110,7 +4227,7 @@ async function createBookFromResult() {
       body: JSON.stringify({
         name,
         seed: state.lastResult.seed || "",
-        addresses: (state.lastResult.related || []).map((row) => row.address).filter(Boolean),
+        addresses: scope.addresses,
         include_seed: $("#book-include-seed").checked,
         category: $("#book-category").value,
       }),
@@ -4619,13 +4736,21 @@ function depthTag(depth) {
 $("#export-json").addEventListener("click", () => {
   if (!state.lastResult) { toast("先完成一次关联扫描。", true); return; }
   const depth = exportDepth();
-  const rows = (state.lastResult.related || []).filter(
+  // JSON 也走一次条件确认：导出层级用的是「导出层级」下拉，和结果表的层级
+  // 筛选是两个控件，不确认极易导错范围。
+  const depthRows = (state.lastResult.related || []).filter(
     (row) => depth === null || String(row.depth) === String(depth)
   );
-  if (depth !== null && !rows.length) {
-    toast(`没有 ${depth} 级关联地址可导出；可把导出层级改回「全部层级」。`, true);
+  const jsonScope = confirmExportScope({
+    title: `导出 JSON（层级：${depthLabelOf(depth)}）`,
+    rows: depthRows,
+  });
+  if (jsonScope.empty) {
+    toast(`没有 ${depth === null ? "" : `${depth} 级`}关联地址可导出；可把导出层级改回「全部层级」。`, true);
     return;
   }
+  if (!jsonScope.confirmed) return;
+  const rows = jsonScope.rows;
   const exportData = {
     seed: state.lastResult.seed,
     max_depth: state.lastResult.max_depth,
@@ -4703,6 +4828,25 @@ $("#export-addresses").addEventListener("click", () => {
   const amountSkipped = depthRows.length - rows.length;
   const amountNote = amountSkipped > 0 ? `，金额筛选隐藏 ${amountSkipped} 个轻微关联` : "";
   const { addresses, skippedExchange, skippedValidator, skippedPublic } = selectExportableAddresses(rows);
+  if (addresses.length) {
+    const lines = [
+      `导出地址 TXT（层级：${depthLabelOf(depth)}）`,
+      "",
+      `· 层级：${depthLabelOf(depth)}`,
+      `· 金额：${amountFilterActive() ? `${amountModeLabel()} ≥ ${number(amountMinValue())} TAO` : "不限"}`,
+    ];
+    if (amountSkipped > 0) lines.push(`· 金额筛选隐藏 ${amountSkipped} 个轻微关联`);
+    if (state.removedAddresses.size) {
+      lines.push(`· 已手动移除 ${state.removedAddresses.size} 个（导出仍按层级/金额，不受手动移除影响）`);
+    }
+    lines.push("", `最终导出 ${addresses.length} 个地址`);
+    const excluded = skippedExchange + skippedValidator + skippedPublic;
+    if (excluded) {
+      lines.push(`已排除：交易所 ${skippedExchange}、验证者 ${skippedValidator}、公共地址 ${skippedPublic}（共 ${excluded} 个）`);
+    }
+    lines.push("", "条件不对可以先取消，改好筛选再操作。");
+    if (!window.confirm(lines.join("\n"))) return;
+  }
   if (!addresses.length) {
     const depthNote = depth === null ? "" : `（${depth} 级关联里）`;
     toast(`没有可导出的地址${depthNote}；已排除已确认交易所 ${skippedExchange} 个、验证者 ${skippedValidator} 个、公共地址 ${skippedPublic} 个${amountNote}。可把导出层级改回「全部层级」或调低金额阈值。`, true);

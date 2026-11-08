@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.26">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.27">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -172,7 +172,7 @@
                 <label class="inline-check"><input id="book-include-seed" type="checkbox" checked> 包含发起地址</label>
                 <button class="primary cta" id="create-book" type="button">新建地址库并导入</button>
               </div>
-              <small>给这次查询起一个库名，把可导入的关联地址和发起地址一起写进去；已人工确认的交易所和验证者地址会自动剔除，规则与“导出地址 TXT”一致。同名库重复导入只补新地址，不改已有记录。</small>
+              <small><b>按当前筛选条件建库</b>：只导入眼下「关联地址」表里可见的地址——层级筛选（只看某一级）、金额筛选、已手动移除的都不计入；点按钮后会先弹窗列出实际生效的条件和最终数量供你确认。已人工确认的交易所 / 验证者 / 公共地址会自动剔除。同名库重复导入只补新地址，不改已有记录。</small>
             </div>
           </section>
           <section class="panel related-panel"><div class="section-title"><div><h3>关联地址</h3><span class="tag">金额过滤后</span></div><div class="related-toolbar"><button class="refresh-result-btn" id="refresh-result" type="button" title="按当前设置重新查询：已手动移除的地址及其线索下游不会再出现" disabled><svg class="refresh-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.4 12a8.4 8.4 0 1 1-2.5-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M20.6 3.6v5h-5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="refresh-result-label">刷新结果</span></button><div class="result-filters"><label class="result-filter">层级筛选<select id="related-depth-filter" data-depth-options data-depth-label="只看" aria-label="关联地址层级筛选"><option value="all">全部层级</option></select></label><label class="result-filter">金额筛选<select id="related-amount-mode" aria-label="按金额筛选关联地址的方式"><option value="off">不限</option><option value="either">流入或流出 ≥</option><option value="incoming">流入 ≥</option><option value="outgoing">流出 ≥</option><option value="total">累计 ≥</option><option value="both">流入且流出 ≥</option></select></label><label class="result-filter amount-filter"><span>TAO</span><input id="related-amount-min" type="number" min="0" step="any" inputmode="decimal" placeholder="0" aria-label="金额阈值 TAO"></label><button class="ghost" id="related-amount-reset" type="button" title="清除金额筛选，回到只看全部">重置</button></div></div></div><small id="related-filter-hint" class="related-filter-hint hidden"></small><small id="removed-note" class="removed-note hidden"></small><div id="related" class="table-wrap"></div><div id="related-pagination" class="pagination-bar hidden"></div></section>
@@ -282,6 +282,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.26"></script>
+  <script src="/static/app.js?v=0.8.27"></script>
 </body>
 </html>
