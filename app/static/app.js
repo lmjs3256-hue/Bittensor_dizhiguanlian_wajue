@@ -1340,7 +1340,7 @@ function refreshRelatedTable() {
   if (removedNote) {
     const notes = [];
     if (state.removedAddresses.size) {
-      notes.push(`已手动移除 ${state.removedAddresses.size} 个关联地址（点「刷新结果」后，这些地址、与其有转账交集的地址及下游线索都会一并消失）`);
+      notes.push(`已手动移除 ${state.removedAddresses.size} 个关联地址（点「刷新结果」按本地数据剔除它们和只经由它们连通的下游，不调用 API）`);
     }
     if (state.exchangePruned.size) {
       notes.push(`已按「标为交易所」隐藏 ${state.exchangePruned.size} 个只经由交易所连通的地址（刷新后由后端确认）`);
@@ -1425,8 +1425,8 @@ function updateRefreshButton() {
   /* 有手动移除时按钮保持高亮呼吸，提示"这里点了才会真的重查"。 */
   button.classList.toggle("is-armed", count > 0);
   button.title = count
-    ? `已手动移除 ${count} 个关联地址，点这里按当前设置重新查询`
-    : "按当前设置重新查询：已手动移除的地址及其线索下游不会再出现";
+    ? `已手动移除 ${count} 个关联地址，点这里按本地数据重算（不调用 API）：剔掉它们以及只经由它们连通的线索`
+    : "按本地数据重算（不调用 API）：剔掉已移除的地址及其下游；要看最新链上数据请点「扫描关联」";
 }
 
 function removeRelation(address) {
@@ -1434,7 +1434,7 @@ function removeRelation(address) {
     state.removedAddresses.add(address);
   }
   refreshRelatedTable();
-  toast("已移除该关联。点「刷新结果」重查后，这条线索下游的地址也会一并消失；重新扫描会恢复全部关联。", false);
+  toast("已移除该关联。点「刷新结果」会按本地数据剔除它和只经由它连通的下游（不调用 API）；重新扫描会恢复全部关联。", false);
 }
 
 /* 0 个关联地址时，必须告诉用户"为什么是空表"，否则很容易被当成工具坏了。
@@ -3306,6 +3306,119 @@ async function copyAddress(address, button) {
   }
 }
 
+/* 本地重算关联图（不调 API）。
+   ------------------------------------------------------------------------
+   「刷新结果」以前是重新跑一遍 API：慢、还烧额度。但它的目的是"把已移除
+   的地址、以及只经由它们连通的线索剔掉"，这件事用结果里已有的 edges 就能
+   算——不需要再问一次链上数据。
+
+   做法：从起始地址做 BFS，只沿 edges 走，且
+     · 碰到已移除的地址 → 不进入、也不向下扩展；
+     · 碰到关联终点（交易所 / 验证者 / 公共地址）→ 计入结果但不再向下扩展；
+   其余地址按"从起始地址是否可达"保留，层级按 BFS 深度重算。
+
+   返回被剔掉的地址数，调用方提示用户。注意这是**本地剪枝**，不会补出新
+   地址；想看最新的链上情况仍要点「扫描关联」。 */
+function rebuildRelationsLocally() {
+  const data = state.lastResult;
+  if (!data) return { pruned: 0, kept: 0 };
+  const edges = data.edges || [];
+  if (!edges.length) {
+    // 没有 edges 就没法在本地判断连通性，只能按"直接移除列表"过滤。
+    const kept = (data.related || []).filter(
+      (row) => !state.removedAddresses.has(row.address)
+    );
+    return { pruned: (data.related || []).length - kept.length, kept: kept.length };
+  }
+
+  const seed = String(data.seed || "").trim();
+  // 邻接表：无向（转出/转入都算资金往来），与关联挖掘的口径一致。
+  const adjacency = new Map();
+  const link = (a, b) => {
+    if (!a || !b || a === b) return;
+    if (!adjacency.has(a)) adjacency.set(a, new Set());
+    if (!adjacency.has(b)) adjacency.set(b, new Set());
+    adjacency.get(a).add(b);
+    adjacency.get(b).add(a);
+  };
+  edges.forEach((edge) => link(edge.from_address, edge.to_address));
+
+  const relatedByAddress = new Map(
+    (data.related || []).map((row) => [row.address, row])
+  );
+  // 关联终点：按地址库里的身份判断（与扫描时的截止规则一致）。
+  const isTerminal = (address) => {
+    const row = relatedByAddress.get(address);
+    if (!row) return false;
+    const names = [row.library_category, ...(row.library_categories || [])]
+      .map((value) => String(value || "").toUpperCase());
+    if (names.includes("PUBLIC") || names.includes("VALIDATOR")) return true;
+    return names.includes("EXCHANGE") && Boolean(row.exchange_confirmed);
+  };
+
+  // BFS：深度从起始地址算起，起点深度 0。
+  //
+  // 关键区分：**「终点不向下扩展」是查询时的规则，不是刷新时的删除依据。**
+  // 终点地址（交易所/验证者/公共地址）自己会出现在结果里，而它在 result
+  // 里的"下游"是上一轮查询时就已经截断过的——刷新时如果严格只保留
+  // "从起点可达且不被终点阻断"的地址，就会把它们误删。所以这里分两轮：
+  //   1) reachable：只把"移除的地址"当墙，算出哪些地址仍与起点连通；
+  //   2) depth：再按终点规则算层级，仅用于重新标 depth（不影响保留与否）。
+  // 关键：**移除一个地址不等于切断所有经过它的路径。**
+  // 图是无向的，E 被移除后 F 仍能经 G 绕到起点——如果简单把"移除的地址"
+  // 当墙，F、G 会一起消失，等于误删。正确判据是可达性：
+  // 从起点出发、**只把被移除的地址排除在路径之外**，仍能走到的地址都保留。
+  // 只有"所有路径都必须经过被移除地址"的地址才会真正变得不可达。
+  const reachable = new Set();
+  if (seed) {
+    reachable.add(seed);
+    const queue = [seed];
+    // 起点自身若被移除，仍从它出发（整图不可信的情况交给调用方处理）。
+    while (queue.length) {
+      const current = queue.shift();
+      for (const next of adjacency.get(current) || []) {
+        if (reachable.has(next)) continue;
+        if (state.removedAddresses.has(next)) continue; // 不移入，自然也就不会从它继续
+        reachable.add(next);
+        queue.push(next);
+      }
+    }
+  }
+
+  // 层级：沿同一条 BFS，但遇到终点就停止扩展（与查询规则一致）。
+  const depthOf = new Map();
+  if (seed) depthOf.set(seed, 0);
+  const depthQueue = seed ? [seed] : [];
+  while (depthQueue.length) {
+    const current = depthQueue.shift();
+    const depth = depthOf.get(current) || 0;
+    if (current !== seed && state.removedAddresses.has(current)) continue;
+    if (current !== seed && isTerminal(current)) continue; // 终点不向下扩展
+    for (const next of adjacency.get(current) || []) {
+      if (depthOf.has(next)) continue;
+      if (state.removedAddresses.has(next)) continue;
+      depthOf.set(next, depth + 1);
+      depthQueue.push(next);
+    }
+  }
+
+  let pruned = 0;
+  const keptRows = [];
+  for (const row of data.related || []) {
+    if (state.removedAddresses.has(row.address)) { pruned += 1; continue; }
+    // 不可达 = 只经由被移除的地址连通，剔掉。
+    if (seed && !reachable.has(row.address)) { pruned += 1; continue; }
+    // 层级优先用重算值；被终点截断而算不出的，沿用它原来的层级。
+    const depth = depthOf.has(row.address) ? depthOf.get(row.address) : row.depth;
+    keptRows.push({ ...row, depth: Math.max(1, Number(depth) || 1) });
+  }
+
+  // 只替换 related；edges 保持原样（下游仍可用于路径明细）。
+  state.lastResult = { ...data, related: keptRows };
+  state.exchangePruned.clear();
+  return { pruned, kept: keptRows.length };
+}
+
 function pruneDownstreamOf(address) {
   // 只把「路径经过该地址」的关联地址在本次会话里隐藏：真正是否移除由刷新后的
   // 后端终点规则决定（还有别的通路的地址刷新后仍会出现，避免误删）。
@@ -4424,7 +4537,20 @@ $("#refresh-result").addEventListener("click", () => {
     toast("还没有查询结果；先输入起始地址点「扫描关联」。", true);
     return;
   }
-  runRelations(true);
+  // 本地重算，不重新调 API：刷新结果的目的是"剔掉已移除的地址、以及只经由
+  // 它们连通的线索"，这件事用结果里已有的 edges 就能算完。以前这里跑
+  // runRelations(true)，等于每次点刷新都重查一遍，慢且白烧额度。
+  // 真要看最新链上数据，请点「扫描关联」重新查询。
+  const { pruned, kept } = rebuildRelationsLocally();
+  state.removedAddresses.clear();     // 已固化成"剔除"，不再反复扣减
+  state.page = 1;
+  refreshRelatedTable();
+  updateRefreshButton();
+  if (pruned > 0) {
+    toast(`已按本地数据重算：剔除 ${pruned} 个无效关联（已移除的、或只经由它们连通的），保留 ${kept} 个。未调用 API。`, false);
+  } else {
+    toast(`已按本地数据重算，${kept} 个关联地址均有效。未调用 API。`, false);
+  }
 });
 $("#cancel-job").addEventListener("click", cancelActiveJob);
 $("#taostats-source").addEventListener("change", () => {

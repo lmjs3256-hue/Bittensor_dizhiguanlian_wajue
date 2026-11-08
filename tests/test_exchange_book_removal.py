@@ -814,3 +814,45 @@ def test_strength_header_is_the_sort_control():
     # 表头本身就是 button，不能另起一个独立排序按钮
     assert "strength-head" in js
     assert 'class="strength-sort' in js
+
+
+# -- 0.8.29：刷新结果必须是本地重算，不得重新调 API ----------------------
+
+def test_refresh_result_does_not_call_api():
+    """「刷新结果」不得重新发起查询。
+
+    用户明确反馈：刷新应该是基于本地数据剔除无效关联，而不是重跑一遍 API。
+    这里锁住两件事：① 按钮处理器里不许出现 runRelations；② 必须有本地重算
+    函数，且它只依赖 state.lastResult.edges。
+    """
+
+    js = _app_js()
+    start = js.index('$("#refresh-result").addEventListener')
+    block = js[start: js.index("\n});", start)]
+    # 只检查"真正的调用"，注释里提到函数名是正常的说明文字。
+    call_lines = [
+        line for line in block.splitlines()
+        if "runRelations(" in line and not line.strip().startswith("//")
+    ]
+    assert not call_lines, f"刷新结果不能重新发起 API 查询：{call_lines}"
+    assert "rebuildRelationsLocally" in block, "刷新结果应走本地重算"
+
+    fn_start = js.index("function rebuildRelationsLocally()")
+    fn_block = js[fn_start: js.index("\n}\n", fn_start)]
+    assert "state.lastResult.edges" in fn_block or "data.edges" in fn_block
+    assert "fetch(" not in fn_block and "api(" not in fn_block
+
+
+def test_local_rebuild_uses_reachability_not_blocking():
+    """移除地址的判据是可达性，不是把它当"墙"。
+
+    图是无向的：如果简单把被移除的地址当墙，那些"其实还有绕行路径"的地址
+    会一起消失（误删）。代码里必须有 reachable 集合，并且只把被移除地址
+    排除在路径之外。
+    """
+
+    js = _app_js()
+    start = js.index("function rebuildRelationsLocally()")
+    block = js[start: js.index("\n}\n", start)]
+    assert "reachable" in block, "必须用可达性判断，而不是把移除地址当墙"
+    assert "state.removedAddresses.has(next)" in block
