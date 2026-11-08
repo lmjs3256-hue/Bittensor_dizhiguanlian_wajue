@@ -2012,7 +2012,7 @@ function libraryTable(rows) {
           : `category\u0000${row.category}`;
     if (!groups.has(key)) {
       groups.set(key, {
-        label: row.note_only ? "仅备注（未归入地址库）" : (row.book || label),
+        label: row.note_only ? "仅备注 · 未归入任何地址库" : (row.book || label),
         book: row.note_only ? "" : (row.book || ""),
         categories: new Set(),
         // 组的主分类（第一条记录的主分类）：整组改分类时默认只勾它，
@@ -2072,7 +2072,13 @@ function libraryTable(rows) {
       && state.groupAdd.kind === kind
       && state.groupAdd.name === group.label;
     const addAttrs = `data-group-kind="${kind}" data-group-name="${esc(group.label)}" data-group-book="${esc(group.book)}" data-group-category="${esc(group.primaryCategory || "")}" data-group-can-rename="${group.canRename ? "1" : "0"}"`;
-    const addBar = `<div class="group-add-bar"><button class="ghost" data-group-add ${addAttrs} type="button">＋ 手动添加地址</button><small>加到「${esc(group.label)}」；重复地址会提示，可勾选“移过来”把它从别的组转到本组</small></div>`;
+    let addBar = `<div class="group-add-bar"><button class="ghost" data-group-add ${addAttrs} type="button">＋ 手动添加地址</button><small>加到「${esc(group.label)}」；重复地址会提示，可勾选“移过来”把它从别的组转到本组</small></div>`;
+    // 「仅备注」不是地址库：这些地址只是在扫描结果里被写过备注，从未入库。
+    // 给一个一键归库的入口，否则它们会一直悬在这里，用户以为"备注后建库却没带进去"。
+    if (group.rows.every((row) => row.note_only)) {
+      const ids = group.rows.map((row) => String(row.id)).join(",");
+      addBar = `<div class="group-add-bar note-only-bar"><button class="secondary" data-note-only-adopt="${ids}" type="button">把这 ${group.rows.length} 个地址归入地址库</button><small>这些地址只写过备注、从未入过库。建库时如果它们不在当时的「关联地址」结果里，就不会被自动带入——在这里可以一次性归进去（备注与分类保留）。</small></div>`;
+    }
     const addEditor = addingHere
       ? `<div class="group-add-editor"><textarea data-group-add-input rows="3" placeholder="每行一个 SS58 地址，也支持逗号 / 空格分隔（一次最多 200 个）" aria-label="要添加的地址"></textarea><input data-group-add-note maxlength="2000" autocomplete="off" placeholder="备注（选填，只写给这次新加的地址）" aria-label="新地址的备注"><label class="group-add-move"><input type="checkbox" data-group-add-move> 已在别的组的地址也移到本组（改它的组名/分类，备注保留）</label><div class="group-add-actions"><button class="secondary note-save" data-save-group-add ${addAttrs} type="button">添加到本组</button><button class="ghost note-save" data-cancel-group-add type="button">取消</button></div><small>地址格式不对会逐个提示；加入后可点「撤回上次导入」一次性撤销这次添加。${isExchangeGroupLabel(group.label) ? "本组是人工交易所结论组，加进来的地址会同步标为" + esc(group.label) + "。" : ""}</small></div>`
       : "";
@@ -2581,6 +2587,35 @@ function renderBookFilter() {
   else {
     state.bookFilter = "";
     select.value = "";
+  }
+}
+
+/* 「仅备注」地址归入地址库：这些地址只在扫描结果里被备注过，从未入库。
+   建库时它们若不在当时的关联结果里就不会被带入，这里给一次性归库的入口。 */
+async function adoptNoteOnlyRows(idList, button) {
+  const ids = String(idList || "").split(",").map((v) => v.trim()).filter(Boolean);
+  if (!ids.length) return;
+  const target = window.prompt(
+    `把选中的 ${ids.length} 个地址归入哪个地址库？\n\n填已有库名（如 DSV），或输入一个新名字来新建。`,
+    ""
+  );
+  if (target === null) return;
+  const name = String(target).trim();
+  if (!name) { toast("地址库名称不能为空。", true); return; }
+  button.disabled = true;
+  try {
+    const result = await api("/api/library/note-only-adopt", {
+      method: "POST",
+      body: JSON.stringify({ ids: ids.map(Number), book: name }),
+    });
+    const parts = [`归入 ${result.adopted} 个`];
+    if (result.skipped) parts.push(`跳过 ${result.skipped} 个（已是系统角色或已在别的库）`);
+    toast(`已把 ${parts.join("，")} 归入地址库「${result.book}」。`, false);
+    await loadLibrary();
+  } catch (error) {
+    toast(`归入地址库失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -4329,6 +4364,8 @@ document.addEventListener("click", (event) => {
   if (historySync) syncHistoryRecord(historySync.dataset.historySync);
   const historyDelete = event.target.closest("[data-history-delete]");
   if (historyDelete) deleteHistoryRecord(historyDelete.dataset.historyDelete);
+  const adopt = event.target.closest("[data-note-only-adopt]");
+  if (adopt) adoptNoteOnlyRows(adopt.dataset.noteOnlyAdopt, adopt);
   const bookView = event.target.closest("[data-book-view]");
   if (bookView) selectBook(bookView.dataset.bookView);
   const bookExport = event.target.closest("[data-book-export]");

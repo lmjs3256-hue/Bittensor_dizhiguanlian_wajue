@@ -2814,6 +2814,61 @@ class LinkService:
         items.sort(key=lambda item: (item["created_at"] or "", item["name"]), reverse=True)
         return items
 
+    def adopt_note_only(self, ids: list[int], book: str) -> dict[str, Any]:
+        """把「仅备注」的地址归入地址库（已有库或新建）。
+
+        这些地址只是在扫描结果里被写过备注，从未入过库。新建地址库时如果它们
+        不在当时的关联结果里就不会被带入——这不是 bug，但用户会以为"备注了
+        就该跟着进库"，所以给一个显式的归库入口。
+
+        只处理 ``is_note_only_row()`` 为真的行：已经在别的库的、已经是系统
+        角色（交易所/验证者/公共地址）的一律跳过，不抢别人的归属。
+        """
+
+        book_name = self._clean_book_name(book)
+        wanted = [int(value) for value in (ids or []) if str(value).strip()]
+        if not wanted:
+            raise InputError("没有选中要归库的地址")
+        with self.database.session() as db:
+            rows = db.scalars(
+                select(AddressLibrary).where(AddressLibrary.id.in_(wanted))
+            ).all()
+            adopted = skipped = 0
+            moved: list[dict[str, Any]] = []
+            for row in rows:
+                if not is_note_only_row(row):
+                    skipped += 1
+                    continue
+                moved.append({"address": row.address, "snapshot": _library_row_snapshot(row)})
+                row.book = book_name
+                # 库名进 label（与 create_address_book 一致），这样它在清单里
+                # 就以库名成组；备注与分类保持不动。
+                row.label = book_name
+                adopted += 1
+            if not adopted:
+                raise InputError("选中的地址都已归入别的库，或属于系统角色，无需处理")
+            registry = db.scalar(select(AddressBook).where(AddressBook.name == book_name))
+            if registry is None:
+                registry = AddressBook(name=book_name, note="由「仅备注」地址归入")
+                db.add(registry)
+            db.flush()
+            _record_import_batch(
+                db,
+                kind="book",
+                summary=f"「仅备注」地址归入「{book_name}」· {adopted} 个",
+                inserted=[],
+                updated=moved,
+                created_book=book_name if registry else None,
+            )
+            db.flush()
+            payload = {
+                "book": book_name,
+                "adopted": adopted,
+                "skipped": skipped,
+                "items": [row.address for row in rows if is_note_only_row(row) is False],
+            }
+        return payload
+
     def create_address_book(
         self,
         *,

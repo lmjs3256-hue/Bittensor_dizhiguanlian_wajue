@@ -1251,6 +1251,28 @@ def mark_validator_address(
         raise HTTPException(422, str(exc)) from exc
 
 
+class NoteOnlyAdoptInput(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+    book: str = Field(default="", max_length=80)
+
+
+@app.post("/api/library/note-only-adopt")
+def adopt_note_only(
+    payload: NoteOnlyAdoptInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """把「仅备注」的地址归入地址库（已有库或新建）。
+
+    这些地址只写过备注、从未入库；建库时若不在当时的关联结果里就不会被
+    自动带入，这里给一个显式的归库入口。
+    """
+
+    try:
+        return svc.adopt_note_only(payload.ids, payload.book)
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @app.post("/api/library/reconcile")
 def reconcile_history(
     payload: ReconcileInput,

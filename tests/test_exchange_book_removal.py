@@ -629,3 +629,72 @@ def test_three_terminating_roles_share_the_same_behaviour():
         assert book == "", f"{kind} 应移出库"
         assert books_left is False, f"{kind} 的库搬空后台账应清理"
         assert label, f"{kind} 应有结论性标签"
+
+
+def test_note_only_rows_import_into_new_book_with_notes_kept():
+    """备注过的地址在建库时能正常进新库，备注保留（用户关心的主路径）。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            for address, note in ((A, "中转地址"), (B, "币安中转地址")):
+                service.save_note(address, note)
+            assert all(row["note_only"] for row in service.library())
+
+            result = service.create_address_book(
+                name="DSV2", seed="", addresses=[A, B], include_seed=False, category="群友"
+            )
+
+            assert result["attached"] == 2, "已备注的地址应在建库时被归入"
+            rows = {row["address"]: row for row in service.library()}
+            assert all(rows[a]["book"] == "DSV2" for a in (A, B))
+            assert all(rows[a]["note_only"] is False for a in (A, B))
+            assert rows[A]["note"] == "中转地址"
+            assert rows[B]["note"] == "币安中转地址"
+        finally:
+            database.engine.dispose()
+
+
+def test_adopt_note_only_into_existing_book():
+    """「仅备注」组的一键归库：归进已有库，备注保留。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.create_address_book(name="DSV", seed=C, addresses=[], category="群友")
+            service.save_note(A, "中转地址")
+            ids = [row["id"] for row in service.library() if row["note_only"]]
+            assert len(ids) == 1
+
+            result = service.adopt_note_only(ids, "DSV")
+
+            assert result["adopted"] == 1
+            row = next(item for item in service.library() if item["address"] == A)
+            assert row["book"] == "DSV"
+            assert row["note"] == "中转地址"
+            assert row["note_only"] is False
+            counts = {book["name"]: book["count"] for book in service.address_books()}
+            assert counts["DSV"] == 2
+        finally:
+            database.engine.dispose()
+
+
+def test_adopt_note_only_skips_system_roles():
+    """系统角色（交易所/验证者/公共地址）不该被这个入口抢进用户库。"""
+
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.save_note(A, "先写个备注")
+            service.decide_public_address(A, True)
+            ids = [row["id"] for row in service.library()]
+            try:
+                service.adopt_note_only(ids, "DSV")
+            except Exception as exc:  # InputError：没有可归库的
+                assert "无需处理" in str(exc) or "都已归入别的库" in str(exc)
+            else:
+                raise AssertionError("系统角色不该被归入用户地址库")
+            row = next(item for item in service.library() if item["address"] == A)
+            assert "PUBLIC" in row["categories"]
+        finally:
+            database.engine.dispose()
