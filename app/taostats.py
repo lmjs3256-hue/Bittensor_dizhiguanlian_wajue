@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
@@ -24,6 +25,17 @@ CACHE_TTL_SECONDS = 300
 
 
 def is_configured() -> bool:
+    """有没有可用的 key。
+
+    池非空也算已配置——只跑池、不设单 key 兼容字段的场景（测试、脚本直接
+    调 set_key_pool）必须能通过这道判断，否则会在接口层被误拦成"未配置"。
+    """
+
+    with _lock:
+        # 用 globals() 取：这个函数定义在池声明之前，模块导入期间若被调用
+        # 直接写 _key_pool 会 NameError。
+        if globals().get("_key_pool"):
+            return True
     return bool(_configured_api_key())
 
 
@@ -97,6 +109,174 @@ _profile_cache: dict[str, tuple[float, AccountProfile]] = {}
 _stake_total_cache: dict[str, tuple[float, int]] = {}
 _key_override: str | None = None
 _key_override_active = False
+
+
+# -- API key 池 -----------------------------------------------------------------
+#
+# 多人同时用会互相挤：限速器原先是**一个全局 deque**，所有人共用 5 次/分钟的
+# 窗口，先到的人占满、后到的人直接吃 429。多把 key 是唯一能线性扩容的办法。
+#
+# 池化调度的规则（用户 2026-11-08 选定）：
+#   - 每把 key **各自**算 5 次/分钟的滑动窗口（服务端也是按 key 计的）；
+#   - 选"当前可用额度最多"的那把；并列时按轮转，避免总压在第一把上；
+#   - 某把 key 被服务端 429 / 401 时**临时休息**（429 冷却 60 秒、401 冷却
+#     10 分钟），期间不再选它，剩下的 key 继续干活；
+#   - 全部都在冷却时，按最早恢复的那把等——报错交给调用方，不做静默重试。
+#
+# 为什么按 key 分别记窗口而不是全局：全局窗口在单 key 时是对的，多 key 时会把
+# 不同 key 的额度混在一起算，等于多买了几把 key 却只用到一把的量。
+
+_KEY_COOLDOWN_RATE_LIMIT = 60.0
+_KEY_COOLDOWN_AUTH = 600.0
+
+
+@dataclass
+class KeyState:
+    """一把 key 的运行时状态。
+
+    ``secret`` 只留在内存，绝不写日志、绝不回显给前端——页面上只显示
+    ``label`` 和 ``masked``（尾四位）。
+    """
+
+    key_id: str
+    secret: str
+    label: str = ""
+    _times: deque = field(default_factory=deque)
+    cooldown_until: float = 0.0
+    last_error: str = ""
+    requests_total: int = 0
+
+    @property
+    def masked(self) -> str:
+        text = self.secret or ""
+        if len(text) <= 4:
+            return "****"
+        return f"****{text[-4:]}"
+
+    def used_in_window(self, now: float) -> int:
+        while self._times and now - self._times[0] >= 60:
+            self._times.popleft()
+        return len(self._times)
+
+    def remaining(self, now: float, limit: int = LOCAL_REQUESTS_PER_MINUTE) -> int:
+        if now < self.cooldown_until:
+            return -1  # 冷却中，视为不可用
+        return max(0, limit - self.used_in_window(now))
+
+    def reserve(self, now: float, limit: int = LOCAL_REQUESTS_PER_MINUTE) -> None:
+        self._times.append(now)
+        self.requests_total += 1
+
+
+_key_pool: list[KeyState] = []
+_key_cursor = 0
+
+
+def _key_fingerprint(secret: str) -> str:
+    """给 key 生成稳定短 id，用于日志与配置引用（不回显明文）。"""
+
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:10]
+
+
+def set_key_pool(entries: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """设置 key 池。``entries`` 形如 ``[{"key": "...", "label": "主号"}]``。
+
+    保留已有 key 的运行时状态（窗口计数、冷却），只增删差异——否则每次保存
+    设置都会把刚建立的冷却和计数清空，等于给被限流的 key 立刻复活。
+    """
+
+    global _key_pool
+    prepared: list[KeyState] = []
+    existing = {state.key_id: state for state in _key_pool}
+    seen: set[str] = set()
+    for item in entries or []:
+        secret = str((item or {}).get("key") or "").strip()
+        if not secret:
+            continue
+        key_id = _key_fingerprint(secret)
+        if key_id in seen:
+            continue  # 同一把 key 填两次，只算一次
+        seen.add(key_id)
+        state = existing.get(key_id)
+        if state is None:
+            state = KeyState(key_id=key_id, secret=secret)
+        state.label = str((item or {}).get("label") or "").strip()
+        prepared.append(state)
+    with _lock:
+        _key_pool = prepared
+    return key_pool_status()
+
+
+def key_pool_status() -> list[dict[str, Any]]:
+    """给诊断接口/页面用的池状态（不含明文）。"""
+
+    now = time.monotonic()
+    with _lock:
+        snapshot = list(_key_pool)
+    items = []
+    for state in snapshot:
+        remaining = state.remaining(now)
+        items.append(
+            {
+                "id": state.key_id,
+                "label": state.label,
+                "masked": state.masked,
+                "remaining": max(0, remaining),
+                "cooldown_seconds": max(0, int(state.cooldown_until - now)),
+                "requests_total": state.requests_total,
+                "last_error": state.last_error,
+            }
+        )
+    return items
+
+
+def _pick_key(now: float) -> KeyState | None:
+    """挑一把当前可用额度最多的 key（并列按轮转）。"""
+
+    global _key_cursor
+    with _lock:
+        pool = list(_key_pool)
+    if not pool:
+        return None
+    best: KeyState | None = None
+    best_remaining = -1
+    # 从游标开始扫一圈，确保并列时不会总压在第一把上。
+    start = _key_cursor % len(pool)
+    for offset in range(len(pool)):
+        state = pool[(start + offset) % len(pool)]
+        remaining = state.remaining(now)
+        if remaining <= 0:
+            continue
+        if remaining > best_remaining:
+            best = state
+            best_remaining = remaining
+            _key_cursor = (start + offset + 1) % len(pool)
+    return best
+
+
+def _note_key_failure(key_id: str, exc: Exception) -> None:
+    """记一次失败：限流冷却 60 秒，鉴权失败冷却 10 分钟。"""
+
+    now = time.monotonic()
+    with _lock:
+        for state in _key_pool:
+            if state.key_id != key_id:
+                continue
+            if isinstance(exc, TaostatsAuthError):
+                state.cooldown_until = now + _KEY_COOLDOWN_AUTH
+            else:
+                state.cooldown_until = now + _KEY_COOLDOWN_RATE_LIMIT
+            state.last_error = f"{type(exc).__name__}: {exc}"[:160]
+            break
+
+
+def reset_key_pool_for_tests() -> None:
+    """清空池（测试用）。"""
+
+    global _key_pool, _key_cursor
+    with _lock:
+        _key_pool = []
+        _key_cursor = 0
 
 
 # -- 出站代理 -----------------------------------------------------------------
@@ -372,12 +552,11 @@ def get_active_validator_addresses() -> tuple[set[str], bool]:
         if _validator_cache and now - _validator_cache[0] < CACHE_TTL_SECONDS:
             return set(_validator_cache[1]), True
 
-    api_key = _configured_api_key()
+    key_id, api_key = _acquire_key()
     if not api_key:
         raise TaostatsAuthError(
             "未配置 Taostats API key，无法自动读取验证者名单。"
         )
-    _reserve_request()
     try:
         response = _request_get(VALIDATORS_ACTIVE_URL, api_key=api_key)
     except httpx.HTTPError as exc:
@@ -385,12 +564,18 @@ def get_active_validator_addresses() -> tuple[set[str], bool]:
             f"Taostats 验证者名单请求失败：{exc}", request_made=True
         ) from exc
     if response.status_code in {401, 403}:
+        _record_key_failure(
+            key_id, TaostatsAuthError("key 无效", status_code=response.status_code)
+        )
         raise TaostatsAuthError(
             "Taostats API key 无效或没有访问权限。",
             request_made=True,
             status_code=response.status_code,
         )
     if response.status_code == 429:
+        _record_key_failure(
+            key_id, TaostatsRateLimitError("429", status_code=response.status_code)
+        )
         raise TaostatsRateLimitError(
             "Taostats 返回限流，请稍后重试。",
             request_made=True,
@@ -443,12 +628,11 @@ def get_exchange_addresses() -> tuple[list[dict[str, str]], bool]:
         if _exchange_cache and now - _exchange_cache[0] < CACHE_TTL_SECONDS:
             return [dict(row) for row in _exchange_cache[1]], True
 
-    api_key = _configured_api_key()
+    key_id, api_key = _acquire_key()
     if not api_key:
         raise TaostatsAuthError(
             "未配置 Taostats API key，无法同步交易所地址。"
         )
-    _reserve_request()
     try:
         response = _request_get(EXCHANGE_ADDRESSES_URL, api_key=api_key)
     except httpx.HTTPError as exc:
@@ -456,12 +640,18 @@ def get_exchange_addresses() -> tuple[list[dict[str, str]], bool]:
             f"Taostats 交易所地址请求失败：{exc}", request_made=True
         ) from exc
     if response.status_code in {401, 403}:
+        _record_key_failure(
+            key_id, TaostatsAuthError("key 无效", status_code=response.status_code)
+        )
         raise TaostatsAuthError(
             "Taostats API key 无效或没有访问权限。",
             request_made=True,
             status_code=response.status_code,
         )
     if response.status_code == 429:
+        _record_key_failure(
+            key_id, TaostatsRateLimitError("429", status_code=response.status_code)
+        )
         raise TaostatsRateLimitError(
             "Taostats 返回限流，请稍后重试。",
             request_made=True,
@@ -552,16 +742,54 @@ def _request_get(
     raise last_error
 
 
-def _reserve_request() -> None:
+def _acquire_key() -> tuple[str, str]:
+    """取一把可用 key，返回 ``(key_id, secret)``。
+
+    走 key 池时按「各自剩余额度最多 + 轮转」挑；池为空则回退到单 key 的
+    老逻辑（`_configured_api_key` + 全局窗口），保证单 key 用法完全不变。
+
+    全部 key 都在冷却时直接报限流——用户已明确选择"不排队、直接提示"，
+    静默等待会让页面看起来像卡死。
+    """
+
     now = time.monotonic()
     with _lock:
-        while _request_times and now - _request_times[0] >= 60:
-            _request_times.popleft()
-        if len(_request_times) >= LOCAL_REQUESTS_PER_MINUTE:
-            raise TaostatsRateLimitError(
-                "Taostats 本地保护限速为 5 次/分钟，请稍后重试。"
-            )
-        _request_times.append(now)
+        has_pool = bool(_key_pool)
+    if not has_pool:
+        # 单 key 老路径：保持原来的窗口与文案，别改坏现有行为。
+        with _lock:
+            while _request_times and now - _request_times[0] >= 60:
+                _request_times.popleft()
+            if len(_request_times) >= LOCAL_REQUESTS_PER_MINUTE:
+                raise TaostatsRateLimitError(
+                    "Taostats 本地保护限速为 5 次/分钟，请稍后重试。"
+                )
+            _request_times.append(now)
+        return "", _configured_api_key()
+
+    state = _pick_key(now)
+    if state is None:
+        # 全都在冷却：把最早恢复的那把报给用户，比一句"请稍后"有用。
+        with _lock:
+            pool = list(_key_pool)
+        soonest = min(pool, key=lambda s: s.cooldown_until) if pool else None
+        wait = max(1, int(soonest.cooldown_until - now)) if soonest else 60
+        raise TaostatsRateLimitError(
+            f"所有 Taostats API key 都在冷却中，最早 {wait} 秒后恢复，请稍后重试。"
+        )
+    state.reserve(now)
+    return state.key_id, state.secret
+
+
+def _reserve_request() -> None:
+    """旧接口：只抢额度不要 key（保留给不需要 key 的调用方与测试）。"""
+
+    _acquire_key()
+
+
+def _record_key_failure(key_id: str, exc: Exception) -> None:
+    if key_id:
+        _note_key_failure(key_id, exc)
 
 
 def get_transfer_page(address: str, page: int = 1) -> TransferPage:
@@ -601,7 +829,7 @@ def get_transfer_page_query(
         if cached:
             _cache.pop(key, None)
 
-    api_key = _configured_api_key()
+    key_id, api_key = _acquire_key()
     if not api_key:
         raise TaostatsAuthError(
             "未配置 Taostats API key。请在页面中的 Taostats 设置里填写并保存。"
@@ -615,7 +843,6 @@ def get_transfer_page_query(
     if to_address:
         params["to"] = to_address
 
-    _reserve_request()
     try:
         response = _request_get(API_URL, api_key=api_key, params=params)
     except httpx.HTTPError as exc:
@@ -624,12 +851,18 @@ def get_transfer_page_query(
         ) from exc
 
     if response.status_code in {401, 403}:
+        _record_key_failure(
+            key_id, TaostatsAuthError("key 无效", status_code=response.status_code)
+        )
         raise TaostatsAuthError(
             "Taostats API key 无效或没有访问权限。",
             request_made=True,
             status_code=response.status_code,
         )
     if response.status_code == 429:
+        _record_key_failure(
+            key_id, TaostatsRateLimitError("429", status_code=response.status_code)
+        )
         raise TaostatsRateLimitError(
             "Taostats 返回限流，请稍后重试。",
             request_made=True,
@@ -699,13 +932,11 @@ def get_stake_transfer_page(address: str, page: int = 1) -> TransferPage:
         if cached:
             _stake_cache.pop(key, None)
 
-    api_key = _configured_api_key()
+    key_id, api_key = _acquire_key()
     if not api_key:
         raise TaostatsAuthError(
             "未配置 Taostats API key。请在页面中的 Taostats 设置里填写并保存。"
         )
-
-    _reserve_request()
     try:
         response = _request_get(
             STAKE_EVENTS_URL,
@@ -723,12 +954,18 @@ def get_stake_transfer_page(address: str, page: int = 1) -> TransferPage:
         ) from exc
 
     if response.status_code in {401, 403}:
+        _record_key_failure(
+            key_id, TaostatsAuthError("key 无效", status_code=response.status_code)
+        )
         raise TaostatsAuthError(
             "Taostats API key 无效或没有访问权限。",
             request_made=True,
             status_code=response.status_code,
         )
     if response.status_code == 429:
+        _record_key_failure(
+            key_id, TaostatsRateLimitError("429", status_code=response.status_code)
+        )
         raise TaostatsRateLimitError(
             "Taostats 返回限流，请稍后重试。",
             request_made=True,
@@ -788,11 +1025,9 @@ def get_account_profile(address: str) -> AccountProfile:
         if cached:
             _profile_cache.pop(address, None)
 
-    api_key = _configured_api_key()
+    key_id, api_key = _acquire_key()
     if not api_key:
         raise TaostatsAuthError("未配置 Taostats API key。")
-
-    _reserve_request()
     try:
         response = _request_get(
             ACCOUNT_LATEST_URL,
@@ -805,12 +1040,18 @@ def get_account_profile(address: str) -> AccountProfile:
         ) from exc
 
     if response.status_code in {401, 403}:
+        _record_key_failure(
+            key_id, TaostatsAuthError("key 无效", status_code=response.status_code)
+        )
         raise TaostatsAuthError(
             "Taostats API key 无效或没有访问权限。",
             request_made=True,
             status_code=response.status_code,
         )
     if response.status_code == 429:
+        _record_key_failure(
+            key_id, TaostatsRateLimitError("429", status_code=response.status_code)
+        )
         raise TaostatsRateLimitError(
             "Taostats 返回限流，请稍后重试。",
             request_made=True,
@@ -881,13 +1122,11 @@ def get_stake_event_total(address: str) -> tuple[int, bool]:
         if cached:
             _stake_total_cache.pop(key, None)
 
-    api_key = _configured_api_key()
+    key_id, api_key = _acquire_key()
     if not api_key:
         raise TaostatsAuthError(
             "未配置 Taostats API key。请在页面中的 Taostats 设置里填写并保存。"
         )
-
-    _reserve_request()
     try:
         response = _request_get(
             STAKE_EVENTS_URL,
@@ -900,12 +1139,18 @@ def get_stake_event_total(address: str) -> tuple[int, bool]:
         ) from exc
 
     if response.status_code in {401, 403}:
+        _record_key_failure(
+            key_id, TaostatsAuthError("key 无效", status_code=response.status_code)
+        )
         raise TaostatsAuthError(
             "Taostats API key 无效或没有访问权限。",
             request_made=True,
             status_code=response.status_code,
         )
     if response.status_code == 429:
+        _record_key_failure(
+            key_id, TaostatsRateLimitError("429", status_code=response.status_code)
+        )
         raise TaostatsRateLimitError(
             "Taostats 返回限流，请稍后重试。",
             request_made=True,

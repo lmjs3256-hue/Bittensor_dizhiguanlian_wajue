@@ -90,6 +90,9 @@ def test_transfer_client_requires_key_and_obeys_local_rate_guard(monkeypatch):
 
     monkeypatch.setenv("TAOSTATS_API_KEY", "test-secret")
     calls = 0
+    # 这个用例要精确验证"第 6 次被拦"，就必须从满额开始。
+    # 前面用例可能已经用掉本进程的额度窗口，这里显式清空。
+    taostats._request_times.clear()
 
     def fake_get(_url, **_kwargs):
         nonlocal calls

@@ -363,3 +363,125 @@ def save_access_token(token: str) -> bool:
     data["version"] = 1
     data[_ACCESS_TOKEN_FIELD] = value
     return _write(data)
+
+
+# -- 多把 API key（key 池）--------------------------------------------------
+#
+# 单把 key 时，5 次/分钟的额度是硬上限，多人同时查会互相挤（先到的人占满、
+# 后到的人直接 429）。多把 key 是唯一能线性扩容的办法。
+#
+# 存储形态：`settings.json` 的 `taostats_api_keys` 是一个数组，每项
+# `{"enc": "dpapi"|"plain", "data": "<base64>", "label": "主号"}`。
+# 每把 key **独立加密**，而不是把整个数组序列化后加密一次——这样将来要
+# 单独删掉某一把时，不用解开全部再重新加密。
+#
+# 老字段 `taostats_api_key`（单个 key）保持兼容：读的时候如果新字段为空，
+# 就把老字段当成池里唯一那把，用户升级后不用重新填。
+
+_KEYS_FIELD = "taostats_api_keys"
+
+
+def _encode_secret(secret: str) -> dict[str, str]:
+    protected = _dpapi_protect(secret.encode("utf-8"))
+    if protected is not None:
+        return {"enc": "dpapi", "data": base64.b64encode(protected).decode("ascii")}
+    return {"enc": "plain", "data": base64.b64encode(secret.encode("utf-8")).decode("ascii")}
+
+
+def _decode_secret(record: Any) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    raw = record.get("data")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        blob = base64.b64decode(raw.encode("ascii"), validate=True)
+    except (ValueError, UnicodeEncodeError):
+        return None
+    if record.get("enc") == "dpapi":
+        plain = _dpapi_unprotect(blob)
+        if plain is None:
+            return None
+        try:
+            return plain.decode("utf-8") or None
+        except UnicodeDecodeError:
+            return None
+    try:
+        return blob.decode("utf-8") or None
+    except UnicodeDecodeError:
+        return None
+
+
+def save_api_keys(entries: list[dict[str, str]]) -> str:
+    """保存 key 池。``entries`` 形如 ``[{"key": "...", "label": "主号"}]``。
+
+    返回存储方式：有任一把用了明文就是 ``plain``，全加密是 ``dpapi``，
+    什么都没存是 ``none``。
+    """
+
+    records: list[dict[str, str]] = []
+    encs: set[str] = set()
+    for item in entries or []:
+        secret = str((item or {}).get("key") or "").strip()
+        if not secret:
+            continue
+        record = _encode_secret(secret)
+        record["label"] = str((item or {}).get("label") or "").strip()[:40]
+        records.append(record)
+        encs.add(record["enc"])
+    data = _read()
+    data["version"] = 1
+    if records:
+        data[_KEYS_FIELD] = records
+    else:
+        data.pop(_KEYS_FIELD, None)
+    # 同步老字段：让只认单个 key 的旧代码（导出、诊断）仍能工作。
+    if records:
+        data[_SECRET_FIELD] = {
+            "enc": records[0]["enc"],
+            "data": records[0]["data"],
+        }
+    else:
+        data.pop(_SECRET_FIELD, None)
+    if not _write(data):
+        return "none"
+    if not records:
+        return "none"
+    return "plain" if "plain" in encs else "dpapi"
+
+
+def load_api_keys() -> list[dict[str, str]]:
+    """读出 key 池，返回 ``[{"key": "...", "label": "..."}]``。
+
+    新字段为空时回退到老的单 key 字段——升级用户不会突然"没配置 key"。
+    """
+
+    records = _read().get(_KEYS_FIELD)
+    result: list[dict[str, str]] = []
+    if isinstance(records, list):
+        for record in records:
+            secret = _decode_secret(record)
+            if not secret:
+                continue
+            label = ""
+            if isinstance(record, dict):
+                label = str(record.get("label") or "").strip()
+            result.append({"key": secret, "label": label})
+    if result:
+        return result
+    single = load_api_key()
+    if single:
+        return [{"key": single, "label": ""}]
+    return []
+
+
+def api_keys_storage_kind() -> str:
+    """key 池的存储方式（诊断用）。"""
+
+    records = _read().get(_KEYS_FIELD)
+    if not isinstance(records, list) or not records:
+        return storage_kind()
+    encs = {str(r.get("enc")) for r in records if isinstance(r, dict)}
+    if "plain" in encs:
+        return "plain"
+    return "dpapi" if "dpapi" in encs else ""

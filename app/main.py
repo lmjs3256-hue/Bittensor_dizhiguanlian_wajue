@@ -98,7 +98,14 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:  # noqa: BLE001 - 内置名单写入失败不应拦住服务启动
         print(f"[builtin] 内置固定名单写入失败：{exc}", file=sys.stderr)
     # 上次保存过 Taostats key 就自动装回内存，避免每次重启都要重填。
-    if not taostats_is_configured():
+    # 多把 key 时先装池：池里第一把同时充当「单 key 兼容路径」的那一把，
+    # 这样诊断、导出等只认单个 key 的地方行为不变。
+    saved_keys = settings_store.load_api_keys()
+    if saved_keys:
+        taostats.set_key_pool(saved_keys)
+        if not taostats_is_configured():
+            configure_taostats_api_key(saved_keys[0]["key"])
+    elif not taostats_is_configured():
         saved_key = settings_store.load_api_key()
         if saved_key:
             configure_taostats_api_key(saved_key)
@@ -799,6 +806,87 @@ def delete_taostats_key():
     clear_taostats_api_key()
     settings_store.clear_api_key()
     return {"configured": False, "storage": ""}
+
+
+# -- Taostats API key 池（多把 key）----------------------------------------
+#
+# 单把 key 时每分钟只有 5 次额度，多人同时查会互相挤——先到的人占满窗口，
+# 后到的人直接吃 429。多把 key 是唯一能线性扩容的办法：每把各自 5 次/分钟，
+# 池子按「剩余额度最多 + 轮转」调度。详见 app/taostats.py 的 key 池注释。
+
+
+class ApiKeyEntry(BaseModel):
+    key: str = Field(default="", max_length=1024)
+    label: str = Field(default="", max_length=40)
+    # 已保存过的 key 用 id 引用（服务端从不回显明文，前端拿不到原文）。
+    # 新加的 key 才带 key 字段。
+    id: str = Field(default="", max_length=32)
+
+
+class ApiKeyPoolInput(BaseModel):
+    keys: list[ApiKeyEntry] = Field(default_factory=list, max_length=20)
+
+
+@app.get("/api/settings/taostats/keys")
+def get_taostats_keys():
+    """当前 key 池状态。**永不回显明文**，只给尾四位、剩余额度和冷却时间。"""
+
+    return {
+        "items": taostats.key_pool_status(),
+        "storage": settings_store.api_keys_storage_kind(),
+        "configured": taostats_is_configured(),
+        # 每把 key 各自的每分钟额度，前端据此算"池子总容量"。
+        "per_key_rate": taostats.LOCAL_REQUESTS_PER_MINUTE,
+    }
+
+
+@app.post("/api/settings/taostats/keys")
+def save_taostats_keys(payload: ApiKeyPoolInput):
+    """整体替换 key 池。
+
+    整体替换而不是逐条增删：页面上就是一张表，用户改完点保存，服务端照单
+    全收。已存在的 key 会保留运行时状态（窗口计数与冷却），所以重复保存
+    不会把刚被限流的 key 立刻"复活"。
+
+    **已保存的 key 前端拿不到明文**（服务端从不回显），所以它们按 ``id``
+    引用；只有新加的那几把才带 ``key`` 字段。``id`` 对不上任何现存 key 时
+    直接忽略——宁可少存，也不能凭空造出一把空 key。
+    """
+
+    existing = {item["id"]: item for item in taostats.key_pool_status()}
+    # 明文只在服务端内存里有；按 id 从这里取回，避免让明文穿过浏览器。
+    secrets_by_id = {state.key_id: state.secret for state in taostats._key_pool}
+
+    entries: list[dict[str, str]] = []
+    for item in payload.keys:
+        label = item.label.strip()
+        if item.key.strip():
+            entries.append({"key": item.key.strip(), "label": label})
+            continue
+        if item.id and item.id in secrets_by_id:
+            entries.append({"key": secrets_by_id[item.id], "label": label or existing[item.id].get("label", "")})
+        # id 无效且没有明文：跳过，不报错（前端可能传了过期状态）
+
+    if len(entries) > 20:
+        raise HTTPException(422, "最多支持 20 把 API key")
+    for item in entries:
+        if len(item["key"]) > 1024:
+            raise HTTPException(422, "API key 不得超过 1024 个字符")
+
+    storage = settings_store.save_api_keys(entries)
+    taostats.set_key_pool(entries)
+    # 池里第一把同时作为「单 key 兼容路径」的那一把：诊断、导出等只认单个
+    # key 的地方行为不变；池被清空时退回未配置。
+    if entries:
+        configure_taostats_api_key(entries[0]["key"])
+    else:
+        clear_taostats_api_key()
+    return {
+        "saved": True,
+        "storage": storage,
+        "items": taostats.key_pool_status(),
+        "configured": taostats_is_configured(),
+    }
 
 
 @app.get("/api/settings/scan-thresholds")

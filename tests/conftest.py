@@ -34,6 +34,12 @@ def _license_gate_open(monkeypatch, tmp_path):
     from app import taostats
 
     taostats.clear_api_key()
+    # key 池与冷却状态也是进程级全局：不清会让上一条用例留下的冷却把下一条
+    # 用例拦在「所有 key 都在冷却中」，报错还指向完全无关的地方。
+    taostats.reset_key_pool_for_tests()
+    taostats._request_times.clear()
     yield
     taostats.clear_api_key()
+    taostats.reset_key_pool_for_tests()
+    taostats._request_times.clear()
 

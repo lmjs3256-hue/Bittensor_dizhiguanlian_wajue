@@ -21,6 +21,9 @@ const state = {
   taostatsConfigured: null,
   taostatsKeyStorage: "",
   apiKeyBodyOpen: false,
+  // Taostats key 池：已保存的项只有 id/masked/剩余额度，新加的项带 _new + 明文。
+  keyPool: [],
+  keyPoolPerKey: 5,
   // 手动「移除关联」的地址：本次会话内刷新重查时作为 removed_addresses 传给后端，
   // 这些地址及其线索的下游都不会再出现。新查询（非刷新）会清空。
   removedAddresses: new Set(),
@@ -242,14 +245,18 @@ function showTaostatsKeyStatus(configured, storage) {
   if (typeof configured !== "boolean") {
     status.textContent = "后台版本较旧；请重启服务后设置 API key";
     detail.textContent = "设置 API key 前请先更新并重启服务。";
-    $("#clear-taostats-key").disabled = true;
     state.taostatsConfigured = null;
     setApiKeyBody(true);
     return;
   }
   state.taostatsConfigured = configured;
   state.taostatsKeyStorage = storage || state.taostatsKeyStorage || "";
-  status.textContent = configured ? "API key 已配置" : "尚未设置 API key（无法使用 Taostats 查询）";
+  const count = state.keyPool.length;
+  if (configured && count > 1) {
+    status.textContent = `API key 已配置（${count} 把，合计 ${count * 5} 次/分钟）`;
+  } else {
+    status.textContent = configured ? "API key 已配置" : "尚未设置 API key（无法使用 Taostats 查询）";
+  }
   status.classList.toggle("warn-text", !configured);
   if (!configured) {
     detail.textContent = "勾选「使用 Taostats 历史索引」前必须先保存 key，否则查询会被拒绝。";
@@ -260,8 +267,121 @@ function showTaostatsKeyStatus(configured, storage) {
   } else {
     detail.textContent = "key 只存在当前进程内存：服务重启后需要重新输入。";
   }
-  $("#clear-taostats-key").disabled = !configured;
   setApiKeyBody(!configured);
+  renderKeyPool();
+}
+
+/* -- Taostats key 池 --------------------------------------------------------
+   多人同时查会互相挤：单把 key 每分钟只有 5 次额度，先到的人占满、后到的人
+   直接吃 429。多把 key 各占一份额度，池子按「剩余额度最多」调度。
+
+   页面上的池是**整体替换**的语义：本地编辑完点「保存全部 key」，服务端照单
+   全收。已存在的 key 在服务端会保留运行时状态（窗口计数、冷却）。 */
+function renderKeyPool() {
+  const list = $("#keypool-list");
+  const capacity = $("#keypool-capacity");
+  if (!list) return;
+  const items = state.keyPool;
+  if (capacity) {
+    const perKey = state.keyPoolPerKey || 5;
+    capacity.textContent = items.length
+      ? `${items.length} 把 · 合计 ${items.length * perKey} 次/分钟`
+      : "还没有 key";
+  }
+  if (!items.length) {
+    list.innerHTML = '<div class="keypool-empty">还没有配置 key。粘贴一把到下面，点「添加」，再点「保存全部 key」。</div>';
+    return;
+  }
+  list.innerHTML = items
+    .map((item, index) => {
+      // 服务端只给尾四位和运行状态；`_new` 表示这把是页面上刚粘贴、还没保存的。
+      const masked = item._new ? "待保存（未验证）" : esc(item.masked || "****");
+      const label = esc(item.label || "未命名");
+      const cooling = Number(item.cooldown_seconds || 0);
+      const remain = item._new ? "-" : `${item.remaining}/${state.keyPoolPerKey || 5}`;
+      const tone = cooling > 0 ? "warn" : item._new ? "muted" : "";
+      const note = cooling > 0
+        ? `冷却中 ${cooling} 秒${item.last_error ? ` · ${esc(item.last_error)}` : ""}`
+        : item._new
+          ? "保存后才会计入额度"
+          : `本分钟剩余 ${remain}`;
+      return `<div class="keypool-row${tone ? " " + tone : ""}">
+        <span class="keypool-label">${label}</span>
+        <code class="keypool-mask">${masked}</code>
+        <span class="keypool-usage">${note}</span>
+        <button class="ghost keypool-remove" type="button" data-keypool-remove="${index}" title="从列表移除（点「保存全部 key」后生效）">移除</button>
+      </div>`;
+    })
+    .join("");
+}
+
+function addKeyPoolEntry() {
+  const keyInput = $("#keypool-new-key");
+  const labelInput = $("#keypool-new-label");
+  const secret = String(keyInput?.value || "").trim();
+  if (!secret) {
+    toast("先粘贴 API key。", true);
+    keyInput?.focus();
+    return;
+  }
+  if (state.keyPool.some((item) => item._new && item.key === secret)) {
+    toast("这把 key 已经在列表里了。", true);
+    return;
+  }
+  state.keyPool.push({
+    _new: true,
+    key: secret,
+    label: String(labelInput?.value || "").trim(),
+    masked: `****${secret.slice(-4)}`,
+  });
+  if (keyInput) keyInput.value = "";
+  if (labelInput) labelInput.value = "";
+  renderKeyPool();
+}
+
+async function saveKeyPool(button) {
+  if (button) button.disabled = true;
+  try {
+    // 已保存的 key 服务端不会再给明文，所以不能回传 key 本身——只能用 id
+    // 标记"保留这一把"，新加的才带明文。服务端按 id 从内存取回原文。
+    const payload = state.keyPool.map((item) =>
+      item._new
+        ? { key: item.key, label: item.label || "" }
+        : { id: item.id, label: item.label || "" }
+    );
+    const result = await api("/api/settings/taostats/keys", {
+      method: "POST",
+      body: JSON.stringify({ keys: payload }),
+    });
+    await loadKeyPool();
+    showTaostatsKeyStatus(result.configured, result.storage);
+    const perKey = state.keyPoolPerKey || 5;
+    toast(
+      state.keyPool.length
+        ? `已保存 ${state.keyPool.length} 把 key，合计 ${state.keyPool.length * perKey} 次/分钟。`
+        : "已清空所有 key。",
+      false
+    );
+  } catch (error) {
+    toast(`保存 key 失败：${error.message}`, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function loadKeyPool() {
+  try {
+    const data = await api("/api/settings/taostats/keys");
+    state.keyPool = (data.items || []).map((item) => ({ ...item }));
+    state.keyPoolPerKey = data.per_key_rate || 5;
+    renderKeyPool();
+    return data;
+  } catch (error) {
+    // 旧后端没有这个接口：退化成"只显示有没有配 key"，不报错打扰用户。
+    state.keyPool = [];
+    renderKeyPool();
+    return null;
+  }
 }
 
 function toast(message, error = false) {
@@ -658,6 +778,8 @@ async function loadOverview() {
       : "未采集";
     $("#metric-cursor").textContent = index.cursor_block ? number(index.cursor_block) : "未建立";
     if (!$("#seed").value && data.default_seed) $("#seed").value = data.default_seed;
+    // 先取池状态再渲染：`showTaostatsKeyStatus` 会用 keyPool.length 拼文案。
+    await loadKeyPool();
     showTaostatsKeyStatus(data.taostats_configured, data.taostats_key_storage);
     const usage = data.api_usage || {};
     $("#usage-today").textContent = number(usage.today);
@@ -772,50 +894,6 @@ async function runDiagnose() {
   } finally {
     button.disabled = false;
     button.textContent = label;
-  }
-}
-
-async function saveTaostatsKey() {
-  const apiKey = $("#taostats-api-key").value.trim();
-  if (!apiKey) { toast("请先填写 Taostats API key。", true); return; }
-  const button = $("#save-taostats-key");
-  button.disabled = true;
-  try {
-    const data = await api("/api/settings/taostats", {
-      method: "POST",
-      body: JSON.stringify({ api_key: apiKey }),
-    });
-    $("#taostats-api-key").value = "";
-    showTaostatsKeyStatus(data.configured, data.storage);
-    setApiKeyBody(false);
-    toast(
-      data.storage === "dpapi"
-        ? "API key 已保存（本机加密存储），重启服务后不用重填。设置已折叠，点「填写 / 修改」可再次展开。"
-        : data.storage === "plain"
-          ? "API key 已保存到本机 data\\settings.json（明文），重启后不用重填。设置已折叠，点「填写 / 修改」可再次展开。"
-          : "API key 已保存到当前服务内存，重启后需要重填。设置已折叠，点「填写 / 修改」可再次展开。",
-      false
-    );
-  } catch (error) {
-    toast(`API key 保存失败：${error.message}`, true);
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function clearTaostatsKey() {
-  if (!window.confirm("确定清除本机保存的 Taostats API key？\n\n清除后 Taostats 余额/转账查询需要重新填写 key。")) return;
-  const button = $("#clear-taostats-key");
-  button.disabled = true;
-  try {
-    const data = await api("/api/settings/taostats", { method: "DELETE" });
-    $("#taostats-api-key").value = "";
-    showTaostatsKeyStatus(data.configured, data.storage);
-    setApiKeyBody(true);
-    toast("API key 已从本机清除，Taostats 查询需要重新填写。", false);
-  } catch (error) {
-    toast(`清除 API key 失败：${error.message}`, true);
-    button.disabled = false;
   }
 }
 
@@ -1298,7 +1376,9 @@ function emptyResultSummary(data) {
 
 function focusTaostatsKey(message) {
   toast(message, true);
-  const input = $("#taostats-api-key");
+  // key 现在是池化管理，没有单个输入框可聚焦：展开面板并滚到"添加 key"那一行。
+  setApiKeyBody(true);
+  const input = $("#keypool-new-key");
   if (!input) return;
   input.scrollIntoView({ behavior: "smooth", block: "center" });
   input.focus();
@@ -3977,12 +4057,12 @@ const savedTheme = (() => {
 })();
 setTheme(savedTheme, false);
 $("#theme-select").addEventListener("change", (event) => setTheme(event.target.value));
-$("#save-taostats-key").addEventListener("click", saveTaostatsKey);
-$("#clear-taostats-key").addEventListener("click", clearTaostatsKey);
-$("#toggle-api-key").addEventListener("click", () => setApiKeyBody(!state.apiKeyBodyOpen));
-$("#taostats-api-key").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") saveTaostatsKey();
+$("#save-taostats-keys").addEventListener("click", (event) => saveKeyPool(event.currentTarget));
+$("#keypool-add").addEventListener("click", addKeyPoolEntry);
+$("#keypool-new-key").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") addKeyPoolEntry();
 });
+$("#toggle-api-key").addEventListener("click", () => setApiKeyBody(!state.apiKeyBodyOpen));
 $("#run-scan").addEventListener("click", () => runRelations(false));
 // 远程面板折叠/展开（状态记在 localStorage，见 setRemoteFolded）。
 $("#remote-toggle").addEventListener("click", () => {
@@ -4089,6 +4169,16 @@ $("#watch-log-filter").addEventListener("change", loadWatchLogs);
 $("#export-library-all").addEventListener("click", () => exportLibrary("all"));
 $("#export-library-selected").addEventListener("click", () => exportLibrary("selected"));
 document.addEventListener("click", (event) => {
+  // key 池：移除某一行只改前端列表，点「保存全部 key」才真正落库。
+  const keyRemove = event.target.closest("[data-keypool-remove]");
+  if (keyRemove) {
+    const index = Number(keyRemove.dataset.keypoolRemove);
+    if (Number.isInteger(index) && index >= 0 && index < state.keyPool.length) {
+      state.keyPool.splice(index, 1);
+      renderKeyPool();
+    }
+    return;
+  }
   // 地址库组内分页：只翻这一组，其它组与折叠状态不变。
   const libraryPageButton = event.target.closest("[data-library-page]");
   if (libraryPageButton) {
