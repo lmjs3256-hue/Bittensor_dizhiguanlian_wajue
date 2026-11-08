@@ -336,6 +336,60 @@ function applyAccessStatus(status) {
   document.body.classList.remove("access-locked");
   // 在别的设备上操作时给个明确标识，免得误以为服务跑在这台机器上。
   if (badge) badge.hidden = !(status && status.remote_mode && !status.local);
+  renderAccessEndpoints(status);
+}
+
+/* 页面顶部「远程访问」面板：地址一行一个，行尾带复制按钮。
+   数据只在本机访问时才有（后端只对回环请求返回 endpoints），远程设备拿到的是
+   空值 —— 别人的局域网地址和访问口令不该外泄。 */
+function renderAccessEndpoints(status) {
+  const list = $("#access-list");
+  const title = $("#remote-title");
+  const note = $("#access-note");
+  if (!list) return;
+  const endpoints = (status && status.endpoints) || null;
+  if (!endpoints) {
+    // 远程设备 / 旧后端：只留一句说明，不显示空壳。
+    list.innerHTML = "";
+    if (title) title.textContent = status && status.remote_mode ? "远程访问中" : "本机使用中";
+    if (note) {
+      note.textContent = status && status.remote_mode && !status.local
+        ? "你正在通过远程连接使用它。地址与口令只在主机本机可见。"
+        : "远程地址、公网隧道和访问口令会显示在这里。";
+    }
+    return;
+  }
+  const items = endpoints.items || [];
+  const token = endpoints.token || "";
+  if (title) {
+    title.textContent = endpoints.remote ? "远程访问已开启" : "仅本机可访问";
+  }
+  const rows = items.map((item, index) => {
+    const id = `access-value-${index}`;
+    const hint = item.hint ? `<small class="access-hint">${esc(item.hint)}</small>` : "";
+    // 隧道网址最长、最需要完整可读，单独给个类让它独占整宽并换行。
+    const extra = item.kind === "公网隧道" ? " access-row-tunnel" : "";
+    return `<div class="access-row${extra}">
+      <span class="access-kind">${esc(item.kind)}</span>
+      <code class="access-value" id="${id}">${esc(item.value)}</code>
+      <button class="access-copy" type="button" data-copy-value="${esc(item.value)}" title="复制这个地址">复制</button>
+      ${hint}
+    </div>`;
+  });
+  if (token) {
+    rows.push(`<div class="access-row access-row-token">
+      <span class="access-kind">访问口令</span>
+      <code class="access-value" id="access-value-token">${esc(token)}</code>
+      <button class="access-copy" type="button" data-copy-value="${esc(token)}" title="复制访问口令">复制</button>
+      <small class="access-hint">别的设备第一次打开要输这个，记住 90 天</small>
+    </div>`);
+  }
+  list.innerHTML = rows.join("");
+  if (note) {
+    note.textContent = endpoints.remote
+      ? "上面任意一条都能打开。Tailscale 地址固定、只在自己的私有网络内可达，日常优先用它。"
+      : "当前只监听本机，外部设备连不上。要开放远程：双击「启动-远程访问.cmd」。";
+  }
 }
 
 async function submitAccessToken() {
@@ -4018,6 +4072,9 @@ document.addEventListener("click", (event) => {
   if (publicButton) decidePublic(publicButton.dataset.address, publicButton.dataset.publicDecision, publicButton);
   const copyButton = event.target.closest("[data-copy-address]");
   if (copyButton) copyAddress(copyButton.dataset.copyAddress, copyButton);
+  // 顶部远程面板的复制按钮：复制的是地址或口令，不是地址库里的 SS58。
+  const accessCopy = event.target.closest("[data-copy-value]");
+  if (accessCopy) copyAddress(accessCopy.dataset.copyValue, accessCopy);
   const pathToggle = event.target.closest("[data-path-toggle]");
   if (pathToggle) togglePathDetail(pathToggle.dataset.pathToggle);
   const pageJump = event.target.closest("[data-page-jump]");

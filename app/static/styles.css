@@ -897,3 +897,59 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
   /* 触屏：勾选框加大到指尖可点的尺寸 */
   table input[type="checkbox"], .select-all-control input, .source-choice input[type="checkbox"] { width:19px; height:19px; }
 }
+
+/* ============================================================================
+   顶部「远程访问」面板 + 标题区数据口径（0.8.21）
+   --------------------------------------------------------------------
+   需求：地址扫描主页正上方显示当前远程/隧道地址与密钥，一行一个、带复制按钮。
+   布局约定：
+   - 每行 = 类型标签（固定宽）+ 地址（等宽、可截断）+ 复制按钮，说明文字换到
+     下一行整行，避免长地址和说明抢空间；
+   - 地址用 min-width:0 + overflow 才能在有 flex 兄弟节点的容器里正确省略，
+     否则长 URL 会把整行撑破（手机上表现为横向溢出）。
+   ============================================================================ */
+
+/* 标题区：数据口径从 hero 移到这里，紧贴主题附近，作为整页的阅读前提。 */
+.header-scope { margin:8px 0 0; font-size:12.5px; line-height:1.6; color:var(--muted); max-width:640px; }
+.header-scope b { color:var(--accent); font-weight:700; margin-right:4px; }
+.header-scope code { font-family:var(--mono); font-size:11.5px; background:var(--accent-soft); color:var(--ink); padding:1px 5px; border-radius:4px; }
+
+.hero-remote { min-width:0; flex:1 1 auto; }
+.hero-remote h2 { margin-bottom:12px; }
+.access-list { display:flex; flex-direction:column; gap:8px; }
+.access-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.access-kind {
+  flex:0 0 76px; font-size:11px; letter-spacing:.06em; font-weight:700;
+  color:var(--accent); text-transform:none; white-space:nowrap;
+}
+.access-value {
+  flex:1 1 220px; min-width:0; font-family:var(--mono); font-size:12.5px;
+  color:var(--ink); background:var(--bg); border:1px solid var(--line);
+  border-radius:7px; padding:6px 9px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.access-copy {
+  flex:0 0 auto; font-size:11.5px; padding:5px 11px; cursor:pointer;
+  color:var(--accent); background:var(--accent-soft);
+  border:1px solid transparent; border-radius:7px; font-weight:650;
+}
+.access-copy:hover { border-color:var(--accent); }
+.access-hint { flex:1 1 100%; font-size:11px; color:var(--muted); line-height:1.5; margin:0; }
+/* 公网隧道网址最长（https://xxx.trycloudflare.com），固定 220px 基线会把尾巴省掉。
+   给它独占整宽并允许换行——这条地址是要照着输的，截断就没用了。 */
+.access-row-tunnel .access-value { flex:1 1 100%; white-space:normal; overflow-wrap:anywhere; }
+.access-row-token .access-value { color:var(--warn); border-color:var(--warn); font-weight:700; letter-spacing:.04em; }
+.access-note { margin:12px 0 0; font-size:11.5px; color:var(--muted); line-height:1.6; max-width:640px; }
+
+@media (max-width:950px) {
+  /* 窄屏：hero 变成纵向，远程面板占满整宽 */
+  .hero-remote { width:100%; }
+  .access-kind { flex:0 0 68px; }
+}
+@media (max-width:560px) {
+  /* 手机：类型标签单独一行，地址与复制按钮占满下一行，避免挤压截断 */
+  .access-row { gap:6px; }
+  .access-kind { flex:1 1 100%; font-size:10.5px; }
+  .access-value { flex:1 1 auto; font-size:12px; }
+  .access-copy { padding:6px 13px; }
+}

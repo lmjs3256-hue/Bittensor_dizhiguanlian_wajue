@@ -251,3 +251,70 @@ def test_status_reports_remote_badge_flag(isolated_settings, licensed, monkeypat
     payload = client.get("/api/access/status").json()
     assert payload["remote_mode"] is True
     assert payload["local"] is False
+
+
+# -- 顶部远程面板的数据（0.8.21）-------------------------------------------
+
+def test_status_gives_endpoints_and_token_only_to_host(isolated_settings, licensed, monkeypatch):
+    """主机本机拿到地址清单 + 口令；远程设备什么都拿不到。
+
+    这些信息是给"坐在主机前的人"看的：他要复制地址发给手机、复制口令去别的
+    设备上登录。反过来，远程设备即使已经登录，也不该看到别人的局域网地址，
+    更不该看到口令——知道口令就等于拿到一份可转发的通行证。
+    """
+    import app.main as main_module
+    from app import access as access_mod
+
+    monkeypatch.setattr(access_mod, "remote_enabled", lambda: True)
+    token, _created = access_mod.ensure_token()
+
+    with _client(remote_host=False) as client:
+        payload = client.get("/api/access/status").json()
+        assert payload["local"] is True
+        endpoints = payload.get("endpoints")
+        assert endpoints, "本机访问应带上 endpoints"
+        kinds = [item["kind"] for item in endpoints["items"]]
+        # 本机一定在，且一定是第一条。
+        assert kinds[0] == "本机"
+        assert endpoints["items"][0]["value"].startswith("http://127.0.0.1:")
+        assert endpoints["token"] == token
+        assert endpoints["remote"] is True
+
+    with _client(remote_host=True) as client:
+        payload = client.get("/api/access/status").json()
+        assert payload["local"] is False
+        assert "endpoints" not in payload or not payload.get("endpoints")
+
+
+def test_endpoints_hide_token_when_not_remote(isolated_settings, licensed, monkeypatch):
+    """本机模式下口令没有意义，别把一串用不到的字符摆在页面上。"""
+
+    import app.main as main_module
+    from app import access as access_mod
+
+    monkeypatch.setattr(access_mod, "remote_enabled", lambda: False)
+
+    with _client(remote_host=False) as client:
+        payload = client.get("/api/access/status").json()
+        endpoints = payload.get("endpoints") or {}
+        assert endpoints.get("token") == ""
+        assert endpoints.get("remote") is False
+        # 地址清单仍然给——用户可能就是想知道"该用哪个地址"。
+        assert any(item["kind"] == "本机" for item in endpoints.get("items", []))
+
+
+def test_endpoints_port_comes_from_request_not_hardcoded(isolated_settings, licensed, monkeypatch):
+    """端口必须从请求里问出来：8766 被占时启动脚本会顺延成 8767。"""
+
+    from app.main import _request_port
+
+    class FakeRequest:
+        def __init__(self, server, host=""):
+            self.scope = {"server": server}
+            self.headers = {"host": host} if host else {}
+
+    assert _request_port(FakeRequest(("0.0.0.0", 8767))) == 8767
+    # scope 里没有 server 时退回 Host 头
+    assert _request_port(FakeRequest(None, "127.0.0.1:8899")) == 8899
+    # 都没有就用默认值，不能抛异常
+    assert _request_port(FakeRequest(None)) == 8766

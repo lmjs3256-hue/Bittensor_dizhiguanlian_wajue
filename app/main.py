@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from . import access as access_mod
 from . import diagnostics
 from . import license as license_mod
+from . import netinfo
 from . import settings_store
 from . import taostats
 from .config import ROOT_DIR, database_path, settings
@@ -560,9 +561,83 @@ class AccessLoginInput(BaseModel):
 
 @app.get("/api/access/status")
 def access_status(request: Request):
-    """前端据此判断要不要弹口令框、要不要显示「远程访问」标识。"""
+    """前端据此判断要不要弹口令框、要不要显示「远程访问」标识。
 
-    return access_mod.status(request)
+    额外带回「这台主机该怎么连」的地址清单与访问口令，供页面顶部展示。
+    **这些只在请求确实来自主机本机（回环）时才给**——远程设备即使已经登录，
+    也不该看到别人的局域网地址，更不该看到访问口令（知道口令就等于拿到
+    一份可转发的通行证）。
+    """
+
+    payload = access_mod.status(request)
+    if payload.get("local"):
+        payload["endpoints"] = _access_endpoints(_request_port(request))
+    return payload
+
+
+def _request_port(request: Request) -> int:
+    """从请求里问出当前服务端口。
+
+    比自己猜一个默认值靠谱：端口冲突时启动脚本会把 8766 顺延成 8767，
+    写死 8766 就会给用户一个连不上的地址。
+    """
+
+    server = request.scope.get("server") or ()
+    if len(server) >= 2 and isinstance(server[1], int) and server[1] > 0:
+        return int(server[1])
+    host = request.headers.get("host") or ""
+    if ":" in host:
+        try:
+            return int(host.rsplit(":", 1)[1])
+        except ValueError:
+            pass
+    return 8766
+
+
+def _access_endpoints(port: int) -> dict[str, Any]:
+    """主机本机看到的一组连接信息（地址 + 口令，都带说明）。"""
+
+    tailscale = netinfo.tailscale_addresses()
+    primary, others = netinfo.lan_addresses()
+    tunnel = netinfo.read_tunnel_url(ROOT_DIR / "logs" / netinfo.URL_FILE_NAME, 0)
+
+    items: list[dict[str, str]] = [
+        {"kind": "本机", "value": f"http://127.0.0.1:{port}", "hint": "这台电脑自己打开"},
+    ]
+    for address in tailscale:
+        items.append(
+            {
+                "kind": "Tailscale",
+                "value": f"http://{address}:{port}",
+                "hint": "地址固定，手机 / 别的电脑（装了 Tailscale 且已开启）",
+            }
+        )
+    if primary:
+        items.append(
+            {
+                "kind": "局域网",
+                "value": f"http://{primary}:{port}",
+                "hint": "同一个 Wi-Fi 下可用",
+            }
+        )
+    if tunnel:
+        items.append(
+            {
+                "kind": "公网隧道",
+                "value": tunnel,
+                "hint": "任意网络、无需装软件；网址每次重启都换",
+            }
+        )
+    token = settings_store.load_access_token() or ""
+    remote = access_mod.remote_enabled()
+    return {
+        "port": port,
+        "remote": remote,
+        "items": items,
+        # 口令只在远程模式下有意义（本机模式整套校验是跳过的）。
+        "token": token if remote else "",
+        "others": others,
+    }
 
 
 @app.post("/api/access/login")
