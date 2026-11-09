@@ -381,7 +381,16 @@ def search(database: Any, query: InterlinkQuery) -> dict[str, Any]:
                 truncated = truncated or path_truncated
 
     if fetcher.stop_reason == "rate_limit":
-        notes.append("已达 Taostats 本地限速（5 次/分钟），本次只查到这里；等一分钟再点一次可继续。")
+        # 额度现在是可配置的（免费档 5 / 付费档 60），文案跟着实际值走，
+        # 否则升级套餐后提示还写「5 次/分钟」，会让人以为设置没生效。
+        try:
+            per_minute = int(taostats.requests_per_minute())
+        except Exception:
+            per_minute = 5
+        notes.append(
+            f"已达 Taostats 本机限速（每分钟 {per_minute} 次），本次只查到这里；"
+            "等一分钟再点一次可继续。"
+        )
     elif fetcher.stop_reason == "budget":
         notes.append("本次检索的请求预算已用完，结果可能不完整；再点一次检索可以接着查。")
 

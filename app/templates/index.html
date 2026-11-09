@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.32">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.33">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -197,7 +197,7 @@
         <section class="panel watch-panel">
           <div class="section-title">
             <div><h3>地址库巡检</h3><span class="tag">自动发现新地址</span></div>
-            <small>按设定间隔检查库内每个地址的新转账（含代币转移）：新出现的对手方单笔或累计达到阈值就自动入库，归属到累计金额最多的地址库，并写一条入库日志。第一次检查只记录基线，不会把历史对手方灌进库；交易所、验证者、系统地址不参与巡检。</small>
+            <small>按设定间隔检查库内每个地址的新转账（含代币转移）：新出现的对手方单笔或累计达到阈值就自动入库，归属到累计金额最多的地址库，并写一条入库日志。第一次检查只记录基线，不会把历史对手方灌进库；交易所、验证者、公共地址、系统地址不参与巡检。巡检范围每次实时读取地址库——新增地址自动加入，被标成上述角色的自动移出，不需要手工维护名单。中途关掉服务不会丢进度，重启后从断点继续。</small>
           </div>
           <div class="watch-form">
             <label class="watch-check"><input type="checkbox" id="watch-enabled"> 开启巡检</label>
@@ -220,6 +220,15 @@
             </div>
           </div>
           <small id="watch-status" class="library-hint">巡检状态：读取中…</small>
+          <div id="watch-progress" class="watch-progress hidden" aria-live="polite">
+            <div class="watch-progress-head">
+              <strong id="watch-progress-title">巡检进度</strong>
+              <span id="watch-progress-percent" class="watch-progress-percent">0%</span>
+            </div>
+            <div class="watch-progress-track"><div id="watch-progress-bar" class="watch-progress-bar"></div></div>
+            <div id="watch-progress-meta" class="watch-progress-meta"></div>
+            <div id="watch-progress-hint" class="watch-progress-hint"></div>
+          </div>
           <div id="watch-log-panel" class="watch-log hidden">
             <div class="watch-log-head">
               <strong>自动入库日志</strong>
@@ -245,7 +254,7 @@
             <label>翻页上限<input id="interlink-max-pages" type="number" min="1" max="10" value="3" inputmode="numeric" aria-label="Taostats 最多翻几页"></label>
             <button class="primary cta interlink-run" id="run-interlink" type="button">开始检索</button>
           </div>
-          <small class="interlink-hint" id="interlink-hint">数据来源：本地索引 + Taostats（from / to 精确匹配）。Taostats 有本机限速（5 次请求 / 分钟），预算用完会先返回已查到的部分，等一分钟再点一次可以接着查。</small>
+          <small class="interlink-hint" id="interlink-hint">数据来源：本地索引 + Taostats（from / to 精确匹配）。Taostats 有本机限速（默认每分钟 5 次，可在上方 API key 面板按自己的套餐调高），预算用完会先返回已查到的部分，等一分钟再点一次可以接着查。</small>
           <div id="interlink-result" class="interlink-result hidden"></div>
         </section>
         <section class="panel category-panel"><div class="section-title"><div><h3>分类</h3><span class="tag" id="category-count">-</span></div><small>下拉里选「＋ 新建分类…」即可就地新增；删除自建分类时，该分类下的地址会自动回到“其他”，地址本身不会删除。</small></div><div id="category-list" class="category-list"></div><div class="category-add"><label>新增分类<input id="new-category-name" maxlength="12" placeholder="例如：项目方、做市商" autocomplete="off"></label><button class="secondary" id="add-category" type="button">添加分类</button></div></section>
@@ -290,6 +299,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.32"></script>
+  <script src="/static/app.js?v=0.8.33"></script>
 </body>
 </html>

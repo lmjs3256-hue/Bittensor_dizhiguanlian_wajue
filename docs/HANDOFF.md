@@ -906,12 +906,50 @@ Set-Location G:\bittensor-wallet-link-intel
 
 ---
 
-## 附：当前基线（0.8.19）
+## 60. 0.8.33 巡检：范围是动态的、进度要看得见、断点能续（**改巡检前必读**）
+
+用户原话：「巡检的地址是固定的，还是会随着地址库增加自动增加」「巡检被中断能不能断点继续。巡检需要一个动态进度窗口」。
+
+**结论：范围动态（每轮现读地址库），断点本来就能续，但界面上完全看不出来，而且查出三个真 bug。**
+
+### 三个真 bug（都已修）
+
+| # | 症状 | 根因 | 修法 |
+| --- | --- | --- | --- |
+| 1 | 巡检每轮「瞬间完成」，界面永远 0 个已查、0 次请求，长期被当成"正常运行" | `next_targets` 先按「最久没查优先」取前 60 行、**再**过滤交易所/验证者。库里 1194 条验证者大多 `last_checked_at IS NULL`，恰好排最前，60 个名额被占满后全被过滤 → 返回空 → `_advance` 立刻判 `complete` | **先过滤再排序**：在内存里先算可巡检集合，再按「从未查过优先 → 最久没查优先」排 |
+| 2 | 公共地址一直被巡检（拿额度换噪音） | `watch.SKIP_CATEGORIES` 只有 `EXCHANGE/VALIDATOR/系统/SYSTEM`，漏了 `PUBLIC`，而 `service.SYSTEM_CATEGORIES` 早就含它 | 补进 `SKIP_CATEGORIES`（可巡检 758 → 754） |
+| 3 | 「立即巡检一轮」**从来点不动**，只有 stderr 一行 | `WatchService.run()` 是 **keyword-only**，`_watch_manual_run` 按位置传 `(True, limit, None)` → `TypeError` 被 `except` 吞掉 | 改关键字传参；并把推进量限成 `per_tick*2` |
+
+**第 3 条的连带修正**：原来手动传 `max_addresses=None` 等于无视每日上限跑完整轮（约 1500 次请求、占锁几小时）。现在手动只推一小段，剩下的交回调度器；**每日上限对手动轮次同样生效**——以前 `manual=True` 会被后续所有 tick 继承，等于永久绕过上限。
+
+### 进度窗口（前端）
+
+- HTML：`#watch-progress`（`title / percent / bar / meta / hint` 五件套），`aria-live="polite"`。
+- 渲染：`renderWatchProgress(data)`；轮询：`scheduleWatchPolling()`——停在地址库页 5 秒一次，**切走就 `stopWatchPolling()`**，页面隐藏时降到 30 秒。
+- 接口：`GET /api/watch/status` 新增 `progress` 字段（`total / checked / remaining / checked_once / never_checked / per_tick / seconds_per_address / eta_seconds / percent / running / resumed / idle_seconds / stale`）。
+- 心跳：`WATCH.mark_tick()` 由调度器每 tick 调用（**让路时也要调**，标记 `paused=True`），超过 90 秒无推进且非让路才判 `stale`。
+- 断点标记：`PROCESS_STARTED_AT`（模块导入时刻）与 `run.started_at` 比较，早于它且已有进度 → `resumed=True`。
+
+### 一个坑：进度不能读最新那条 run 的计数器
+
+一轮会被拆成多条 `watch_runs`（撞上限停一条、重启再起一条，每条从 0 计数）。直接读 `last_run.addresses_checked` 会让进度**每次被打断就归零**，用户看到「明明查了几百个又变回 0%」。
+
+`_cycle_start()` 的做法：从最新 run 往回走，遇到第一条 `complete` 就把它的 `started_at` 当周期起点；`checked` 则用 `WatchState.last_checked_at >= cycle_start` 在**可巡检集合内**计数。这样进度单调递增，完整跑完一轮后新周期自然重置。
+
+### 基线与验证
+
+- 全量 **486 passed / 0 failed**。
+- 相关测试：`tests/test_watch.py`（21 条，含 `test_next_targets_survives_many_never_checked_skipped_rows`、`test_public_address_is_skipped`、`test_progress_does_not_reset_when_run_is_split_by_budget`、`test_interrupted_run_resumes_from_cursor`）、`tests/test_watch_manual_run.py`（3 条，钉死入口签名与推进量上限）。
+- 布局回归工具：`tools/check_watch_layout.py`（无头 Chrome + CDP 读 `getBoundingClientRect`，检测横向溢出与统计项重叠；桌面 1400px 与手机 390px 均通过）。
+
+---
+
+## 附：当前基线（0.8.33）
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | 0.8.19 |
-| 测试 | **413 passed / 0 failed**（42 个测试文件） |
+| 版本 | 0.8.33 |
+| 测试 | **486 passed / 0 failed**（44 个测试文件） |
 | Python | 3.12（`installers/` 内置安装器 + wheels，可离线装） |
 | 依赖 | FastAPI / SQLAlchemy 2.x / httpx / async-substrate-interface / cryptography |
 | 入口 | `run.py`（`--remote` / `--tunnel` / `--doctor`）、`start.ps1`、`tunnel.ps1` |

@@ -737,6 +737,11 @@ function navigate(view, updateHash = true) {
   if (view === "library") {
     loadLibrary();
     loadWatchStatus();
+    // 停在地址库页时持续刷新巡检进度：轮次可能跨几小时，用户需要看到它
+    // 还在动。切走页面就停，避免后台无意义轮询。
+    scheduleWatchPolling(3000);
+  } else {
+    stopWatchPolling();
   }
   if (view === "history") loadHistory();
   if (view === "release") {
@@ -3870,7 +3875,118 @@ async function syncValidatorLibrary() {
   }
 }
 
-// -- 地址库巡检 / 自动入库 ---------------------------------------------------
+// -- 巡检进度窗口 -----------------------------------------------------------
+// 以前界面上只有一句「本轮已查 N 个」，没有分母、没有心跳，用户看不出
+// 是在慢慢推进、在让路等查询、还是整个停了。这里补一个常驻的进度窗口。
+let watchPollTimer = null;
+
+function formatEta(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (total <= 0) return "—";
+  if (total < 90) return `${total} 秒`;
+  const minutes = Math.round(total / 60);
+  if (minutes < 90) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
+}
+
+function renderWatchProgress(data) {
+  const box = $("#watch-progress");
+  if (!box) return;
+  const config = data?.config || {};
+  const run = data?.last_run;
+  const progress = data?.progress;
+  const pause = data?.pause || {};
+  if (!progress) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  const title = $("#watch-progress-title");
+  const percentText = $("#watch-progress-percent");
+  const bar = $("#watch-progress-bar");
+  const meta = $("#watch-progress-meta");
+  const hint = $("#watch-progress-hint");
+  const running = run && run.status === "running";
+  const ratio = progress.total ? Math.min(progress.checked / progress.total, 1) : 0;
+
+  if (title) {
+    title.textContent = running ? "巡检进行中" : "巡检进度";
+  }
+  if (percentText) {
+    percentText.textContent = `${progress.percent ?? Math.round(ratio * 100)}%`;
+  }
+  if (bar) {
+    bar.style.width = `${Math.max(ratio * 100, running ? 2 : 0)}%`;
+    bar.classList.toggle("breathing", Boolean(running) && !pause.paused);
+  }
+  if (meta) {
+    const parts = [
+      `本轮已查 <b>${progress.checked || 0}</b> / 共 <b>${progress.total || 0}</b> 个可巡检地址`,
+      `剩余 <b>${progress.remaining || 0}</b> 个`,
+    ];
+    if (run && running) {
+      parts.push(`已入库 <b>${run.inserted || 0}</b>`);
+      parts.push(`本轮请求 <b>${run.requests || 0}</b> 次`);
+      parts.push(`预计还需 <b>${formatEta(progress.eta_seconds)}</b>`);
+    }
+    if (progress.never_checked) parts.push(`从未巡检过 <b>${progress.never_checked}</b> 个`);
+    parts.push(`今日请求 <b>${data.today_requests || 0}</b> / ${config.daily_budget || 0}`);
+    meta.innerHTML = parts.map((item) => `<span>${item}</span>`).join("");
+  }
+  if (hint) {
+    const notes = [];
+    let warn = false;
+    if (!config.enabled) {
+      notes.push("巡检已关闭，打开「开启巡检」后才会继续推进。");
+    } else if (pause.reason === "running") {
+      notes.push("让路中：手动查询正在使用额度，查询出结果后巡检自动继续（这是正常现象，不是卡住）。");
+    } else if (pause.reason === "cooldown") {
+      notes.push(`让路中：查询刚结束，冷却 ${pause.resume_in_seconds || 0} 秒后继续巡检。`);
+    } else if (progress.stale) {
+      notes.push(`已经 ${progress.idle_seconds} 秒没有任何推进，巡检可能卡住了；可以点「立即巡检一轮」重试。`);
+      warn = true;
+    } else if (running) {
+      notes.push(
+        `正常推进中：每 30 秒推进 ${progress.per_tick || 1} 个地址（每分钟额度 ${progress.requests_per_minute} 次，每个地址约 2 次请求）。关掉页面也不会中断，下次打开或服务重启会从断点接着跑。`,
+      );
+    } else if (run && run.status === "complete") {
+      notes.push("上一轮已跑完；到设定间隔后自动开始下一轮。中途关掉服务不会丢进度，下次启动从断点继续。");
+    } else if (run && run.status === "budget") {
+      notes.push("上一轮撞到「每日请求上限」停下的，第二天额度重置后从断点继续。");
+    } else if (run && run.status === "error") {
+      notes.push(`上一轮出错停下：${run.error || "未知错误"}。修好后点「立即巡检一轮」可从断点继续。`);
+      warn = true;
+    } else {
+      notes.push("还没有跑过巡检，点「立即巡检一轮」开始。");
+    }
+    hint.textContent = notes.join(" ");
+    hint.classList.toggle("warn", warn);
+  }
+}
+
+function stopWatchPolling() {
+  if (watchPollTimer) {
+    clearTimeout(watchPollTimer);
+    watchPollTimer = null;
+  }
+}
+
+function scheduleWatchPolling(delay = 5000) {
+  stopWatchPolling();
+  watchPollTimer = setTimeout(async () => {
+    watchPollTimer = null;
+    const data = await loadWatchStatus();
+    if (!document.hidden) scheduleWatchPolling(5000);
+    else scheduleWatchPolling(30000);
+    if (data?.last_run && data.last_run.status !== "running") {
+      // 一轮刚结束：刷新地址库，让新入库的地址立刻出现在列表里。
+      if (state.watchStatus?.last_run?.status === "running") await loadLibrary();
+    }
+  }, delay);
+}
+
 const WATCH_RUN_LABEL = {
   running: "进行中",
   complete: "已完成",
@@ -3947,6 +4063,7 @@ async function loadWatchStatus() {
     fillWatchConfig(data.config);
     if (label) label.textContent = watchStatusText(data);
     state.watchStatus = data;
+    renderWatchProgress(data);
     return data;
   } catch (_) {
     if (label) label.textContent = "巡检状态：读取失败";
@@ -3967,6 +4084,7 @@ async function saveWatchConfig() {
   try {
     await api("/api/watch/config", { method: "POST", body: JSON.stringify(payload) });
     await loadWatchStatus();
+    scheduleWatchPolling(5000);
     const perTickText = payload.addresses_per_tick > 0
       ? `每 30 秒推进 ${payload.addresses_per_tick} 个地址`
       : "每 30 秒推进量跟随每分钟额度自动算";
@@ -3983,17 +4101,13 @@ async function runWatchNow() {
   try {
     const data = await api("/api/watch/run", { method: "POST" });
     if (!data.started) {
-      toast("巡检已经在跑了，进度看下面的状态行。");
+      toast("巡检已经在跑了，进度看下面的进度窗口。");
     } else {
-      toast("巡检已在后台启动：每 30 秒检查一个地址，进度会自动更新。");
+      toast("巡检已在后台启动，进度窗口会实时更新；关掉页面也会继续跑。");
     }
-    // 轮询几次，让用户马上看到进度走动。
-    for (let index = 0; index < 6; index += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 4000));
-      const status = await loadWatchStatus();
-      if (status?.last_run && status.last_run.status !== "running") break;
-    }
-    await loadLibrary();
+    // 进度窗口自己会轮询，这里只立刻刷新一次让数字马上动起来。
+    await loadWatchStatus();
+    scheduleWatchPolling(3000);
   } catch (error) {
     toast(`启动巡检失败：${error.message}`, true);
   } finally {

@@ -51,9 +51,16 @@ SYSTEM_PREFIX = "5EYCAe5"
 # 自动入库记录的来源标记；也是「这条是不是自动来的」的判断依据。
 AUTO_SOURCE = "auto-watch:taostats"
 AUTO_CATEGORY = "其他"
-# 巡检不处理的分类：交易所、验证者、系统（它们要么额度黑洞，要么是噪音源）。
-SKIP_CATEGORIES = {"EXCHANGE", "VALIDATOR", "系统", "SYSTEM"}
+# 巡检不处理的分类：交易所、验证者、公共地址、系统（它们要么额度黑洞，要么
+# 是噪音源）。公共地址（PUBLIC）与交易所同性质——它和成千上万个不相关钱包
+# 都有往来，巡检它等于拿额度换噪音，且会把整库灌爆。service.py 的
+# SYSTEM_CATEGORIES 早就把它算作系统角色，这里原来漏了，导致标记为公共地址的
+# 记录仍被排进巡检队列。
+SKIP_CATEGORIES = {"EXCHANGE", "VALIDATOR", "PUBLIC", "系统", "SYSTEM"}
 MAX_LOGS_PAGE = 200
+# 本进程启动时刻：用来判断一个 running 轮次是本进程在推，还是上次进程
+# 被关掉后留下的（后者就是「断点续传」的状态，必须让用户看见）。
+PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 
 def _categories(row: AddressLibrary) -> set[str]:
@@ -87,6 +94,8 @@ class WatchService:
             "active_jobs": 0,
             "stalled_jobs": 0,
         }
+        # 调度器心跳：进度窗口用它区分「正在推进」和「停在上次断点」。
+        self._progress_heartbeat: dict[str, Any] = {"at": None, "paused": False}
 
     # -- 巡检让路 ---------------------------------------------------------
     def set_pause(self, state: dict[str, Any]) -> None:
@@ -104,7 +113,10 @@ class WatchService:
         current = dict(self._pause if state is None else state)
         reason = current.get("reason", "")
         if reason == "running":
-            detail = "手动查询进行中，巡检已让路（避免抢走每分钟 5 次配额）"
+            detail = (
+                f"手动查询进行中，巡检已让路（避免抢走每分钟 "
+                f"{self._per_minute()} 次配额）"
+            )
         elif reason == "cooldown":
             detail = (
                 f"手动查询已结束，冷却 {current.get('resume_in_seconds', 0)} 秒后继续巡检"
@@ -119,6 +131,18 @@ class WatchService:
         return {**current, "detail": detail}
 
     # -- 配置 -------------------------------------------------------------
+    @staticmethod
+    def _per_minute() -> int:
+        """当前每分钟额度，仅用于拼提示文案；读不到就退回免费档 5。"""
+
+        try:
+            return int(requests_per_minute())
+        except Exception:
+            return 5
+
+    def _rate_limit_note(self) -> str:
+        return f"Taostats 限速（每分钟 {self._per_minute()} 次），本轮稍后自动继续。"
+
     def addresses_per_tick(self, config: dict[str, Any] | None = None) -> int:
         """一个 tick 推进几个地址。
 
@@ -167,9 +191,23 @@ class WatchService:
 
     def watchable_count(self) -> int:
         config = self.config()
-        with self.database.session() as db:
+        return len(self._watchable_addresses(config))
+
+    def _watchable_addresses(
+        self, config: dict[str, Any], db: Any = None
+    ) -> list[str]:
+        """当前该巡检的地址集合。
+
+        每次都从 ``address_library`` 现算，**不缓存**：库里新增地址、就地改
+        分类（标成交易所/验证者/公共地址）、或撤回自动入库，下一轮立刻生效。
+        """
+
+        if db is not None:
             rows = db.scalars(select(AddressLibrary)).all()
-        total = 0
+        else:
+            with self.database.session() as session:
+                rows = session.scalars(select(AddressLibrary)).all()
+        picked: list[str] = []
         for row in rows:
             if _categories(row) & SKIP_CATEGORIES:
                 continue
@@ -177,8 +215,129 @@ class WatchService:
                 "auto-watch"
             ):
                 continue
-            total += 1
-        return total
+            picked.append(row.address)
+        return picked
+
+    def _cycle_start(self, db: Any = None) -> datetime | None:
+        """本轮的起点时间。
+
+        一轮巡检会被拆成多条 ``watch_runs``：撞每日上限停一次、重启服务再
+        起一条，每条都从 0 计数。若直接拿最新那条的 ``addresses_checked``
+        当进度，进度条每被打断就归零一次——用户看到的就是「明明查了 700 个
+        又变回 0%」。
+
+        所以按「周期」算：从最新一条往回走，连续的非 ``complete`` 轮次都算
+        同一周期，遇到第一条 ``complete`` 时把它的 ``started_at`` 当周期起点
+        （那一条本身就是本轮的开头）。真正的完整一轮跑完后，下一条新轮次
+        才会开启新周期，进度自然重置。
+        """
+
+        def _load(session):
+            return session.scalars(
+                select(WatchRun).order_by(WatchRun.id.desc()).limit(50)
+            ).all()
+
+        if db is not None:
+            runs = _load(db)
+        else:
+            with self.database.session() as session:
+                runs = _load(session)
+        for row in runs:
+            if row.status == "complete":
+                started = row.started_at
+                if started is not None and started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                return started
+        # 一条完整的都没有（刚装好、或一直在被打断）：取最早那条的起点。
+        if not runs:
+            return None
+        oldest = runs[-1].started_at
+        if oldest is not None and oldest.tzinfo is None:
+            oldest = oldest.replace(tzinfo=timezone.utc)
+        return oldest
+
+    def _progress(
+        self, config: dict[str, Any], run: WatchRun | None, db: Any = None
+    ) -> dict[str, Any]:
+        """本轮进度：应查多少、已查多少、还剩多少、预计多久。
+
+        前端「进度窗口」只消费这个结构。以前界面上只有「已查 N 个」，
+        分母缺失，用户无法判断是刚开工还是快完了。
+        """
+
+        addresses = self._watchable_addresses(config, db)
+        total = len(addresses)
+        # 「已查」按周期内的游标统计，而不是单条 run 的计数器——否则撞上限、
+        # 重启之后进度会归零（见 _cycle_start 的说明）。
+        cycle_start = self._cycle_start(db)
+        checked = 0
+        checked_once = 0
+        if addresses:
+            set_checked = select(func.count(WatchState.address)).where(
+                WatchState.address.in_(addresses),
+                WatchState.last_checked_at.is_not(None),
+            )
+            set_cycle = set_checked
+            if cycle_start is not None:
+                set_cycle = set_checked.where(
+                    WatchState.last_checked_at >= cycle_start
+                )
+            if db is not None:
+                checked = int(db.scalar(set_cycle) or 0)
+                checked_once = int(db.scalar(set_checked) or 0)
+            else:
+                with self.database.session() as session:
+                    checked = int(session.scalar(set_cycle) or 0)
+                    checked_once = int(session.scalar(set_checked) or 0)
+        remaining = max(total - min(checked, total), 0)
+        per_tick = self.addresses_per_tick(config)
+        try:
+            per_minute = int(requests_per_minute())
+        except Exception:
+            per_minute = 5
+        # 30 秒一个 tick，每 tick 推进 per_tick 个地址（每地址约 2 次请求）。
+        seconds_per_address = 30 / max(per_tick, 1)
+        percent = round(min(checked / total, 1) * 100, 1) if total else 0.0
+        # -- 心跳：判断「真的在跑」还是「停在上一轮的断点上」 --------------
+        # 手动查询让路时进度本来就会停几秒到一分钟，不能算异常；超过 3 个
+        # tick（90 秒）没有任何推进、且不是因为让路，才是卡住。
+        running = run is not None and run.status == "running"
+        last_tick_at = self._progress_heartbeat.get("at")
+        idle_seconds = 0
+        stale = False
+        if running and last_tick_at is not None:
+            idle = (utcnow() - last_tick_at).total_seconds()
+            idle_seconds = int(max(idle, 0))
+            stale = idle > 90 and not self._progress_heartbeat.get("paused")
+        resumed = False
+        if running and run is not None:
+            started = run.started_at
+            if started is not None:
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                # 这一轮是上一次进程留下的 → 本轮就是「从断点接着跑」。
+                resumed = started < PROCESS_STARTED_AT and checked > 0
+        return {
+            "total": total,
+            "checked": checked,
+            "remaining": remaining,
+            "checked_once": checked_once,
+            "never_checked": max(total - checked_once, 0),
+            "per_tick": per_tick,
+            "requests_per_minute": per_minute,
+            "seconds_per_address": round(seconds_per_address, 1),
+            "eta_seconds": int(round(remaining * seconds_per_address)),
+            "percent": percent,
+            "running": running,
+            "resumed": resumed,
+            "idle_seconds": idle_seconds,
+            "stale": stale,
+        }
+
+    def mark_tick(self, *, paused: bool = False) -> None:
+        """调度器每次尝试推进时打一个心跳，进度窗口据此判断「还活着」。"""
+
+        self._progress_heartbeat = {"at": utcnow(), "paused": bool(paused)}
 
     def status(self) -> dict[str, Any]:
         config = self.config()
@@ -202,13 +361,16 @@ class WatchService:
                 .limit(5)
             ).all()
             recent = db.scalars(select(WatchRun).order_by(WatchRun.id.desc()).limit(8)).all()
+            progress = self._progress(config, last_run, db)
         return {
             "config": config,
             "today_requests": self._today_requests(),
             # 巡检是否因手动查询而暂停：前端据此显示「已让路 / 冷却 N 秒」。
             "pause": self.pause_payload(),
-            "watchable": self.watchable_count(),
+            "watchable": progress["total"],
             "checked_once": int(checked),
+            # 进度窗口的完整数据：分母、剩余、每地址耗时、ETA 都在这里。
+            "progress": progress,
             "pending_candidates": int(pending),
             "imported": int(imported),
             "revoked": int(revoked),
@@ -351,18 +513,20 @@ class WatchService:
 
         config = config or self.config()
         with self.database.session() as db:
-            stmt = (
-                select(AddressLibrary)
-                .outerjoin(WatchState, WatchState.address == AddressLibrary.address)
-                .order_by(
-                    WatchState.last_checked_at.is_(None).desc(),
-                    WatchState.last_checked_at.asc(),
-                    AddressLibrary.id.asc(),
-                )
-                .limit(max(limit * 8, 60))
-            )
-            rows = db.scalars(stmt).all()
-        picked: list[AddressLibrary] = []
+            rows = db.scalars(select(AddressLibrary)).all()
+            states = {
+                state.address: state.last_checked_at
+                for state in db.scalars(select(WatchState)).all()
+            }
+        cutoff = None
+        if before is not None:
+            cutoff = before if before.tzinfo else before.replace(tzinfo=timezone.utc)
+
+        # 必须**先过滤再排序**。以前的写法是先按「最久没查的优先」取前 60 行，
+        # 再在里面过滤掉交易所/验证者——而库里 1194 条验证者大多从未巡检过
+        # （last_checked_at 为 NULL），恰好全排在最前面，60 个名额被它们占满
+        # 后过滤干净，于是 next_targets 返回空，巡检每轮都「瞬间完成」。
+        eligible: list[tuple[datetime | None, int, AddressLibrary]] = []
         for row in rows:
             if _categories(row) & SKIP_CATEGORIES:
                 continue
@@ -370,30 +534,16 @@ class WatchService:
                 "auto-watch"
             ):
                 continue
-            picked.append(row)
-            if len(picked) >= limit:
-                break
-        if before is not None and picked:
-            with self.database.session() as db:
-                states = {
-                    state.address: state
-                    for state in db.scalars(
-                        select(WatchState).where(
-                            WatchState.address.in_([row.address for row in picked])
-                        )
-                    ).all()
-                }
-            cutoff = before if before.tzinfo else before.replace(tzinfo=timezone.utc)
-            filtered = []
-            for row in picked:
-                state = states.get(row.address)
-                checked = state.last_checked_at if state is not None else None
-                if checked is not None and checked.tzinfo is None:
-                    checked = checked.replace(tzinfo=timezone.utc)
-                if checked is None or checked < cutoff:
-                    filtered.append(row)
-            return filtered
-        return picked
+            checked = states.get(row.address)
+            if checked is not None and checked.tzinfo is None:
+                checked = checked.replace(tzinfo=timezone.utc)
+            if cutoff is not None and checked is not None and checked >= cutoff:
+                # 本轮已经查过它了，让给别的地址，保证一轮收敛。
+                continue
+            eligible.append((checked, row.id, row))
+        # 从未查过的排最前（None 最小），其余按最久没查升序。
+        eligible.sort(key=lambda item: (item[0] is not None, item[0] or 0, item[1]))
+        return [item[2] for item in eligible[: max(limit, 0)]]
 
     def run(
         self,
@@ -404,8 +554,10 @@ class WatchService:
     ) -> dict[str, Any]:
         """跑一轮巡检：处理到「库内地址都过一遍」或「请求预算用完」为止。
 
-        一轮可能跨好几个小时（690 个地址 × 每地址 1~2 次请求 ÷ 5 次/分钟）。
-        进度实时写在 ``watch_runs`` 上，调度器下一 tick 接着推进，不会重头再来。
+        一轮可能跨几个小时（地址数 × 每地址 1~2 次请求 ÷ 每分钟额度）。
+        进度实时写在 ``watch_runs`` 上，地址游标写在 ``watch_state`` 上，
+        所以调度器下一个 tick、甚至服务重启后都能从断点接着推进，
+        不会重头再来。
         """
 
         config = config or self.config()
@@ -476,12 +628,13 @@ class WatchService:
         error = ""
         done = 0
         try:
-            with self.database.session() as db:
-                run = db.get(WatchRun, run_id)
-                manual = bool(run.manual) if run is not None else False
-            # 手动触发的一轮不受每日预算限制（用户明确点了，就让他跑完）。
+            # 每日上限对所有轮次生效——包括手动点的那次。以前这里是
+            # ``not manual``（「用户点了就让他跑完」），但手动开启的轮次
+            # ``manual=True`` 会被后续所有调度器 tick 继承，等于永久绕过每日
+            # 上限，一次误点就能把整月额度打光。用户想多跑就去调高界面上的
+            # 「每日请求上限」。
             while done < limit:
-                if not manual and budget and self._today_requests() >= budget:
+                if budget and self._today_requests() >= budget:
                     status = "budget"
                     break
                 targets = self.next_targets(1, config, before=started)
@@ -499,11 +652,11 @@ class WatchService:
                 self._save_progress(run_id, counters, "running")
                 if result.get("rate_limited"):
                     status = "running" if done < limit else "rate_limited"
-                    error = "Taostats 限速（5 次/分钟），本轮稍后自动继续。"
+                    error = self._rate_limit_note()
                     break
         except TaostatsRateLimitError:
             status = "running"
-            error = "Taostats 限速（5 次/分钟），本轮稍后自动继续。"
+            error = self._rate_limit_note()
         except (TaostatsAuthError, TaostatsUnavailableError) as exc:
             status = "error"
             error = str(exc)
