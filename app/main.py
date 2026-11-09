@@ -551,6 +551,14 @@ class PublicAddressInput(BaseModel):
     marked: bool = True
 
 
+class RevokeAndMarkInput(BaseModel):
+    """从入库日志一键「撤回并标为系统角色」。"""
+
+    role: str = Field(default="exchange", max_length=16)
+    # 前端把条目里的地址带上，免得撤回之后再去猜；留空则由后端从日志取。
+    address: str = Field(default="", max_length=64)
+
+
 class ReconcileInput(BaseModel):
     """按当前地址库校正历史结果（交易所/验证者/公共地址产生的下游关联）。"""
 
@@ -1550,6 +1558,54 @@ def revoke_auto_import(log_id: int):
         return WATCH.revoke(log_id)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/library/auto-import-log/{log_id}/revoke-and-mark")
+def revoke_and_mark(
+    log_id: int,
+    payload: RevokeAndMarkInput,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """撤回一条自动入库，并把该地址标成交易所 / 验证者 / 公共地址。
+
+    用户原话：「点击这三个按钮默认撤回刚自动入的库并移入对应的系统库」。
+
+    这两步必须一起做：只撤回不下结论，地址下次巡检还会被收回来；只下结论
+    不撤回，`auto_import_log` 里会留一条 active 记录，看起来像「它还在库
+    里」。所以合成一个接口，顺序固定为「先撤回、后下结论」——反过来会先
+    被系统分类逻辑移走，再撤回时「删掉自动写入记录」那步就找不到目标。
+    """
+
+    role = (payload.role or "").strip().lower()
+    if role not in {"exchange", "validator", "public"}:
+        raise HTTPException(422, "role 只能是 exchange、validator 或 public")
+    try:
+        revoked = WATCH.revoke(log_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    address = payload.address or revoked.get("address") or ""
+    if not address:
+        raise HTTPException(422, "缺少地址，无法下结论")
+    try:
+        if role == "exchange":
+            decision = svc.decide_exchange_address(address, "confirm")
+        elif role == "validator":
+            decision = svc.decide_validator_address(address, True)
+        else:
+            decision = svc.decide_public_address(address, True)
+    except InputError as exc:
+        # 撤回已经生效（地址已删/已拉黑），这里要如实告知，不能假装整体失败。
+        raise HTTPException(
+            422, f"已撤回自动入库，但标记失败：{exc}"
+        ) from exc
+    return {
+        "ok": True,
+        "role": role,
+        "address": address,
+        "revoked": revoked,
+        "item": decision.get("item"),
+        "correction": decision.get("correction"),
+    }
 
 
 @app.post("/api/library/auto-import-log/revoke-address")

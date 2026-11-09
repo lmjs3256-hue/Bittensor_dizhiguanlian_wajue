@@ -4124,23 +4124,97 @@ async function toggleWatchLogs() {
   if (willShow) await loadWatchLogs();
 }
 
+// 入库日志里的「当前角色」：地址现在被判定成什么，决定给不给标记按钮。
+const WATCH_ROLE_LABELS = {
+  EXCHANGE: "交易所",
+  VALIDATOR: "验证者",
+  PUBLIC: "公共地址",
+};
+
+function watchRoleOf(item) {
+  const names = (item.current_categories || []).map((name) => String(name).toUpperCase());
+  for (const role of ["EXCHANGE", "VALIDATOR", "PUBLIC"]) {
+    if (names.includes(role)) return role;
+  }
+  return "";
+}
+
 function watchLogHtml(item) {
   const kind = item.kind === "stake" ? "代币转移" : item.kind === "mixed" ? "转账 + 代币转移" : "普通转账";
-  const state = item.status === "revoked"
+  const revoked = item.status === "revoked";
+  const state = revoked
     ? '<span class="tag warn">已撤回</span>'
     : '<span class="tag">已入库</span>';
-  const action = item.status === "revoked"
-    ? ""
-    : `<button class="ghost note-save" data-revoke-import="${item.id}" type="button" title="从地址库删掉这条自动入库记录，之后巡检不再收它">撤回</button>`;
-  return `<div class="watch-log-item">
-    <div class="watch-log-line"><code>${esc(shortAddr(item.address))}</code>${state}
+  const role = watchRoleOf(item);
+  const roleTag = role
+    ? `<span class="tag">已标为${esc(WATCH_ROLE_LABELS[role])}</span>`
+    : "";
+  // 地址库里的地址可能已被手工删掉（撤回或整理时），要如实说明。
+  const gone = !revoked && item.in_library === false
+    ? '<span class="tag warn">已不在地址库</span>'
+    : "";
+
+  // 撤回按钮：已撤回的不给；已被判成系统角色的也不需要再撤。
+  const actions = [];
+  if (!revoked) {
+    actions.push(
+      `<button class="ghost note-save" data-revoke-import="${item.id}" type="button" title="从地址库删掉这条自动入库记录，之后巡检不再收它">仅撤回</button>`,
+    );
+    if (!role) {
+      for (const [key, label] of [
+        ["exchange", "交易所"],
+        ["validator", "验证者"],
+        ["public", "公共地址"],
+      ]) {
+        actions.push(
+          `<button class="ghost note-save mark-role" data-revoke-and-mark="${item.id}"
+             data-mark-role="${key}" data-mark-address="${esc(item.address)}" type="button"
+             title="撤回这条自动入库，并标为${label}（移入系统分组，以后巡检不再收它）">标为${label}</button>`,
+        );
+      }
+    }
+  }
+
+  return `<div class="watch-log-item" data-log-id="${item.id}">
+    <div class="watch-log-line"><code class="watch-log-addr">${esc(shortAddr(item.address))}</code>${state}${roleTag}${gone}
       <span class="tag">${esc(item.book || "未归属")}</span>
       <strong>${esc(formatTao(item.amount_tao))} TAO</strong>
       <small>${esc(kind)} · ${item.tx_count || 0} 笔转账 / ${item.stake_count || 0} 笔代币</small>
-      ${action}
+      <button class="ghost note-save watch-log-toggle" data-watch-log-toggle="${item.id}" type="button"
+        aria-expanded="false" title="展开看完整地址、触发地址和判定依据">详情</button>
+      ${actions.join("")}
     </div>
     <small class="watch-log-reason">${esc(item.reason || "")}</small>
     <small class="watch-log-time">${esc(historyTime(item.created_at))} · 触发地址 <code>${esc(shortAddr(item.trigger_address))}</code></small>
+    <div class="watch-log-detail hidden" id="watch-log-detail-${item.id}">
+      <div class="watch-log-field">
+        <span>入库地址</span>
+        <code>${esc(item.address)}</code>
+        <button class="ghost note-save" data-copy-address="${esc(item.address)}" type="button">复制</button>
+      </div>
+      <div class="watch-log-field">
+        <span>触发地址</span>
+        <code>${esc(item.trigger_address || "—")}</code>
+        ${item.trigger_address ? `<button class="ghost note-save" data-copy-address="${esc(item.trigger_address)}" type="button">复制</button>` : ""}
+      </div>
+      <div class="watch-log-field">
+        <span>归属 / 触发库</span>
+        <code>${esc(item.book || "未归属")} · ${esc(item.trigger_book || "未归属")}</code>
+      </div>
+      <div class="watch-log-field">
+        <span>区块范围</span>
+        <code>${item.first_block || 0} → ${item.last_block || 0}</code>
+      </div>
+      <div class="watch-log-field">
+        <span>当前分类</span>
+        <code>${esc((item.current_categories || []).join(" / ") || (item.in_library === false ? "已不在地址库" : "—"))}</code>
+      </div>
+      <div class="watch-log-field">
+        <span>登记时间</span>
+        <code>${esc(historyTime(item.created_at))}</code>
+        ${revoked && item.revoked_at ? `<span class="watch-log-note">撤回于 ${esc(historyTime(item.revoked_at))}</span>` : ""}
+      </div>
+    </div>
   </div>`;
 }
 
@@ -4172,6 +4246,58 @@ async function revokeWatchImport(logId) {
     await loadWatchStatus();
   } catch (error) {
     toast(`撤回失败：${error.message}`, true);
+  }
+}
+
+// 「撤回 + 标为系统角色」：用户要求点一下就同时做这两件事。
+// 只撤回不下结论 → 下次巡检又把它收回来；只下结论不撤回 → 日志里留着
+// active 记录，看着像「它还在库里」。所以后端合成一个接口，前端只负责确认。
+const REVOKE_MARK_LABELS = {
+  exchange: "交易所",
+  validator: "验证者",
+  public: "公共地址",
+};
+
+async function revokeAndMarkWatchImport(logId, role, address) {
+  const label = REVOKE_MARK_LABELS[role] || role;
+  const ok = window.confirm(
+    `把这个地址标为「${label}」？\n\n` +
+      `会做两件事：\n` +
+      `1. 撤回这条自动入库记录，之后巡检不再收它；\n` +
+      `2. 标为${label}并移出当前地址库（归到「${label}」分组）。\n\n` +
+      `地址：${address || "（按日志记录）"}`,
+  );
+  if (!ok) return;
+  try {
+    const data = await api(`/api/library/auto-import-log/${logId}/revoke-and-mark`, {
+      method: "POST",
+      body: JSON.stringify({ role, address: address || "" }),
+    });
+    // toast 是覆盖式的：两条会互相吞掉，所以合成一条。
+    const archive = (data.correction || {}).archives || {};
+    const pruned = (archive.changed || archive.related_removed)
+      ? " 历史查询结果已按新判定重新剪枝。"
+      : "";
+    toast(`已撤回并标为${label}，之后巡检不再收它。${pruned}`);
+    await loadWatchLogs();
+    await loadLibrary();
+    await loadWatchStatus();
+  } catch (error) {
+    toast(`撤回并标记失败：${error.message}`, true);
+    // 可能是「已撤回但标记失败」，刷新一下让界面反映真实状态。
+    await loadWatchLogs();
+    await loadLibrary();
+  }
+}
+
+function toggleWatchLogDetail(logId, button) {
+  const detail = $(`#watch-log-detail-${logId}`);
+  if (!detail) return;
+  const willShow = detail.classList.contains("hidden");
+  detail.classList.toggle("hidden", !willShow);
+  if (button) {
+    button.textContent = willShow ? "收起" : "详情";
+    button.setAttribute("aria-expanded", willShow ? "true" : "false");
   }
 }
 
@@ -4914,6 +5040,20 @@ document.addEventListener("click", (event) => {
   const revokeButton = event.target.closest("[data-revoke-import]");
   if (revokeButton) {
     revokeWatchImport(Number(revokeButton.dataset.revokeImport));
+    return;
+  }
+  const markRoleButton = event.target.closest("[data-revoke-and-mark]");
+  if (markRoleButton) {
+    revokeAndMarkWatchImport(
+      Number(markRoleButton.dataset.revokeAndMark),
+      markRoleButton.dataset.markRole,
+      markRoleButton.dataset.markAddress || "",
+    );
+    return;
+  }
+  const logToggle = event.target.closest("[data-watch-log-toggle]");
+  if (logToggle) {
+    toggleWatchLogDetail(logToggle.dataset.watchLogToggle, logToggle);
     return;
   }
   const button = event.target.closest("[data-save-relation-note]");

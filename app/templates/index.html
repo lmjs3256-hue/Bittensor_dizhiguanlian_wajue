@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.33">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.34">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -238,6 +238,7 @@
                 <option value="">全部</option>
               </select>
               <span id="watch-log-count"></span>
+              <small class="watch-log-tip">点「详情」看完整地址；「标为交易所 / 验证者 / 公共地址」会同时撤回这条自动入库并定性归档。</small>
             </div>
             <div id="watch-log-list" class="watch-log-list"></div>
           </div>
@@ -299,6 +300,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.33"></script>
+  <script src="/static/app.js?v=0.8.34"></script>
 </body>
 </html>

@@ -80,6 +80,60 @@ def _encode_categories(values: list[str]) -> str:
     return json.dumps(values, ensure_ascii=False)
 
 
+# 自动入库时系统写进 note 的前缀。用户自己写的备注永远不会以它开头，
+# 撤回时据此区分「系统说明」和「人工角色说明」。
+AUTO_NOTE_PREFIX = "自动入库"
+# 与 ``service.NOTE_ONLY_SOURCE`` 必须一致（那边是备注专用来源标记）。
+# watch 不能 import service（service 里没有 watch，但 main 同时导入两者，
+# 反向依赖会绕成环），所以这里复制一份常量并加测试守护。
+NOTE_ONLY_SOURCE = "relation-note"
+
+
+def _manual_note_part(row: AddressLibrary) -> str:
+    """从 note 里挑出人工写的那部分（去掉系统自动写的说明）。
+
+    自动入库的 note 形如「自动入库 · 与 6NCK 库累计 45 TAO（1 笔）」，
+    用户后来补充的备注由 ``save_note`` 整体覆盖写入，所以多数情况下一行
+    就够。这里只兜「系统行 + 人工行」混在一起的历史数据。
+    """
+
+    note = (row.note or "").strip()
+    if not note:
+        return ""
+    lines = [line.strip() for line in note.splitlines() if line.strip()]
+    kept = [line for line in lines if not line.startswith(AUTO_NOTE_PREFIX)]
+    return "\n".join(kept)
+
+
+def _has_manual_note(row: AddressLibrary) -> bool:
+    return bool(_manual_note_part(row))
+
+
+def _category_names(row: AddressLibrary) -> list[str]:
+    """地址的全部分类（保留原始写法，主分类排最前），用于界面展示。
+
+    ``_categories`` 返回的是大写集合（用于和 ``SKIP_CATEGORIES`` 比对），
+    直接拿去显示会丢掉用户自建分类的原始写法（如「群友」）和顺序。
+    """
+
+    names: list[str] = []
+    primary = str(row.category or "").strip()
+    if primary:
+        names.append(primary)
+    raw = getattr(row, "categories", "") or ""
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = []
+        if isinstance(parsed, list):
+            for item in parsed:
+                name = str(item).strip()
+                if name and name not in names:
+                    names.append(name)
+    return names
+
+
 class WatchService:
     """巡检引擎。所有方法都是同步的，调用方负责放进线程里跑。"""
 
@@ -193,6 +247,30 @@ class WatchService:
         config = self.config()
         return len(self._watchable_addresses(config))
 
+    @staticmethod
+    def _should_watch(row: AddressLibrary, config: dict[str, Any]) -> bool:
+        """这个地址该不该进巡检队列（唯一判据，别在别处另写一套）。
+
+        三条排除：
+
+        1. 系统角色（交易所 / 验证者 / 公共地址 / 系统）——汇聚型地址，
+           查它等于拿额度换噪音；
+        2. 仅备注记录（``relation-note``，不在任何库）——用户只是给扫描结果
+           里某个地址写了句角色说明，那不是"入库"，自然不该被巡检。撤回自动
+           入库时如果保留人工备注，记录会转成这种形态，靠这一条挡住；
+        3. 自动入库的地址（默认）——否则会顺着转账一路扩散把库撑爆。
+        """
+
+        if _categories(row) & SKIP_CATEGORIES:
+            return False
+        if str(row.source or "").startswith(NOTE_ONLY_SOURCE):
+            return False
+        if not config["follow_auto_imported"] and str(row.source or "").startswith(
+            "auto-watch"
+        ):
+            return False
+        return True
+
     def _watchable_addresses(
         self, config: dict[str, Any], db: Any = None
     ) -> list[str]:
@@ -207,16 +285,9 @@ class WatchService:
         else:
             with self.database.session() as session:
                 rows = session.scalars(select(AddressLibrary)).all()
-        picked: list[str] = []
-        for row in rows:
-            if _categories(row) & SKIP_CATEGORIES:
-                continue
-            if not config["follow_auto_imported"] and str(row.source or "").startswith(
-                "auto-watch"
-            ):
-                continue
-            picked.append(row.address)
-        return picked
+        return [
+            row.address for row in rows if self._should_watch(row, config)
+        ]
 
     def _cycle_start(self, db: Any = None) -> datetime | None:
         """本轮的起点时间。
@@ -434,6 +505,15 @@ class WatchService:
             rows = db.scalars(
                 stmt.order_by(AutoImportLog.id.desc()).limit(limit).offset(offset)
             ).all()
+            # 顺带带上这批地址「现在」在地址库里的分类与结论，前端据此显示
+            # 「当前角色」并避免对已下过结论的地址重复给按钮。
+            wanted = [row.address for row in rows]
+            current: dict[str, AddressLibrary] = {}
+            if wanted:
+                for entry in db.scalars(
+                    select(AddressLibrary).where(AddressLibrary.address.in_(wanted))
+                ).all():
+                    current[entry.address] = entry
         return {
             "total": total,
             "items": [
@@ -454,6 +534,24 @@ class WatchService:
                     "status": row.status,
                     "created_at": iso_utc(row.created_at),
                     "revoked_at": iso_utc(row.revoked_at),
+                    # 这个地址「现在」在地址库里是什么角色（可能已经被标成
+                    # 交易所/验证者/公共地址，也可能已被手工删掉）。
+                    "current_category": (
+                        current[row.address].category
+                        if row.address in current
+                        else ""
+                    ),
+                    "current_categories": (
+                        _category_names(current[row.address])
+                        if row.address in current
+                        else []
+                    ),
+                    "current_book": (
+                        getattr(current[row.address], "book", "") or ""
+                        if row.address in current
+                        else ""
+                    ),
+                    "in_library": row.address in current,
                 }
                 for row in rows
             ],
@@ -474,11 +572,29 @@ class WatchService:
                 select(AddressLibrary).where(AddressLibrary.address == log.address)
             )
             # 只删「自动来的、没被人工改过分类」的记录；人工动过的保留，只拉黑。
+            #
+            # 例外：自动入库之后用户又写了备注的，不能整行删——那会把人工写的
+            # 角色说明一起抹掉（撤回只是"不再自动收它"，不是"忘掉我写过什么"）。
+            # 这种情况改成"转成仅备注记录"：清 book、清自动入库的 note 与来源，
+            # 保留人工备注，界面上归到「仅备注（未归入地址库）」组。
             if row is not None and str(row.source or "").startswith("auto-watch"):
                 if not row.exchange_confirmed and not row.exchange_rejected:
-                    db.delete(row)
-                    removed = True
-            return {"ok": True, "already": already, "removed": removed}
+                    if _has_manual_note(row):
+                        row.book = ""
+                        row.note = _manual_note_part(row)
+                        row.source = NOTE_ONLY_SOURCE
+                        removed = True
+                    else:
+                        db.delete(row)
+                        removed = True
+            return {
+                "ok": True,
+                "already": already,
+                "removed": removed,
+                # 调用方（「撤回并标为交易所/验证者/公共地址」）要拿它继续下结论，
+                # 否则还得再查一次库，撤完就查不到地址了。
+                "address": log.address,
+            }
 
     def revoke_address(self, address: str) -> dict[str, Any]:
         """按地址撤回：把该地址所有自动入库记录标成已撤回。"""
@@ -528,11 +644,7 @@ class WatchService:
         # 后过滤干净，于是 next_targets 返回空，巡检每轮都「瞬间完成」。
         eligible: list[tuple[datetime | None, int, AddressLibrary]] = []
         for row in rows:
-            if _categories(row) & SKIP_CATEGORIES:
-                continue
-            if not config["follow_auto_imported"] and str(row.source or "").startswith(
-                "auto-watch"
-            ):
+            if not self._should_watch(row, config):
                 continue
             checked = states.get(row.address)
             if checked is not None and checked.tzinfo is None:

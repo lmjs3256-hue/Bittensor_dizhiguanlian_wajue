@@ -573,6 +573,7 @@ body.access-locked .shell { filter:blur(2px); pointer-events:none; user-select:n
 .watch-log-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .watch-log-head select { width:auto; padding:6px 10px; font-size:12px; }
 .watch-log-head #watch-log-count { color:var(--muted); font-size:11.5px; }
+.watch-log-tip { flex:1 1 260px; color:var(--muted); font-size:11px; line-height:1.5; }
 .watch-log-list { display:grid; gap:7px; max-height:380px; overflow:auto; }
 .watch-log-item { border:1px solid var(--line); border-radius:9px; padding:9px 11px; background:var(--bg); display:grid; gap:3px; }
 .watch-log-line { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
@@ -580,6 +581,23 @@ body.access-locked .shell { filter:blur(2px); pointer-events:none; user-select:n
 .watch-log-line small { color:var(--muted); font-size:11px; }
 .watch-log-reason,.watch-log-time { color:var(--muted); font-size:11px; line-height:1.55; }
 .watch-log-time code { color:var(--ink); }
+/* 入库日志：展开详情 + 一键标为系统角色（0.8.34） */
+.watch-log-addr { cursor:default; }
+.watch-log-toggle { margin-left:auto; }
+.watch-log-item .mark-role { border-color:var(--warn); color:var(--warn); }
+.watch-log-item .mark-role:hover { background:var(--warn-soft); }
+.watch-log-detail { display:grid; gap:6px; margin-top:8px; padding-top:9px; border-top:1px dashed var(--line); }
+.watch-log-field { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:11.5px; }
+.watch-log-field > span:first-child { flex:0 0 88px; color:var(--muted); }
+.watch-log-field code { flex:1 1 260px; min-width:0; word-break:break-all; font-size:11.5px; color:var(--ink); }
+.watch-log-field .note-save { flex:0 0 auto; }
+.watch-log-note { color:var(--muted); }
+@media (max-width:640px) {
+  .watch-log-line { gap:6px; }
+  /* 手机上「详情」不靠右挤，跟着按钮一起换行 */
+  .watch-log-toggle { margin-left:0; }
+  .watch-log-field > span:first-child { flex-basis:100%; }
+}
 
 /* -- 关联强度徽章 -------------------------------------------------------- */
 .strength-badge { display:inline-block; border-radius:20px; padding:3px 9px; font-size:11px; font-weight:650; white-space:nowrap; }

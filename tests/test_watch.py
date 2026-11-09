@@ -507,6 +507,128 @@ def test_progress_marks_resumed_run(database, monkeypatch, config):
     assert progress["resumed"] is True
 
 
+# -- 入库日志直连操作：撤回并标为系统角色 -----------------------------------
+def _import_one(database, monkeypatch, config):
+    """跑一次巡检，产出恰好一条自动入库记录，返回 (service, log)。"""
+
+    build(database, LIB_ADDRESS, "6NCK")
+    pages = {LIB_ADDRESS: [row(LIB_ADDRESS, NEW_ADDRESS, 900, 5)]}
+    fake_pages(monkeypatch, pages)
+    service = WatchService(database)
+    service._check_address(LIB_ADDRESS, config)  # 只建基线
+    pages[LIB_ADDRESS] = [row(LIB_ADDRESS, NEW_ADDRESS, 1000, 45, "0xabc")]
+    service._check_address(LIB_ADDRESS, config)
+    logs = service.logs()["items"]
+    assert len(logs) == 1
+    return service, logs[0]
+
+
+def test_revoke_returns_address_for_followup(database, monkeypatch, config):
+    """撤回要回传地址，调用方才能接着下结论。"""
+
+    service, log = _import_one(database, monkeypatch, config)
+    result = service.revoke(log["id"])
+
+    assert result["ok"] is True
+    assert result["removed"] is True
+    assert result["address"] == NEW_ADDRESS
+
+
+def test_logs_carry_current_role(database, monkeypatch, config):
+    """日志条目要带地址「现在」的角色，界面据此决定给不给标记按钮。"""
+
+    service, log = _import_one(database, monkeypatch, config)
+    item = service.logs()["items"][0]
+    assert item["in_library"] is True
+    assert item["current_book"] == "6NCK"
+    assert "EXCHANGE" not in [name.upper() for name in item["current_categories"]]
+
+    # 标成公共地址后，同一条日志再读就应显示为 PUBLIC
+    LinkService(database, "wss://example.invalid").decide_public_address(
+        NEW_ADDRESS, True
+    )
+    item = service.logs()["items"][0]
+    assert "PUBLIC" in [name.upper() for name in item["current_categories"]]
+
+
+def test_revoke_then_mark_sequence_moves_to_system_group(
+    database, monkeypatch, config
+):
+    """撤回 → 标为验证者：地址离开原库，归到验证者，且巡检不再收它。"""
+
+    service, log = _import_one(database, monkeypatch, config)
+    svc = LinkService(database, "wss://example.invalid")
+
+    revoked = service.revoke(log["id"])
+    assert revoked["removed"] is True
+    decision = svc.decide_validator_address(revoked["address"], True)
+
+    with database.session() as db:
+        row = db.query(AddressLibrary).filter_by(address=NEW_ADDRESS).one()
+        assert row.book == ""
+        assert "VALIDATOR" in [
+            name.upper() for name in watch_module._category_names(row)
+        ]
+        assert row.exchange_confirmed is False
+    assert decision["marked"] is True
+
+    # 撤回后又被标成系统角色：巡检不会再把它收进来
+    assert service.watchable_count() == 1  # 只剩 LIB_ADDRESS
+    targets = [item.address for item in service.next_targets(10, config)]
+    assert NEW_ADDRESS not in targets
+
+
+def test_note_only_source_matches_service():
+    """watch 里复制的 NOTE_ONLY_SOURCE 必须和 service 的一致。
+
+    watch 不能 import service（会绕成环），所以常量复制了一份；这里守住。
+    """
+
+    from app import service as service_module
+
+    assert watch_module.NOTE_ONLY_SOURCE == service_module.NOTE_ONLY_SOURCE
+
+
+def test_revoke_keeps_manual_note(database, monkeypatch, config):
+    """撤回不能把用户手写的备注一起删掉：转成仅备注记录。"""
+
+    service, log = _import_one(database, monkeypatch, config)
+    svc = LinkService(database, "wss://example.invalid")
+    svc.save_note(NEW_ADDRESS, "某交易所热钱包")
+
+    revoked = service.revoke(log["id"])
+    assert revoked["removed"] is True
+
+    with database.session() as db:
+        row = db.query(AddressLibrary).filter_by(address=NEW_ADDRESS).first()
+        assert row is not None, "有人工备注的地址不该被整行删掉"
+        assert row.book == ""
+        assert row.note == "某交易所热钱包"
+        assert not str(row.source or "").startswith("auto-watch")
+
+    # 撤回后依然不再自动入库
+    assert NEW_ADDRESS not in {item.address for item in service.next_targets(20, config)}
+
+
+def test_revoke_then_mark_keeps_manual_note(database, monkeypatch, config):
+    """撤回后再标为交易所，人工备注也还在（整条链路都不能抹掉它）。"""
+
+    service, log = _import_one(database, monkeypatch, config)
+    svc = LinkService(database, "wss://example.invalid")
+    # 先写备注（地还在库里），再撤回、再下结论——这是真实操作顺序。
+    svc.save_note(NEW_ADDRESS, "某交易所热钱包")
+
+    revoked = service.revoke(log["id"])
+    svc.decide_exchange_address(revoked["address"], "confirm")
+
+    with database.session() as db:
+        row = db.query(AddressLibrary).filter_by(address=NEW_ADDRESS).one()
+        assert row.category == "EXCHANGE"
+        assert row.exchange_confirmed is True
+        assert row.book == ""
+        assert "热钱包" in (row.note or "")
+
+
 # -- 强度分级与排序 ---------------------------------------------------------
 def test_strength_levels_and_sorting():
     library = [
