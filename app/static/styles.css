@@ -785,6 +785,11 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 .library-actions { flex-wrap:wrap; justify-content:flex-end; gap:8px; }
 .library-actions > button { padding:9px 12px; font-size:12px; }
 .library-actions .select-all-control { margin-left:auto; padding-right:4px; }
+/* 地址库搜索提示：告诉用户命中几条、是不是按后四位精确匹配（0.8.37） */
+.library-search-hint { margin:8px 0 2px; padding:7px 11px; border-radius:8px; background:var(--accent-soft); color:var(--accent); font-size:11.5px; line-height:1.55; }
+/* 后缀精确命中的地址行：底色淡高亮，一眼认出「就是这条」 */
+.library-row-suffix-hit > td { background:var(--accent-soft) !important; }
+.library-suffix-tag { margin-left:6px; padding:1px 6px; border-radius:5px; background:var(--accent); color:var(--on-accent); font-size:10px; white-space:nowrap; }
 .library-actions #delete-selected { padding:9px 14px; font-weight:700; }
 .category-add label { min-width:200px; max-width:280px; }
 

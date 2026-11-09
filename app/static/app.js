@@ -2059,9 +2059,12 @@ function libraryRowsTable(rows) {
     const labelCell = `<span class="label-text${row.label_custom ? "" : " is-default"}" title="${row.label_custom ? "组名（整组共用）" : `未命名，默认显示地址后四位（${esc(row.label)}）`}">${esc(row.label || "-")}</span>`;
     // 分类是「组」的属性：单条地址不单独改分类，改分类在组标题上做。
     const editorRow = "";
-    return `<tr>
+    // 按后四位搜索时，精确命中的那一行要一眼认出来：整行淡高亮 + 地址旁标注。
+    const suffixHit = Boolean(state.librarySearch.trim())
+      && librarySearchMatchKind(row, state.librarySearch.trim().toLowerCase()) === "suffix";
+    return `<tr${suffixHit ? ' class="library-row-suffix-hit"' : ""}>
       <td class="selection-cell"><input type="checkbox" data-library-select value="${row.id}" aria-label="选择第 ${row.id} 条地址"${state.librarySelection.has(String(row.id)) ? " checked" : ""}${row.builtin_locked ? ' disabled title="内置固定名单地址，不能批量删除"' : ""}></td>
-      <td class="mono address library-address-cell"><div class="address-main">${addressLink(row.address, shortAddr(row.address))}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button></div></td>
+      <td class="mono address library-address-cell"><div class="address-main">${addressLink(row.address, shortAddr(row.address))}${suffixHit ? '<span class="library-suffix-tag">后四位匹配</span>' : ""}<button class="ghost copy-address" data-copy-address="${esc(row.address)}" title="复制完整地址" type="button">复制</button></div></td>
       <td class="library-label-cell">${labelCell}</td>
       <td><div class="category-chips">${chips}</div>${exchangeControl}${publicControl}</td>
       <td><div class="library-note-editor"><textarea data-library-note-input="${row.id}" maxlength="2000" placeholder="添加备注">${esc(row.note || "")}</textarea><button class="ghost note-save" data-save-library-note="${row.id}" type="button">保存</button></div></td>
@@ -2154,7 +2157,10 @@ function libraryTable(rows) {
   state.libraryGroupIndex.clear();
   return `<div class="library-groups">${[...groups.values()].map((group, index) => {
     const groupId = `library-group-${index}`;
-    const expanded = state.libraryGroupsOpen.has(groupId);
+    // 搜索时自动展开命中的组：不然用户搜到了地址，却看到一组折叠的标题，
+    // 还得挨个点开才能看见那一行——「搜到了却看不到」比搜不到更让人困惑。
+    const searching = Boolean(state.librarySearch.trim());
+    const expanded = searching || state.libraryGroupsOpen.has(groupId);
     // 组 → 全部行 ID：翻页只影响这一页，全选 / 统计仍按整组算。
     state.libraryGroupIndex.set(groupId, group.rows.map((row) => String(row.id)));
     const pageInfo = libraryPageInfo(groupId, group.rows.length);
@@ -2254,6 +2260,27 @@ function updateLibrarySelection() {
 
 // 地址库清单的三重筛选：按地址库(book)、按系统角色(公共地址/交易所/验证者)、按关键词。
 // 标记过的地址（如「公共地址」）因此能在清单里被搜到 / 按角色筛出，解决“标了却找不到”的问题。
+
+// 地址的「后四位」是这套工具里最常用的人工识别方式：界面到处用 `5D3i…b8D1`
+// 这种掩码展示，用户记住的往往就是尾巴那 4 位。所以搜索时先按后缀精确匹配，
+// 命中就把「只可能是系统角色、不是我要找的那个」排在后面。
+//
+// 关键区别（实测）：子串匹配会把 `Thor` 这种看起来像后缀的词也匹配到
+// 「AddressThorXXX」中间去，返回并非同一个地址的结果。这里把两种命中分开：
+//   前缀/子串命中 → 普通结果
+//   后缀精确命中 → 置顶，并标注「匹配后四位」
+const LIBRARY_SUFFIX_MIN = 4;
+
+function librarySearchMatchKind(row, query) {
+  if (!query) return "";
+  const address = String(row.address || "").toLowerCase();
+  // 输入全是地址字符且长度够 → 先试后缀
+  if (query.length >= LIBRARY_SUFFIX_MIN && query.length <= address.length) {
+    if (address.endsWith(query)) return "suffix";
+  }
+  return "";
+}
+
 function libraryRowMatchesFilters(row) {
   if (state.bookFilter && (row.book || "") !== state.bookFilter) return false;
   if (state.libraryRole) {
@@ -2274,12 +2301,27 @@ function libraryRowMatchesFilters(row) {
   return true;
 }
 
+// 让「后四位」命中的排到最前，其余保持原有顺序（稳定排序）。
+function sortLibraryRowsBySearch(rows) {
+  const q = state.librarySearch.trim().toLowerCase();
+  if (q.length < LIBRARY_SUFFIX_MIN) return rows;
+  const suffix = [];
+  const rest = [];
+  for (const row of rows) {
+    (librarySearchMatchKind(row, q) === "suffix" ? suffix : rest).push(row);
+  }
+  if (!suffix.length) return rows;
+  return [...suffix, ...rest];
+}
+
 function renderLibraryList() {
-  const rows = state.library.filter(libraryRowMatchesFilters);
+  const matched = state.library.filter(libraryRowMatchesFilters);
+  const rows = sortLibraryRowsBySearch(matched);
   const total = state.library.length;
   $("#library-count").textContent = rows.length === total
     ? `${total} 条`
     : `${rows.length} / ${total} 条`;
+  renderLibrarySearchHint(matched, rows);
   if (!rows.length) {
     $("#library-table").innerHTML = total
       ? '<div class="placeholder">没有匹配的地址。试试调整搜索词、地址库或角色筛选。</div>'
@@ -2290,6 +2332,32 @@ function renderLibraryList() {
   renderMergePanel();
   renderInterlinkGroups();
   updateLibrarySelection();
+}
+
+// 搜索框下方的一行说明：命中几条、是不是按后四位精确匹配。
+// 不写清楚的话，用户无法判断「搜出来这条是不是我要找的那个地址」。
+function renderLibrarySearchHint(matched, rows) {
+  const hint = $("#library-search-hint");
+  if (!hint) return;
+  const q = state.librarySearch.trim();
+  if (!q) {
+    hint.textContent = "";
+    hint.classList.add("hidden");
+    return;
+  }
+  hint.classList.remove("hidden");
+  const suffixHits = rows.filter((row) => librarySearchMatchKind(row, q.toLowerCase()) === "suffix").length;
+  if (suffixHits) {
+    const extra = rows.length > suffixHits ? `，另有 ${rows.length - suffixHits} 条其他字段命中` : "";
+    hint.textContent = `按地址后四位匹配到 ${suffixHits} 个地址（已置顶）${extra}。`;
+  } else if (q.length >= LIBRARY_SUFFIX_MIN && /^[a-zA-Z0-9]+$/.test(q)) {
+    // 看起来像在找后缀但没命中，要明确说「没有这个后缀」，而不是让人盯着空列表猜。
+    hint.textContent = rows.length
+      ? `没有以「${q}」结尾的地址；下面 ${rows.length} 条是名称/备注等其他字段命中。`
+      : `没有以「${q}」结尾的地址，也没有其他字段命中。`;
+  } else {
+    hint.textContent = `命中 ${rows.length} 条。`;
+  }
 }
 
 
