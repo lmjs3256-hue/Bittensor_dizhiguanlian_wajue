@@ -57,10 +57,23 @@ BUILTIN_STARTUP_RESULT: dict[str, Any] | None = None
 # 地址库巡检：调度器每 30 秒推进一批地址（每地址 1~2 次请求，批量大小
 # 跟随每分钟额度；见 WatchService.addresses_per_tick）。
 WATCH_TICK_SECONDS = 30
-# 本地索引定期自动扫描：默认每 5 分钟扫 16 个新块，不消耗 API 额度。
+# 本地索引定期自动扫描：不消耗 Taostats 额度，走链上 RPC。
+#
+# 以前的配置是「每 300 秒扫 16 块」，而 Bittensor 每 300 秒新增长约 25 块
+# （12 秒/块）——每轮净落后 9 块，跑得越久欠账越多。实测库里已经落后链头
+# 7,541 块（约 25 小时），本地索引因此只剩 2.5 天的碎片数据，764 个可巡检
+# 地址里只有 54 个有记录，根本撑不起「改本地查询」。
+#
+# 实测采集器能力约 0.32 块/秒（链速仅 0.083 块/秒，余量 4 倍），所以按
+# 「每轮要覆盖这期间链增长的量 + 一小段历史欠账」来取块数即可追上。
 LOCAL_AUTO_SCAN_ENABLED = True
 LOCAL_AUTO_SCAN_SECONDS = 300
-LOCAL_AUTO_SCAN_BLOCKS = 16
+# 链在 300 秒内约长 25 块；取 75 块（≈3 倍余量）既能跟住，又能以约
+# 50 块/轮的速度回补历史欠账（7,541 块 ≈ 2.5 小时追平）。
+LOCAL_AUTO_SCAN_BLOCKS = 75
+# 单轮扫描的时间上限：这些 RPC 是本地节点直连，不算 Taostats 额度，
+# 但也不能让一次扫描把调度器阻塞太久。
+LOCAL_AUTO_SCAN_MAX_SECONDS = 240
 
 
 async def _auto_sync_exchanges() -> None:
@@ -328,7 +341,10 @@ async def _local_scan_scheduler() -> None:
                 continue
             async with LOCAL_SCAN_LOCK:
                 result = await asyncio.to_thread(
-                    SERVICE.scan, blocks=LOCAL_AUTO_SCAN_BLOCKS, advance=True
+                    SERVICE.scan,
+                    blocks=LOCAL_AUTO_SCAN_BLOCKS,
+                    advance=True,
+                    catch_up=True,
                 )
                 if result.get("status") == "busy":
                     continue

@@ -944,12 +944,81 @@ Set-Location G:\bittensor-wallet-link-intel
 
 ---
 
-## 附：当前基线（0.8.33）
+## 61. 0.8.36 巡检改本地索引（为什么现在收益是 0%）+ 一次查询 500 的教训
+
+### 61.1 「后续改本地查询」的真实可行性
+
+用户思路：巡检每轮每个地址 2 次请求、754 个地址约 1500 次/轮，太浪费额度，
+能否第一遍走 API、之后改本地索引。
+
+**方向对**（本地索引由链上 RPC 直采，完全不消耗 Taostats 额度），但这个库现在的
+收益是 **0/1528 次**。三个硬障碍，改代码解决不了，属于数据前提：
+
+| 障碍 | 实测数字 | 为什么致命 |
+| --- | --- | --- |
+| 索引连续性不足 | 名义 18,254 块，实扫 9,575 块（**52.4%**），缺 8,679 块，含一段 7,715 块的整段空洞 | 用它替代 API 会静默漏转账，漏了无法补 |
+| 地址覆盖不足 | 764 个可巡检地址里只有 **54** 个在本地出现过 | 本地无记录 ≠ 没有新转账 |
+| 游标过早 | **667** 个地址的 baseline 早于本地索引起点 | 中间那段本地没有数据 |
+
+所以实现的是**开关 + 严格判据**，等在索引追上来后自动生效：
+
+- `WatchService.coverage()`：从 `scan_jobs`（只算 success 且 scanned_blocks>0）
+  反推真实扫描区间，再从游标往下回溯找**连续无缝**的一段。**绝不能用
+  `[min(block), max(block)]`** —— 那正是 52% 连续性的来源。
+- `_local_covers(address, baseline, window)`：三条全满足才算覆盖
+  （区间存在、`baseline >= safe_from`、该地址在本地出现过）。
+- `local_window()` 返回可信任区间；本地命中时游标推进到 `window[1]`，
+  否则没新转账时会反复重扫同一段。
+- 配置项 `prefer_local_index`（默认 True），关掉即回到全部走 API。
+
+**另修一个更严重的问题：本地扫描一直追不上链。** 原配置每 300 秒扫 16 块，
+而链每 300 秒长 25 块 → **每轮净落后 9 块**，实测已落后 7,541 块（约 25 小时）。
+实测采集器 0.32 块/秒 vs 链速 0.083 块/秒（余量 4 倍），纯属配置太低。
+现改为 `LOCAL_AUTO_SCAN_BLOCKS = 75`、`MAX_AUTO_SCAN_BLOCKS = 2000`
+（`scan(..., catch_up=True)` 才放开，手动接口仍限 16）。
+
+**后续若要真正吃到收益**，需要一次性历史回填（把可巡检地址的转账补进本地
+索引）。评估点：按 0.32 块/秒，补 25 小时跨度约 15 分钟；但要让「每个地址都
+有记录」，可能需要往回扫几万块，需先确认时间成本可接受。
+
+### 61.2 `/api/relations` + `/api/jobs` 全部 500 的教训（必读）
+
+**症状**：地址扫描完全查不了，服务端 500。
+
+**根因**：`app/service.py` 的 `from decimal import Decimal` 在 0.3.1 之后某次
+重构中丢失（`git log -S "from decimal import Decimal"` 可复现），而
+`prepare_relation_context()` 里用它构造 `BookPairStat` —— 这是**每一次查询**的
+必经之路，于是整条主链路瘫痪。`Decimal` 在该文件只有 2 处引用，平时执行不到。
+
+**为什么测试全绿也没拦住**：`prepare_relation_context` 此前**零测试覆盖**。
+513 条测试没有一条打过 `/api/relations`。
+
+**已加的守卫**（`tests/test_relations_endpoint.py`，三条）：
+1. 端点冒烟：`POST /api/relations` 返回 200 且 `related` 是 list；
+2. 直调 `prepare_relation_context`，断言 `book_pair_stats` 里 `Decimal` 值正确；
+3. 模块级 `hasattr(service_module, "Decimal")`。
+
+实测把导入删掉，三条立刻红（2 failed + 1 error）——不是空壳测试。
+
+**教训**：基础主链路的冒烟测试比细节测试更值钱。以后新增/改动
+`prepare_*`、`service.*` 这类「所有请求都会经过」的函数，必须有直接调用它的测试。
+
+### 61.3 排查这类问题的顺序（实用）
+
+1. `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8766/api/health` —— 服务活着吗；
+2. `tail -40 logs/wallet-link.stderr.log` —— **FastAPI 的异常栈就在这里**，
+   直接看最后几行的 `XXXError`，比猜快得多；
+3. 复现同一个请求（用 `curl` 打同一个端点），确认不是偶发；
+4. 修完先跑针对该端点的测试，再跑全量。
+
+---
+
+## 附：当前基线（0.8.36）
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | 0.8.33 |
-| 测试 | **486 passed / 0 failed**（44 个测试文件） |
+| 版本 | 0.8.36 |
+| 测试 | **516 passed / 0 failed**（46 个测试文件） |
 | Python | 3.12（`installers/` 内置安装器 + wheels，可离线装） |
 | 依赖 | FastAPI / SQLAlchemy 2.x / httpx / async-substrate-interface / cryptography |
 | 入口 | `run.py`（`--remote` / `--tunnel` / `--doctor`）、`start.ps1`、`tunnel.ps1` |

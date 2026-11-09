@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 from . import settings_store, taostats
 from .crawl import stake_counterparty
@@ -29,7 +29,10 @@ from .db import (
     AddressLibrary,
     AutoImportLog,
     BookPairStat,
+    ChainCursor,
     Database,
+    ScanJob,
+    Transfer,
     WatchCandidate,
     WatchRun,
     WatchState,
@@ -150,6 +153,9 @@ class WatchService:
         }
         # 调度器心跳：进度窗口用它区分「正在推进」和「停在上次断点」。
         self._progress_heartbeat: dict[str, Any] = {"at": None, "paused": False}
+        # 本进程内「走本地索引」的次数与省下的 API 请求数，给界面显示。
+        self._local_hits = 0
+        self._api_saved = 0
 
     # -- 巡检让路 ---------------------------------------------------------
     def set_pause(self, state: dict[str, Any]) -> None:
@@ -458,6 +464,16 @@ class WatchService:
                 for row in candidates
             ],
             "api_configured": taostats.is_configured(),
+            # 本地索引优先的省额度效果（本进程累计，重启清零）。
+            "local_index": {
+                "enabled": bool(config.get("prefer_local_index", True)),
+                "hits": self._local_hits,
+                "api_saved": self._api_saved,
+                "window": self.local_window(),
+                # 真实连续性：名义区间多半不连续，只有 safe_from..safe_to
+                # 这一段能安全省额度。
+                "coverage": self.coverage(),
+            },
         }
 
     @staticmethod
@@ -852,6 +868,171 @@ class WatchService:
         except Exception:  # noqa: BLE001 - 进度写失败不该打断巡检
             pass
 
+    # -- 本地索引优先（省额度） -------------------------------------------
+    def coverage(self) -> dict[str, Any]:
+        """本地索引的真实覆盖情况：区间、连续性、可用上界。
+
+        不能简单取 ``[min(block), max(block)]`` 当"已覆盖"——实测库里这个
+        区间是 18,254 块，但真正扫过的只有 9,575 块（52%），中间缺 8,679
+        块（含一段 7,715 块的整段空洞，来自早期某个失败任务）。拿这种不连续
+        的区间冒充"已覆盖"，巡检就会静默漏掉真实转账。
+
+        所以这里从**扫描任务**（``scan_jobs``，只算成功的、扫过块的）反推
+        真正扫过的区间集合，再算出一个"可以安全信任的连续上界"：
+
+        * 从游标往上回溯，遇到缺口就停；
+        * 只有从 ``safe_from`` 到 ``safe_to`` 连续无缝，才敢说这段可信。
+        """
+
+        with self.database.session() as db:
+            cursor = db.scalar(select(ChainCursor).limit(1))
+            cursor_block = int(cursor.last_block) if cursor and cursor.last_block else 0
+            jobs = db.scalars(
+                select(ScanJob)
+                .where(ScanJob.status == "complete", ScanJob.scanned_blocks > 0)
+                .order_by(ScanJob.start_block)
+            ).all()
+        ranges = [
+            (int(job.start_block), int(job.end_block))
+            for job in jobs
+            if job.start_block and job.end_block
+        ]
+        if not ranges or not cursor_block:
+            return {
+                "available": False,
+                "safe_from": 0,
+                "safe_to": 0,
+                "covered_blocks": 0,
+                "span_blocks": 0,
+                "ratio": 0.0,
+            }
+        covered = sum(end - start + 1 for start, end in ranges)
+        span = ranges[-1][1] - ranges[0][0] + 1
+        # 从游标往下回溯，找"连续无缝"的一段。
+        #
+        # ranges 已按起始块升序；逆序走，用 safe_from 表示当前连续段的下界。
+        # 只有某段的 end 与 safe_from 相接（end >= safe_from - 1）才能继续
+        # 往下延伸；中间一旦出现空隙就停，避免把断点之外的数据也算进来。
+        safe_from = cursor_block
+        for start, end in sorted(ranges, reverse=True):
+            if end < safe_from - 1:
+                break  # 这段与连续段之间有空隙，到此为止
+            safe_from = min(safe_from, start)
+        safe_to = cursor_block
+        if safe_from > safe_to:
+            safe_from = safe_to
+        return {
+            "available": safe_to > safe_from,
+            "safe_from": int(safe_from),
+            "safe_to": int(safe_to),
+            "covered_blocks": covered,
+            "span_blocks": span,
+            "ratio": round(covered / span, 4) if span else 0.0,
+        }
+
+    def local_window(self) -> tuple[int, int] | None:
+        """可安全信任的本地索引块区间 ``(from_block, to_block)``，没有则 None。
+
+        这是"能拿来省 API 额度"的区间，不是名义上的索引范围。参考
+        ``coverage()`` 的说明：名义范围可能只有 52% 连续性。
+        """
+
+        info = self.coverage()
+        if not info["available"]:
+            return None
+        return int(info["safe_from"]), int(info["safe_to"])
+
+    def _local_edges(self, address: str, from_block: int) -> list[dict[str, Any]]:
+        """从本地索引取该地址在 ``from_block`` 之后的全部边。
+
+        覆盖两类事件：
+        * 普通 TAO 转账（``tao_transfer``）——按 from/to 命中；
+        * 代币质押转移（``stake_transfer``）——冷钱包在 ``from_address``。
+
+        金额单位与 ``_edges_from_transfers`` 保持一致（rao → TAO）。
+        """
+
+        with self.database.session() as db:
+            rows = db.scalars(
+                select(Transfer)
+                .where(
+                    Transfer.block_number > from_block,
+                    or_(
+                        Transfer.from_address == address,
+                        Transfer.to_address == address,
+                        # stake 转移：冷钱包作为 from_address 落库。
+                        and_(
+                            Transfer.edge_type == "stake_transfer",
+                            Transfer.from_address == address,
+                        ),
+                    ),
+                )
+                .order_by(Transfer.block_number)
+            ).all()
+        edges: list[dict[str, Any]] = []
+        for row in rows:
+            source = str(row.from_address or "").strip()
+            target = str(row.to_address or "").strip()
+            if source == address:
+                partner = target
+            elif target == address:
+                partner = source
+            else:
+                # stake_transfer 的对手方可能落在 hotkey 上。
+                partner = str(row.hotkey or "").strip()
+            if not partner or partner == address:
+                continue
+            amount = Decimal(int(row.amount_rao or 0)) / Decimal(1_000_000_000)
+            edges.append(
+                {
+                    "counterparty": partner,
+                    "block": int(row.block_number or 0),
+                    "amount": amount.quantize(Decimal("0.000000001")),
+                    "tx": str(row.tx_hash or ""),
+                    "kind": "stake" if row.edge_type == "stake_transfer" else "tao",
+                }
+            )
+        return edges
+
+    def _local_covers(
+        self, address: str, baseline: int, window: tuple[int, int] | None
+    ) -> bool:
+        """本地索引能否完整体现「这个地址在 baseline 之后的新转账」。
+
+        三个条件全满足才算覆盖，任一不满足就退回 API：
+
+        1. 本地索引存在且有覆盖区间 ``[first, last]``；
+        2. ``baseline >= first``——上一轮看到的块必须**落在**本地区间之内。
+           若 baseline 比区间起点还早，中间那段（baseline → first）本地
+           根本没有数据，只看本地会漏掉真实转账；
+        3. ``last > baseline``——本地至少比上一轮多推进了一点，否则没新东西
+           可看，也就没必要声称"已覆盖"（调用方会走 API 拿到最新状态）。
+        4. **该地址在本地索引里出现过**。从没出现过的地址，本地只能证明
+           「我这没数据」，不能证明「它没有新转账」——可能是索引还没扫到
+           和它相关的块，也可能是它的往来都在索引覆盖范围之外。这种情况
+           必须问 API。
+        """
+
+        if window is None:
+            return False
+        first, last = window
+        if baseline < first:
+            return False
+        if last <= baseline:
+            return False
+        with self.database.session() as db:
+            seen = db.scalar(
+                select(Transfer.id)
+                .where(
+                    or_(
+                        Transfer.from_address == address,
+                        Transfer.to_address == address,
+                    )
+                )
+                .limit(1)
+            )
+        return seen is not None
+
     # -- 单个地址 ---------------------------------------------------------
     def _check_address(self, address: str, config: dict[str, Any]) -> dict[str, Any]:
         threshold = Decimal(str(config["threshold_tao"]))
@@ -877,21 +1058,45 @@ class WatchService:
             # 首次巡检（last_checked_at 为空）只建立基线，不把历史对手方灌进库。
             initialized = state is not None and state.last_checked_at is not None
 
-        # 1) TAO 转账
-        try:
-            page = get_transfer_page_query(address=address, page=1, limit=200)
-            requests += 1
-            self.database.record_api_request("/v1/transfers", success=True)
-            edges.extend(self._edges_from_transfers(page.rows, address))
-        except TaostatsRateLimitError:
-            rate_limited = True
-        except (TaostatsAuthError, TaostatsUnavailableError):
-            raise
-        except Exception:  # noqa: BLE001 - 单地址失败不影响整轮
-            pass
+        # -- 本地索引优先：能确定「本地已覆盖这段时间」就不花 API 额度 --
+        #
+        # 一轮完整巡检每个地址要 2 次请求，754 个地址就是约 1500 次/轮。
+        # 而本地索引（链上 RPC 直采）完全不消耗 Taostats 额度，所以只要本地
+        # 真能覆盖「这个地址上一轮之后的新转账」，就没必要再问 API。
+        #
+        # 判据见 _local_covers()：必须本地有区间、baseline 早于区间起点、
+        # 且该地址在本地出现过。任一不满足就退回 API——宁可多花一次请求，
+        # 也不能因为本地数据缺口而漏掉真实转账（漏了就再也不会被补上）。
+        from_local = False
+        if config.get("prefer_local_index", True):
+            window = self.local_window()
+            if self._local_covers(address, baseline, window):
+                try:
+                    edges.extend(self._local_edges(address, baseline))
+                    from_local = True
+                    self._local_hits += 1
+                except Exception:  # noqa: BLE001 - 本地查询失败就退回 API
+                    edges = []
+                    from_local = False
+        if from_local:
+            self._api_saved += 2 if config["include_stake"] else 1
 
-        # 2) 代币（stake）转移
-        if config["include_stake"] and not rate_limited:
+        # 1) TAO 转账（本地没覆盖到才发请求）
+        if not from_local:
+            try:
+                page = get_transfer_page_query(address=address, page=1, limit=200)
+                requests += 1
+                self.database.record_api_request("/v1/transfers", success=True)
+                edges.extend(self._edges_from_transfers(page.rows, address))
+            except TaostatsRateLimitError:
+                rate_limited = True
+            except (TaostatsAuthError, TaostatsUnavailableError):
+                raise
+            except Exception:  # noqa: BLE001 - 单地址失败不影响整轮
+                pass
+
+        # 2) 代币（stake）转移（同上）
+        if config["include_stake"] and not rate_limited and not from_local:
             try:
                 stake_page = get_stake_transfer_page(address, 1)
                 requests += 1
@@ -956,7 +1161,15 @@ class WatchService:
                 state.last_checked_at = utcnow()
                 state.last_error = ""
                 # 首次巡检只建立基线；后续只推进到见过的最大块。
-                state.last_block = max(int(state.last_block or 0), max_block)
+                #
+                # 本地取数时若这段时间没有新转账，edges 为空、max_block=0，
+                # 直接 max() 会让游标原地不动——下一轮又会重复扫同一段本地
+                # 区间。所以本地成功时推进到「本地覆盖上界」，表示这段已经
+                # 确认看过了；下次只有超出这个上界的新块才会再看。
+                advance_to = max_block
+                if from_local and window is not None:
+                    advance_to = max(advance_to, int(window[1]))
+                state.last_block = max(int(state.last_block or 0), advance_to)
         return {
             "requests": requests,
             "new_found": new_found,

@@ -3932,6 +3932,11 @@ function renderWatchProgress(data) {
       parts.push(`预计还需 <b>${formatEta(progress.eta_seconds)}</b>`);
     }
     if (progress.never_checked) parts.push(`从未巡检过 <b>${progress.never_checked}</b> 个`);
+    // 本地索引优先的省额度效果：走本地命中几次、省了多少次 API 请求。
+    const localIndex = data.local_index || {};
+    if (localIndex.enabled && localIndex.hits) {
+      parts.push(`本地索引命中 <b>${localIndex.hits}</b> 次，省下 <b>${localIndex.api_saved || 0}</b> 次请求`);
+    }
     parts.push(`今日请求 <b>${data.today_requests || 0}</b> / ${config.daily_budget || 0}`);
     meta.innerHTML = parts.map((item) => `<span>${item}</span>`).join("");
   }
@@ -4054,6 +4059,8 @@ function fillWatchConfig(config) {
   if (stake) stake.checked = Boolean(config.include_stake);
   const follow = $("#watch-follow");
   if (follow) follow.checked = Boolean(config.follow_auto_imported);
+  const localFirst = $("#watch-local-first");
+  if (localFirst) localFirst.checked = config.prefer_local_index !== false;
 }
 
 async function loadWatchStatus() {
@@ -4080,6 +4087,7 @@ async function saveWatchConfig() {
     addresses_per_tick: Number($("#watch-per-tick")?.value || 0),
     include_stake: Boolean($("#watch-stake")?.checked),
     follow_auto_imported: Boolean($("#watch-follow")?.checked),
+    prefer_local_index: Boolean($("#watch-local-first")?.checked),
   };
   try {
     await api("/api/watch/config", { method: "POST", body: JSON.stringify(payload) });

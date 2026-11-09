@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.35">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.36">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -212,6 +212,7 @@
             <label>每日请求上限<input id="watch-budget" type="number" min="0" step="50" value="700" inputmode="numeric"></label>
             <label title="一次巡检（30 秒）推进几个地址，每个地址约 2 次请求。填 0 表示跟随「每分钟额度」自动算——额度 5 时是 1 个、额度 60 时自动提到 10 个。">每 30 秒推进<input id="watch-per-tick" type="number" min="0" max="50" step="1" value="0" inputmode="numeric"></label>
             <label class="watch-check"><input type="checkbox" id="watch-stake"> 含代币转移</label>
+            <label class="watch-check" title="本地索引由链上 RPC 直采，不消耗 Taostats 额度。打开后，本地已覆盖的区间不再调用 API；本地没覆盖到的地址仍会走 API，不会漏数据。"><input type="checkbox" id="watch-local-first"> 本地索引优先</label>
             <label class="watch-check" title="打开后，自动入库的地址也会继续被巡检，会顺着转账一层层扩散"><input type="checkbox" id="watch-follow"> 跟踪自动入库地址</label>
             <div class="watch-actions">
               <button class="secondary" id="watch-save" type="button">保存设置</button>
@@ -300,6 +301,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.35"></script>
+  <script src="/static/app.js?v=0.8.36"></script>
 </body>
 </html>

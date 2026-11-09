@@ -333,6 +333,9 @@ DEFAULT_WATCH_CONFIG: dict[str, Any] = {
     "auto_import": True,
     # 自动入库的地址默认不再继续巡检，否则会顺着转账一路扩散、把库撑爆。
     "follow_auto_imported": False,
+    # 本地索引优先：本地已覆盖的区间不发 Taostats 请求（不花额度）。
+    # 本地索引由链上 RPC 直采，完全不消耗 Taostats 配额。
+    "prefer_local_index": True,
 }
 
 
@@ -354,6 +357,7 @@ def load_watch_config() -> dict[str, Any]:
     config["include_stake"] = bool(config["include_stake"])
     config["auto_import"] = bool(config["auto_import"])
     config["follow_auto_imported"] = bool(config["follow_auto_imported"])
+    config["prefer_local_index"] = bool(config["prefer_local_index"])
     return config
 
 

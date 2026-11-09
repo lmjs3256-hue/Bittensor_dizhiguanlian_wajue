@@ -9,6 +9,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -73,6 +74,10 @@ from .validation import is_valid_ss58
 
 
 MAX_MANUAL_SCAN_BLOCKS = 16
+# 自动扫描（后台调度器）单轮可扫的块数上限。手动「扫描最新块」限制在 16 是
+# 为了让 HTTP 请求快速返回；后台自动扫描没有这个约束，必须能扫够一整个
+# 调度周期新增的块，否则索引永远追不上链。
+MAX_AUTO_SCAN_BLOCKS = 2000
 # 单轮查询最多发几个 Taostats 请求。默认 5（免费档一分钟的额度），实际取值
 # 跟随「每分钟额度」配置：额度提到 60，单轮也该能一次用满，否则每轮仍只发
 # 5 个请求、一分钟剩余 55 次额度全浪费。
@@ -3916,18 +3921,45 @@ class LinkService:
             latest = db.scalars(
                 select(ScanJob).order_by(ScanJob.id.desc()).limit(6)
             ).all()
+            cursor_block = cursor.last_block if cursor else None
+            # 最近一次扫描看到的链头，是判断「索引跟不跟得上」的唯一依据。
+            # 没有它就只能拿库里最大块号猜，而那个数字恰恰是落后的。
+            head = None
+            for job in latest:
+                if job.head_block:
+                    head = int(job.head_block)
+                    break
+            lag = max(head - cursor_block, 0) if (head and cursor_block) else None
             return {
                 "transfer_count": count,
                 "first_block": first,
                 "last_block": last,
-                "cursor_block": cursor.last_block if cursor else None,
+                "cursor_block": cursor_block,
                 "cursor_hash": cursor.last_hash if cursor else None,
+                "head_block": head,
+                # 落后块数：决定「能不能改成本地查询」的关键指标。
+                "lag_blocks": lag,
+                "lag_minutes": round(lag * 12 / 60, 1) if lag is not None else None,
                 "coverage": "LOCAL_INDEX",
                 "jobs": [job_dict(row) for row in latest],
             }
 
-    def scan(self, blocks: int = 2, advance: bool = False) -> dict[str, Any]:
-        blocks = max(1, min(int(blocks), MAX_MANUAL_SCAN_BLOCKS))
+    def scan(
+        self,
+        blocks: int = 2,
+        advance: bool = False,
+        *,
+        catch_up: bool = False,
+    ) -> dict[str, Any]:
+        """扫描链上区间并写入本地索引。
+
+        ``catch_up=True``（后台自动扫描用）放开块数上限到
+        ``MAX_AUTO_SCAN_BLOCKS``，否则每轮被 16 块卡住、而链每轮长 25 块，
+        索引只会越落越远。手动接口保持 16 块上限，保证 HTTP 快速返回。
+        """
+
+        limit = MAX_AUTO_SCAN_BLOCKS if catch_up else MAX_MANUAL_SCAN_BLOCKS
+        blocks = max(1, min(int(blocks), limit))
         with self.database.session() as db:
             now = datetime.now(timezone.utc)
             # Acquire a SQLite write reservation before checking or creating the
