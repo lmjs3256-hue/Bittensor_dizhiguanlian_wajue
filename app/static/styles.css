@@ -1114,3 +1114,23 @@ header { align-items:flex-start; }
 .strength-sort.active { color:var(--accent); }
 .sort-arrow { font-size:10px; opacity:.85; }
 .strength-sort.active .sort-arrow { opacity:1; font-weight:700; }
+
+/* 每分钟额度设置（0.8.32）
+   升级套餐后额度会变，但 Taostats 没有接口能问出"这把 key 每分钟多少"，
+   只能由用户声明。单占一行，和 key 列表区分开。 */
+.rate-limit-row {
+  display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap;
+  margin-top:10px; padding-top:10px; border-top:1px dashed var(--line);
+}
+.rate-limit-row label {
+  display:flex; flex-direction:column; gap:4px;
+  font-size:11.5px; color:var(--muted); flex:0 0 auto;
+}
+.rate-limit-row input { width:92px; }
+.rate-limit-row button { flex:0 0 auto; }
+#rate-limit-hint { flex:1 1 240px; min-width:0; font-size:11px; color:var(--muted); line-height:1.5; }
+
+@media (max-width:560px) {
+  .rate-limit-row label, .rate-limit-row input, .rate-limit-row button { flex:1 1 100%; }
+  .rate-limit-row input { width:100%; }
+}

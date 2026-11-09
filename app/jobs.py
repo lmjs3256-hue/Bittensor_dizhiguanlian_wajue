@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .crawl import KIND_LABELS, TaostatsCrawl
-from .service import MAX_TAOSTATS_REQUESTS_PER_QUERY, LinkService, RelationContext
+from .service import LinkService, RelationContext, taostats_request_budget
 
 
 def _env_int(name: str, default: int) -> int:
@@ -380,7 +380,9 @@ class RelationJobManager:
         state.api_error = ""
         # 第一轮要扣掉「起始地址画像」已经花掉的请求（同一分钟内），
         # 之后每轮隔 62 秒，额度自然重置，就不再扣。
-        budget = MAX_TAOSTATS_REQUESTS_PER_QUERY
+        # 单轮预算跟随「每分钟额度」：升级套餐后一轮能吃更多，
+        # 否则每分钟剩下的额度全浪费。
+        budget = taostats_request_budget()
         if job.rounds_done == 0:
             budget = max(0, budget - job.prefetched_requests)
         try:
@@ -488,7 +490,7 @@ class RelationJobManager:
                 job.crawl,
                 pending_note="",
                 # 爬取已经结束，余额查询不再和关联请求抢额度。
-                balance_budget_left=MAX_TAOSTATS_REQUESTS_PER_QUERY,
+                balance_budget_left=taostats_request_budget(),
                 # 停止续查时跳过余额 RPC：用户要的是马上看到已有结果。
                 include_balances=status != "cancelled",
                 # 两批余额 RPC 合计最多 12 秒：地址再多、节点再慢也要立刻出结果。
@@ -543,7 +545,7 @@ class RelationJobManager:
             next_round_in = 0
         remaining = state.pending_total
         plan = (
-            job.crawl.preview_next_round(MAX_TAOSTATS_REQUESTS_PER_QUERY)
+            job.crawl.preview_next_round(taostats_request_budget())
             if state.has_work and not job.is_finished
             else {"requests": 0, "counts": {}, "samples": []}
         )
@@ -558,13 +560,13 @@ class RelationJobManager:
             "round_interval_seconds": job.round_interval,
             "requests_total": job.total_requests,
             "requests_last_round": job.requests_last_round,
-            "requests_per_round": MAX_TAOSTATS_REQUESTS_PER_QUERY,
+            "requests_per_round": taostats_request_budget(),
             "prefetched_requests": job.prefetched_requests,
             "pending_transfer": state.pending_transfer,
             "pending_stake": state.pending_stake,
             "remaining_requests": remaining,
             "estimated_rounds_left": (
-                math.ceil(remaining / MAX_TAOSTATS_REQUESTS_PER_QUERY)
+                math.ceil(remaining / taostats_request_budget())
                 if remaining
                 else 0
             ),

@@ -313,6 +313,54 @@ function restoreApiKeyFold() {
   setApiKeyBody(!folded);
 }
 
+/* 每分钟额度输入框与当前生效值同步。
+   升级套餐（例如免费 5 → 60）后必须能改，否则本地保护窗口会一直按 5 拦，
+   明明有额度却一直提示"限速"。 */
+function syncRateLimitInput() {
+  const input = $("#rate-per-minute");
+  if (!input) return;
+  const perKey = state.keyPoolPerKey || 5;
+  input.value = String(perKey);
+  const hint = $("#rate-limit-hint");
+  if (hint) {
+    const keys = state.keyPool.length || 1;
+    hint.textContent =
+      `免费档是 5；升级后按实际填。当前生效 ${perKey} 次/分钟/把；` +
+      `${keys} 把 key 合计 ${perKey * keys} 次/分钟。` +
+      "Taostats 没有接口能让本地问出你的套餐额度，所以只能由你声明。";
+  }
+}
+
+async function saveRateLimit(button) {
+  const input = $("#rate-per-minute");
+  if (!input) return;
+  const value = Number(input.value);
+  if (!Number.isFinite(value) || value < 1) {
+    toast("每分钟额度要填一个大于 0 的整数。", true);
+    input.focus();
+    return;
+  }
+  if (button) button.disabled = true;
+  try {
+    const result = await api("/api/settings/taostats/rate", {
+      method: "POST",
+      body: JSON.stringify({ per_minute: Math.floor(value) }),
+    });
+    state.keyPoolPerKey = result.per_minute;
+    await loadKeyPool();
+    showTaostatsKeyStatus(state.taostatsConfigured, state.taostatsKeyStorage);
+    const keys = state.keyPool.length || 1;
+    toast(
+      `已设为每把 key ${result.per_minute} 次/分钟；${keys} 把合计 ${result.per_minute * keys} 次/分钟。立即生效。`,
+      false
+    );
+  } catch (error) {
+    toast(`保存额度失败：${error.message}`, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 /* -- Taostats key 池 --------------------------------------------------------
    多人同时查会互相挤：单把 key 每分钟只有 5 次额度，先到的人占满、后到的人
    直接吃 429。多把 key 各占一份额度，池子按「剩余额度最多」调度。
@@ -418,6 +466,7 @@ async function loadKeyPool() {
     const data = await api("/api/settings/taostats/keys");
     state.keyPool = (data.items || []).map((item) => ({ ...item }));
     state.keyPoolPerKey = data.per_key_rate || 5;
+    syncRateLimitInput();
     renderKeyPool();
     return data;
   } catch (error) {
@@ -3883,6 +3932,8 @@ function fillWatchConfig(config) {
   }
   const budget = $("#watch-budget");
   if (budget) budget.value = config.daily_budget ?? 700;
+  const perTick = $("#watch-per-tick");
+  if (perTick) perTick.value = config.addresses_per_tick ?? 0;
   const stake = $("#watch-stake");
   if (stake) stake.checked = Boolean(config.include_stake);
   const follow = $("#watch-follow");
@@ -3909,13 +3960,17 @@ async function saveWatchConfig() {
     threshold_tao: Number($("#watch-threshold")?.value || 30),
     interval_minutes: Number($("#watch-interval")?.value || 1440),
     daily_budget: Number($("#watch-budget")?.value || 700),
+    addresses_per_tick: Number($("#watch-per-tick")?.value || 0),
     include_stake: Boolean($("#watch-stake")?.checked),
     follow_auto_imported: Boolean($("#watch-follow")?.checked),
   };
   try {
     await api("/api/watch/config", { method: "POST", body: JSON.stringify(payload) });
     await loadWatchStatus();
-    toast(`巡检设置已保存：${payload.enabled ? "开启" : "关闭"}，阈值 ${payload.threshold_tao} TAO，${payload.include_stake ? "含" : "不含"}代币转移。`);
+    const perTickText = payload.addresses_per_tick > 0
+      ? `每 30 秒推进 ${payload.addresses_per_tick} 个地址`
+      : "每 30 秒推进量跟随每分钟额度自动算";
+    toast(`巡检设置已保存：${payload.enabled ? "开启" : "关闭"}，阈值 ${payload.threshold_tao} TAO，${payload.include_stake ? "含" : "不含"}代币转移，${perTickText}。`);
   } catch (error) {
     toast(`保存巡检设置失败：${error.message}`, true);
   }
@@ -4564,6 +4619,10 @@ setTheme(savedTheme, false);
 $("#theme-select").addEventListener("change", (event) => setTheme(event.target.value));
 $("#save-taostats-keys").addEventListener("click", (event) => saveKeyPool(event.currentTarget));
 $("#keypool-add").addEventListener("click", addKeyPoolEntry);
+$("#save-rate-limit").addEventListener("click", (event) => saveRateLimit(event.currentTarget));
+$("#rate-per-minute").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") saveRateLimit($("#save-rate-limit"));
+});
 $("#keypool-new-key").addEventListener("keydown", (event) => {
   if (event.key === "Enter") addKeyPoolEntry();
 });

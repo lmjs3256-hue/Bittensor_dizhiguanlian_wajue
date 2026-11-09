@@ -100,6 +100,12 @@ async def lifespan(_app: FastAPI):
     # 上次保存过 Taostats key 就自动装回内存，避免每次重启都要重填。
     # 多把 key 时先装池：池里第一把同时充当「单 key 兼容路径」的那一把，
     # 这样诊断、导出等只认单个 key 的地方行为不变。
+    # 每分钟额度：升级套餐后额度会变，Taostats 没有接口能让本地问出"这把 key
+    # 是什么档、每分钟多少"，所以只能由用户在页面上填。启动时读回上次保存的值。
+    saved_rate = settings_store.load_requests_per_minute()
+    if saved_rate:
+        taostats.set_requests_per_minute(saved_rate)
+
     saved_keys = settings_store.load_api_keys()
     if saved_keys:
         taostats.set_key_pool(saved_keys)
@@ -296,7 +302,11 @@ async def _watch_scheduler() -> None:
                 WATCH.set_pause(pause)
                 if pause["paused"]:
                     continue
-                await asyncio.to_thread(WATCH.tick, 1)
+                # 一次推进几个地址跟随「每分钟额度」：以前写死 1 个，升级到
+                # 60 次/分钟也只会 30 秒推 1 个（≈4 次/分钟），额度全浪费。
+                # 用户在巡检配置里填了固定值就用固定值。
+                per_tick = await asyncio.to_thread(WATCH.addresses_per_tick)
+                await asyncio.to_thread(WATCH.tick, per_tick)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 巡检失败不能拖垮服务
@@ -438,6 +448,8 @@ class WatchConfigInput(BaseModel):
     threshold_tao: float | None = Field(default=None, ge=0, le=1_000_000)
     include_stake: bool | None = None
     daily_budget: int | None = Field(default=None, ge=0, le=100_000)
+    # 一次巡检推进几个地址；0 = 跟随每分钟额度自动算。
+    addresses_per_tick: int | None = Field(default=None, ge=0, le=50)
     auto_import: bool | None = None
     follow_auto_imported: bool | None = None
 
@@ -836,7 +848,32 @@ def get_taostats_keys():
         "storage": settings_store.api_keys_storage_kind(),
         "configured": taostats_is_configured(),
         # 每把 key 各自的每分钟额度，前端据此算"池子总容量"。
-        "per_key_rate": taostats.LOCAL_REQUESTS_PER_MINUTE,
+        "per_key_rate": taostats.requests_per_minute(),
+    }
+
+
+class RateLimitInput(BaseModel):
+    per_minute: int = Field(ge=1, le=600)
+
+
+@app.post("/api/settings/taostats/rate")
+def set_taostats_rate(payload: RateLimitInput):
+    """设置「每把 key 每分钟」的本地限速。
+
+    为什么需要手动填：Taostats 没有提供任何接口能让本地查询出「这把 key 属于
+    哪个套餐、每分钟多少额度」，服务端只在超限时回 429。所以本地保护窗口只能
+    按用户声明的额度来配——免费档 5，升级后按实际填。
+
+    配高了只会多吃几次 429（该 key 会被自动冷却一段时间），不会写坏数据；
+    配低了会白白浪费额度。改完立即生效，不需要重启。
+    """
+
+    limit = taostats.set_requests_per_minute(payload.per_minute)
+    settings_store.save_requests_per_minute(limit)
+    return {
+        "saved": True,
+        "per_minute": limit,
+        "items": taostats.key_pool_status(),
     }
 
 

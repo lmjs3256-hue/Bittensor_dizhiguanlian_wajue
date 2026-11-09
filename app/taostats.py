@@ -20,7 +20,34 @@ VALIDATORS_ACTIVE_URL = "https://api.taostats.io/v1/validators/active"
 EXCHANGE_ADDRESSES_URL = "https://api.taostats.io/v1/exchange-addresses"
 STAKE_EVENTS_URL = "https://api.taostats.io/v1/subnets/stake-events"
 ACCOUNT_LATEST_URL = "https://api.taostats.io/api/account/latest/v1"
-LOCAL_REQUESTS_PER_MINUTE = 5
+# 每把 key 每分钟允许的本地请求数。
+#
+# **不是固定 5，也不做"自动识别套餐"**——Taostats 没提供任何接口能让本地查询
+# 出「这把 key 属于哪个套餐、每分钟多少额度」，服务端只在超限时回 429。所以
+# 这里做成**可配置**：默认 5（免费档），升级后在页面填实际额度即可。
+# 配得比真实额度高只会让你多吃几次 429（会被自动冷却），配低了会白白浪费额度。
+DEFAULT_REQUESTS_PER_MINUTE = 5
+LOCAL_REQUESTS_PER_MINUTE = DEFAULT_REQUESTS_PER_MINUTE
+
+
+def set_requests_per_minute(value: int) -> int:
+    """设置每把 key 每分钟的本地限速；返回生效值。
+
+    只影响本地保护窗口，不改变 Taostats 侧的配额。运行时生效，不需要重启。
+    """
+
+    global LOCAL_REQUESTS_PER_MINUTE
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = DEFAULT_REQUESTS_PER_MINUTE
+    # 太低会让查询几乎无法推进，太高则只是多吃 429；夹在合理区间内。
+    LOCAL_REQUESTS_PER_MINUTE = max(1, min(limit, 600))
+    return LOCAL_REQUESTS_PER_MINUTE
+
+
+def requests_per_minute() -> int:
+    return LOCAL_REQUESTS_PER_MINUTE
 CACHE_TTL_SECONDS = 300
 
 
@@ -158,12 +185,17 @@ class KeyState:
             self._times.popleft()
         return len(self._times)
 
-    def remaining(self, now: float, limit: int = LOCAL_REQUESTS_PER_MINUTE) -> int:
+    def remaining(self, now: float, limit: int | None = None) -> int:
+        # 注意：``limit`` 不能写成 ``= LOCAL_REQUESTS_PER_MINUTE``——默认参数在
+        # 函数定义时求值，会把当时的 5 冻结进去，set_requests_per_minute()
+        # 改了全局也读不到。这里显式在调用时读。
+        if limit is None:
+            limit = LOCAL_REQUESTS_PER_MINUTE
         if now < self.cooldown_until:
             return -1  # 冷却中，视为不可用
         return max(0, limit - self.used_in_window(now))
 
-    def reserve(self, now: float, limit: int = LOCAL_REQUESTS_PER_MINUTE) -> None:
+    def reserve(self, now: float, limit: int | None = None) -> None:
         self._times.append(now)
         self.requests_total += 1
 
@@ -762,7 +794,9 @@ def _acquire_key() -> tuple[str, str]:
                 _request_times.popleft()
             if len(_request_times) >= LOCAL_REQUESTS_PER_MINUTE:
                 raise TaostatsRateLimitError(
-                    "Taostats 本地保护限速为 5 次/分钟，请稍后重试。"
+                    f"Taostats 本地保护限速为 {LOCAL_REQUESTS_PER_MINUTE} 次/分钟，"
+                    "请稍后重试。额度已升级的话，可在「Taostats API key」面板改"
+                    "「每分钟额度」。"
                 )
             _request_times.append(now)
         return "", _configured_api_key()

@@ -553,7 +553,8 @@ def test_taostats_relation_reads_next_page_and_flags_budget_exhaustion(monkeypat
         finally:
             database.engine.dispose()
 
-    monkeypatch.setattr(service_module, "MAX_TAOSTATS_REQUESTS_PER_QUERY", 1)
+    # 预算现在走函数（随每分钟额度联动），桩要打在函数上。
+    monkeypatch.setattr(service_module, "taostats_request_budget", lambda: 1)
 
     def chain_get(address, _page):
         if address == seed:

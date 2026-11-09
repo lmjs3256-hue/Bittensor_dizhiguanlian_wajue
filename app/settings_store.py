@@ -142,6 +142,31 @@ def _write(data: dict[str, Any]) -> bool:
         return False
 
 
+_RATE_FIELD = "taostats_requests_per_minute"
+
+
+def save_requests_per_minute(value: int) -> int:
+    """保存每把 key 的每分钟额度（本地保护限速）。"""
+
+    limit = max(1, min(int(value), 600))
+    data = _read()
+    data[_RATE_FIELD] = limit
+    data["version"] = 1
+    _write(data)
+    return limit
+
+
+def load_requests_per_minute() -> int | None:
+    """读回保存过的额度；没保存过返回 None（沿用默认 5）。"""
+
+    value = _read().get(_RATE_FIELD)
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(limit, 600))
+
+
 def save_api_key(api_key: str) -> str:
     """保存 key，返回存储方式：``dpapi`` / ``plain`` / ``none``（写失败）。"""
 
@@ -303,6 +328,8 @@ DEFAULT_WATCH_CONFIG: dict[str, Any] = {
     "threshold_tao": 30.0,
     "include_stake": True,
     "daily_budget": 700,
+    # 一次巡检推进几个地址（每个地址约 2 次请求）。0 = 跟随每分钟额度自动算。
+    "addresses_per_tick": 0,
     "auto_import": True,
     # 自动入库的地址默认不再继续巡检，否则会顺着转账一路扩散、把库撑爆。
     "follow_auto_imported": False,
@@ -319,6 +346,7 @@ def load_watch_config() -> dict[str, Any]:
     try:
         config["interval_minutes"] = max(15, int(config["interval_minutes"]))
         config["daily_budget"] = max(0, int(config["daily_budget"]))
+        config["addresses_per_tick"] = max(0, min(int(config["addresses_per_tick"]), 50))
         config["threshold_tao"] = max(0.0, float(config["threshold_tao"]))
     except (TypeError, ValueError):
         return dict(DEFAULT_WATCH_CONFIG)

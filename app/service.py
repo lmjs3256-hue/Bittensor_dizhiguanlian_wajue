@@ -57,7 +57,7 @@ from .relation_config import (
     LinkPolicy,
 )
 from .taostats import (
-    LOCAL_REQUESTS_PER_MINUTE,
+    requests_per_minute,
     TaostatsAuthError,
     TaostatsRateLimitError,
     TaostatsUnavailableError,
@@ -73,7 +73,25 @@ from .validation import is_valid_ss58
 
 
 MAX_MANUAL_SCAN_BLOCKS = 16
+# 单轮查询最多发几个 Taostats 请求。默认 5（免费档一分钟的额度），实际取值
+# 跟随「每分钟额度」配置：额度提到 60，单轮也该能一次用满，否则每轮仍只发
+# 5 个请求、一分钟剩余 55 次额度全浪费。
 MAX_TAOSTATS_REQUESTS_PER_QUERY = 5
+
+
+def taostats_request_budget() -> int:
+    """本轮单次查询可用的 Taostats 请求数。
+
+    与每分钟额度挂钩但有上限：一轮吃满一整分钟的额度容易在别的调用（巡检、
+    余额查询）同时发生时撞 429，所以取额度本身、最多 30——留出一半余量给
+    并行的小请求。
+    """
+
+    try:
+        per_minute = int(requests_per_minute())
+    except Exception:
+        per_minute = MAX_TAOSTATS_REQUESTS_PER_QUERY
+    return max(1, min(per_minute, 30))
 MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY = 5
 # 结果合成阶段最多查这么多个地址的当前余额（起始地址优先，再按层级/金额）。
 # 分轮续查跑十几轮后关联地址可能上百个，逐个走 RPC 会让结果迟迟出不来。
@@ -4253,7 +4271,7 @@ class LinkService:
 
         if crawl is None or not crawl.state.has_work:
             return ""
-        if validator_requests + crawl.state.api_requests < MAX_TAOSTATS_REQUESTS_PER_QUERY:
+        if validator_requests + crawl.state.api_requests < taostats_request_budget():
             return ""
         parts = []
         if crawl.state.pending_transfer:
@@ -4261,7 +4279,7 @@ class LinkService:
         if crawl.state.pending_stake:
             parts.append(f"{crawl.state.pending_stake} 个子网 stake 转移请求")
         return (
-            f"本轮单次查询最多调用 {MAX_TAOSTATS_REQUESTS_PER_QUERY} 次 Taostats API，"
+            f"本轮单次查询最多调用 {taostats_request_budget()} 次 Taostats API，"
             "已按“一级关联转账 → 一级关联子网转移 → 更深层级”的优先级用完；"
             f"未执行：{'、'.join(parts)}。结果只包含已获取的部分历史。"
         )
@@ -4306,7 +4324,7 @@ class LinkService:
             # 画像已经花掉 prefetched_requests 次：剩下的才是本轮的爬取额度。
             budget = max(
                 0,
-                MAX_TAOSTATS_REQUESTS_PER_QUERY
+                taostats_request_budget()
                 - context.validator_api_requests
                 - context.prefetched_requests,
             )
@@ -4426,7 +4444,7 @@ class LinkService:
         # 余额查询不占 Taostats 额度（走本地 RPC），但一律排在所有关联查询之后。
         # 本轮额度已被关联查询用尽时，只保留起始地址余额，其余余额留给下一轮。
         if balance_budget_left is None:
-            balance_budget_left = MAX_TAOSTATS_REQUESTS_PER_QUERY - api_requests
+            balance_budget_left = taostats_request_budget() - api_requests
         balance_budget_short = data_source == "taostats" and balance_budget_left <= 0
         detected_balance_candidates = [
             address
@@ -4562,7 +4580,7 @@ class LinkService:
                 provider_window_truncated if data_source == "taostats" else None
             ),
             "api_requests": api_requests,
-            "api_request_budget": MAX_TAOSTATS_REQUESTS_PER_QUERY,
+            "api_request_budget": taostats_request_budget(),
             "api_cache_hits": cache_hits,
             # 起始地址画像单独花掉几次（扫描开始时已查过，命中缓存就是 0）。
             "seed_profile_requests": int(seed_profile.get("api_requests") or 0),
@@ -4659,5 +4677,6 @@ class LinkService:
     def api_usage_summary(self) -> dict[str, Any]:
         return self.database.api_usage_summary(
             monthly_limit=PUBLIC_MONTHLY_CREDIT_REFERENCE,
-            per_minute_limit=LOCAL_REQUESTS_PER_MINUTE,
+            # 用函数读当前值：额度可在页面上改，导入时的常量会冻结成旧值。
+            per_minute_limit=requests_per_minute(),
         )

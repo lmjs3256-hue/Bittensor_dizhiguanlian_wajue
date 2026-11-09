@@ -71,7 +71,7 @@ def test_budget_spends_on_level_one_transfers_before_subnet_stake(monkeypatch):
             service = LinkService(database, "wss://example.invalid")
             result = run_relations(monkeypatch, depth=2, service=service)
 
-            assert result["api_requests"] == service_module.MAX_TAOSTATS_REQUESTS_PER_QUERY
+            assert result["api_requests"] == service_module.taostats_request_budget()
             assert calls[0] == ("transfer", SEED, 1)
             # 额度全部用于转账明细：一级邻居的首页先于种子地址的子网 stake 查询。
             assert [kind for kind, _, _ in calls] == ["transfer"] * 5
@@ -155,7 +155,7 @@ def test_balance_lookup_is_skipped_when_request_budget_is_used_up(monkeypatch):
             service = LinkService(database, "wss://example.invalid")
             result = run_relations(monkeypatch, depth=2, service=service)
 
-            assert result["api_requests"] == service_module.MAX_TAOSTATS_REQUESTS_PER_QUERY
+            assert result["api_requests"] == service_module.taostats_request_budget()
             # 额度用尽后只保留起始地址余额，不再扩展到关联地址。
             assert balance_calls == [[SEED]]
             assert any("已跳过关联地址余额查询" in warning for warning in result["warnings"])
@@ -187,7 +187,7 @@ def test_balance_lookup_covers_related_addresses_when_budget_remains(monkeypatch
             service = LinkService(database, "wss://example.invalid")
             result = run_relations(monkeypatch, depth=2, service=service)
 
-            assert result["api_requests"] < service_module.MAX_TAOSTATS_REQUESTS_PER_QUERY
+            assert result["api_requests"] < service_module.taostats_request_budget()
             assert balance_calls and balance_calls[-1] == [SEED, RELATED]
             assert not any("已跳过关联地址余额查询" in warning for warning in result["warnings"])
         finally:

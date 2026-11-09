@@ -363,3 +363,110 @@ class TestPoolEndpoints:
 
         loaded = settings_store.load_api_keys()
         assert [item["key"] for item in loaded] == ["persist-a", "persist-b"]
+
+
+# -- 每分钟额度可配置（0.8.32）--------------------------------------------
+
+class TestRateLimitConfig:
+    """升级套餐后额度要能改：默认 5 是硬编码的免费档，不能写死。"""
+
+    def test_default_is_five(self):
+        taostats.set_requests_per_minute(5)
+        assert taostats.requests_per_minute() == 5
+
+    def test_can_raise_to_paid_tier(self):
+        try:
+            assert taostats.set_requests_per_minute(60) == 60
+            assert taostats.requests_per_minute() == 60
+        finally:
+            taostats.set_requests_per_minute(5)
+
+    def test_out_of_range_is_clamped(self):
+        try:
+            assert taostats.set_requests_per_minute(0) == 1
+            assert taostats.set_requests_per_minute(99999) == 600
+        finally:
+            taostats.set_requests_per_minute(5)
+
+    def test_reserve_honours_runtime_limit(self):
+        """限速窗口必须读运行时值。
+
+        这里防的是一个很隐蔽的 Python 坑：把 ``limit=LOCAL_REQUESTS_PER_MINUTE``
+        写成默认参数，值会在**函数定义时**就被冻结，之后改全局也读不到。
+        """
+
+        try:
+            taostats.set_requests_per_minute(2)
+            taostats.reset_key_pool_for_tests()
+            taostats.set_key_pool([{"key": "rate-test-key", "label": "t"}])
+            taostats._acquire_key()
+            taostats._acquire_key()
+            with pytest.raises(taostats.TaostatsRateLimitError):
+                taostats._acquire_key()
+        finally:
+            taostats.reset_key_pool_for_tests()
+            taostats.set_requests_per_minute(5)
+
+    def test_request_budget_follows_limit_with_cap(self):
+        """单轮预算跟随额度，但封顶 30，避免一轮吃光整分钟。"""
+
+        from app.service import taostats_request_budget
+
+        try:
+            taostats.set_requests_per_minute(5)
+            assert taostats_request_budget() == 5
+            taostats.set_requests_per_minute(20)
+            assert taostats_request_budget() == 20
+            taostats.set_requests_per_minute(200)
+            assert taostats_request_budget() == 30
+        finally:
+            taostats.set_requests_per_minute(5)
+
+    def test_rate_persists_to_settings(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("WALLET_LINK_SETTINGS", str(tmp_path / "s.json"))
+        from app import settings_store
+
+        assert settings_store.save_requests_per_minute(60) == 60
+        assert settings_store.load_requests_per_minute() == 60
+
+
+class TestWatchTickFollowsRate:
+    """巡检推进量要跟随额度，不能永远 30 秒 1 个地址。"""
+
+    def _watch(self, tmp_path):
+        from app.db import Database
+        from app.watch import WatchService
+
+        return WatchService(Database(tmp_path / "w.db"))
+
+    def test_auto_scales_with_rate(self, tmp_path):
+        w = self._watch(tmp_path)
+        try:
+            taostats.set_requests_per_minute(5)
+            assert w.addresses_per_tick({"addresses_per_tick": 0}) == 1
+            taostats.set_requests_per_minute(20)
+            assert w.addresses_per_tick({"addresses_per_tick": 0}) == 5
+            taostats.set_requests_per_minute(60)
+            # 封顶 10：巡检必须给手动查询让路，不能一次 tick 吃光额度
+            assert w.addresses_per_tick({"addresses_per_tick": 0}) == 10
+        finally:
+            taostats.set_requests_per_minute(5)
+
+    def test_manual_value_wins(self, tmp_path):
+        w = self._watch(tmp_path)
+        try:
+            taostats.set_requests_per_minute(60)
+            assert w.addresses_per_tick({"addresses_per_tick": 3}) == 3
+            assert w.addresses_per_tick({"addresses_per_tick": 99}) == 50
+        finally:
+            taostats.set_requests_per_minute(5)
+
+    def test_zero_means_auto_not_zero(self, tmp_path):
+        """填 0 是"自动"，绝不能真的推进 0 个（否则巡检永久停滞）。"""
+
+        w = self._watch(tmp_path)
+        try:
+            taostats.set_requests_per_minute(5)
+            assert w.addresses_per_tick({"addresses_per_tick": 0}) >= 1
+        finally:
+            taostats.set_requests_per_minute(5)

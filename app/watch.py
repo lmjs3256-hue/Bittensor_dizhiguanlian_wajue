@@ -43,6 +43,7 @@ from .taostats import (
     TaostatsUnavailableError,
     get_stake_transfer_page,
     get_transfer_page_query,
+    requests_per_minute,
 )
 
 # Subtensor 的系统地址前缀（与 relation 里的默认 policy 保持一致）。
@@ -118,6 +119,30 @@ class WatchService:
         return {**current, "detail": detail}
 
     # -- 配置 -------------------------------------------------------------
+    def addresses_per_tick(self, config: dict[str, Any] | None = None) -> int:
+        """一个 tick 推进几个地址。
+
+        ``addresses_per_tick`` 为 0 时按每分钟额度自动算：每个地址约 2 次
+        请求，30 秒一个 tick 即半个窗口，所以「每分钟额度的一半÷2」是安全上限。
+        免费档 5 次/分钟 → 1 个；升级到 60 → 最多 15 个，但实际夹在 1~10，
+        避免一次 tick 把额度全吃光、把手动查询挤掉（巡检本来就要让路）。
+        """
+
+        cfg = config if config is not None else self.config()
+        try:
+            fixed = int(cfg.get("addresses_per_tick") or 0)
+        except (TypeError, ValueError):
+            fixed = 0
+        if fixed > 0:
+            return max(1, min(fixed, 50))
+        try:
+            per_minute = int(requests_per_minute())
+        except Exception:
+            per_minute = 5
+        # 半个窗口的额度 / 每地址 2 次请求
+        auto = max(1, (per_minute // 2) // 2)
+        return min(auto, 10)
+
     def config(self) -> dict[str, Any]:
         return settings_store.load_watch_config()
 
