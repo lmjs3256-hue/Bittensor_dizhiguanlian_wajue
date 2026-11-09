@@ -879,7 +879,10 @@ async function loadOverview() {
       ? `${number(index.first_block)} – ${number(index.last_block)}`
       : "未采集";
     $("#metric-cursor").textContent = index.cursor_block ? number(index.cursor_block) : "未建立";
-    if (!$("#seed").value && data.default_seed) $("#seed").value = data.default_seed;
+    if (!$("#seed").value && data.default_seed) {
+      $("#seed").value = data.default_seed;
+      if (window.revealSeedTail) window.revealSeedTail($("#seed"));
+    }
     // 先取池状态再渲染：`showTaostatsKeyStatus` 会用 keyPool.length 拼文案。
     await loadKeyPool();
     showTaostatsKeyStatus(data.taostats_configured, data.taostats_key_storage);
@@ -1644,6 +1647,7 @@ function renderResult(data) {
   $("#warnings").innerHTML = [...data.warnings, ...data.limitations].map((text) => `<li>${esc(text)}</li>`).join("");
   document.querySelectorAll("[data-use-address]").forEach((button) => button.addEventListener("click", () => {
     $("#seed").value = button.dataset.useAddress;
+    if (window.revealSeedTail) window.revealSeedTail($("#seed"));
     window.scrollTo({ top: 0, behavior: "smooth" });
   }));
 }
@@ -5617,7 +5621,24 @@ $("#seed").addEventListener("keydown", (event) => { if (event.key === "Enter") r
         try { input.setSelectionRange(value.length, value.length); } catch (e) { /* 忽略 */ }
       }, 0);
     }
+    // 光标挪到末尾还不够：输入框宽度不够时，浏览器只按光标位置滚一次，
+    // 失焦后又会回到开头。显式滚到最右，保证窄框里优先露出「后四位」。
+    revealSeedTail(input);
   });
+
+  // 宽度不够（地址放不下）时优先显示尾部：SS58 前 4 位几乎都一样（都是 5 开头），
+  // 真正能区分地址的是后 4 位——界面上到处用 `5D3i…b8D1` 这种掩码，用户记住的
+  // 也是尾巴。原生 input 默认只显示开头，等于把最有用的部分裁掉了。
+  function revealSeedTail(el) {
+    if (!el) return;
+    if (el.scrollWidth <= el.clientWidth + 1) return; // 放得下就不动
+    el.scrollLeft = el.scrollWidth;
+  }
+  window.revealSeedTail = revealSeedTail;
+  revealSeedTail(input);
+
+  // 窗口变窄导致地址被裁时，重新把视图拉到尾部（宽度变化会让浏览器重置滚动）。
+  window.addEventListener("resize", () => revealSeedTail(input));
 })();
 $("#license-activate").addEventListener("click", activateLicense);
 const accessLoginButton = $("#access-login");

@@ -1427,6 +1427,7 @@ key 没填、填错，或 key 已在 Taostats 后台被删/重置（0.6.4 起 ke
 全部在 <code>data\wallet_link.db</code> 一个文件里（SQLite）。备份就复制这个文件；换电脑就带着 <code>data\</code> 文件夹。</p>
 <blockquote>
 <p><strong>要把服务搬到另一台常开的电脑上长期使用？</strong> 换机器不只是拷文件夹：授权码绑机器、API key 加密绑用户，两样都得重做。完整步骤见 <code>docs\固定主机迁移.md</code>。</p>
+<p><strong>要部署到云服务器（Linux VPS）？</strong> 除了上面那份，还要照 <code>docs\云服务器部署.md</code> 走：那里额外讲授权在 Linux 上重签（机器码来源不同、重建实例可能变）、API key 在 Linux 上只能明文存（必须自己收紧文件权限）、机房出站到 taostats.io 可能同样不通（表现是误报「没有 API key」）、以及云厂商安全组与 systemd 常驻。</p>
 </blockquote>
 <p><strong>Q：怎么彻底卸载？</strong>
 先双击 <code>停止.cmd</code>，删掉整个文件夹和桌面快捷方式即可。没有写注册表、没有后台服务、没有开机自启项。</p>
