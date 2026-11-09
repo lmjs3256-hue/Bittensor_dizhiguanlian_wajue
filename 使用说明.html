@@ -980,6 +980,10 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <p><strong>入库日志</strong></p>
 <p>点 <strong>入库日志</strong> 展开，每条记录写清：新地址、金额、笔数、类型（转账 / 代币转移）、归到哪个库、触发地址、以及"为什么归这个库"（各库累计对比）。</p>
 <p><strong>点开看详情</strong>：每条记录右侧有 <strong>详情</strong> 按钮，展开后能看到完整入库地址、完整触发地址（各带 <strong>复制</strong>）、归属库与触发库、区块范围、当前分类、登记时间。列表行里只有 <code>5D3iKcs…</code> 这种短地址，需要核对时点开看全文。</p>
+<p><strong>地址能点开跳 Taostats</strong>：列表行里的短地址、详情里的完整地址、以及触发地址，<strong>都是可点的链接</strong>，点一下在新标签页打开 <code>taostats.io/account/&lt;地址&gt;</code>，能直接看这个地址的余额、质押、验证者身份、转账记录，用来判断它到底是普通钱包、验证者、交易所热钱包，还是发币池/中转这类公共地址。判断完再决定点哪个「标为…」按钮。</p>
+<blockquote>
+<p>提示：Taostats 在国内直连常常打不开（本项目服务端查询也要走代理）。浏览器打不开时先确认代理已开；本项目的查询额度统计不受影响，看网页只是核对信息。</p>
+</blockquote>
 <p><strong>一键确认为系统角色</strong>（0.8.34）：每条未撤回的记录都带三个按钮——<strong>标为交易所 / 标为验证者 / 标为公共地址</strong>。点一下会先弹确认框，确认后同时做两件事：</p>
 <ol>
 <li><strong>撤回</strong>这条自动入库（删掉自动写入的记录、把这个地址拉黑，之后巡检不再收它）；</li>

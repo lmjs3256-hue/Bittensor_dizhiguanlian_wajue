@@ -582,7 +582,10 @@ body.access-locked .shell { filter:blur(2px); pointer-events:none; user-select:n
 .watch-log-reason,.watch-log-time { color:var(--muted); font-size:11px; line-height:1.55; }
 .watch-log-time code { color:var(--ink); }
 /* 入库日志：展开详情 + 一键标为系统角色（0.8.34） */
-.watch-log-addr { cursor:default; }
+/* 入库日志里的地址是外链（跳 Taostats 核对余额/质押/是否系统地址）。
+   这里允许断行，48 位地址在窄屏上不会把整行撑破。 */
+.watch-log-line .addr-link { font-size:12.5px; white-space:nowrap; }
+.watch-log-detail .addr-link { flex:1 1 260px; min-width:0; font-size:11.5px; }
 .watch-log-toggle { margin-left:auto; }
 .watch-log-item .mark-role { border-color:var(--warn); color:var(--warn); }
 .watch-log-item .mark-role:hover { background:var(--warn-soft); }

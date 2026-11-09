@@ -4176,7 +4176,7 @@ function watchLogHtml(item) {
   }
 
   return `<div class="watch-log-item" data-log-id="${item.id}">
-    <div class="watch-log-line"><code class="watch-log-addr">${esc(shortAddr(item.address))}</code>${state}${roleTag}${gone}
+    <div class="watch-log-line">${addressLink(item.address, shortAddr(item.address))}${state}${roleTag}${gone}
       <span class="tag">${esc(item.book || "未归属")}</span>
       <strong>${esc(formatTao(item.amount_tao))} TAO</strong>
       <small>${esc(kind)} · ${item.tx_count || 0} 笔转账 / ${item.stake_count || 0} 笔代币</small>
@@ -4189,12 +4189,12 @@ function watchLogHtml(item) {
     <div class="watch-log-detail hidden" id="watch-log-detail-${item.id}">
       <div class="watch-log-field">
         <span>入库地址</span>
-        <code>${esc(item.address)}</code>
+        ${addressLink(item.address, item.address)}
         <button class="ghost note-save" data-copy-address="${esc(item.address)}" type="button">复制</button>
       </div>
       <div class="watch-log-field">
         <span>触发地址</span>
-        <code>${esc(item.trigger_address || "—")}</code>
+        ${item.trigger_address ? addressLink(item.trigger_address, item.trigger_address) : "<code>—</code>"}
         ${item.trigger_address ? `<button class="ghost note-save" data-copy-address="${esc(item.trigger_address)}" type="button">复制</button>` : ""}
       </div>
       <div class="watch-log-field">
