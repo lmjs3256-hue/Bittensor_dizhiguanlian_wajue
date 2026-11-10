@@ -4109,6 +4109,73 @@ class LinkService:
                 "jobs": [job_dict(row) for row in latest],
             }
 
+    @staticmethod
+    def _is_state_discarded(exc: BaseException) -> bool:
+        """这个异常是不是"节点已丢弃该块的 state"。
+
+        不同节点/库的报法不完全一样，统一按关键字识别：``UnknownBlock``、
+        ``State already discarded``、``StateDiscardedError`` 都是同一件事——
+        **这块再也读不出来了**，重试无效。
+        """
+
+        text = f"{type(exc).__name__}: {exc}"
+        lowered = text.lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "unknownblock",
+                "state already discarded",
+                "statediscarded",
+                "state discarded",
+            )
+        )
+
+    @staticmethod
+    async def _probe_block(collector, block_number: int) -> bool:
+        """这个块现在还能不能读出 state。
+
+        节点会丢弃较老区块的 state（返回 ``UnknownBlock: State already
+        discarded``）。这不是网络抖动，重试无效——必须识别出来并跳过，
+        否则索引会永远卡在第一个读不出的块上。
+        """
+
+        # 采集器只有一个入口（collect_range），且它内部会打日志再抛，
+        # 异常类型不可靠。这里用一个更直接的判据：**问节点要这个块的 hash**。
+        #
+        # 节点对"太老、state 已丢弃"的块，``chain_getBlockHash`` 仍会返回
+        # hash，但 ``state_getMetadata`` / ``chain_getBlock`` 会报 UnknownBlock。
+        # 所以用它扫一个块（on_batch 空转、不落库）来判定最准——和真正采集
+        # 走同一条路径，不会出现"探测说行、真扫就挂"的错配。
+        async def _ignore(rows, block, block_hash):  # noqa: ANN001
+            return None
+
+        try:
+            result = await collector.collect_range(
+                start=block_number, end=block_number, on_batch=_ignore
+            )
+        except Exception:  # noqa: BLE001 - 任何读失败都按"不可读"处理
+            return False
+        # 扫到 0 块 = 这个块读不出来（state 已丢弃或高度不可用）。
+        return int(result.get("scanned_blocks") or 0) > 0
+
+    @staticmethod
+    async def _earliest_readable(collector, head: int, floor: int) -> int | None:
+        """从链头往回二分，找出「还能读」的最早块，用于跳过不可读区间。"""
+
+        if await LinkService._probe_block(collector, head):
+            newest = head
+        else:
+            return None
+        lo, hi = floor, newest
+        # 二分：找最小的可读块。区间 [lo, hi]，hi 已知可读。
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if await LinkService._probe_block(collector, mid):
+                hi = mid
+            else:
+                lo = mid + 1
+        return lo
+
     def scan(
         self,
         blocks: int = 2,
@@ -4199,6 +4266,19 @@ class LinkService:
                         lock.lease_until = datetime.now(timezone.utc) + timedelta(minutes=3)
 
             start = last + 1 if advance and last is not None else max(1, head - blocks + 1)
+
+            # 索引落后太久时会撞上「历史块的 state 已被节点丢弃」（UnknownBlock /
+            # StateDiscarded）。这是**永久性**缺口：那些块再也读不出来了，重试
+            # 多少次都一样。以前这里直接抛异常，游标原地不动，调度器每轮都撞
+            # 同一堵墙——实测索引因此停在 10 小时前不动，用户看到的表像是
+            # 「巡检不采数据了」。
+            #
+            # 正确做法是**认账并跳过**：把游标跳到「当前还能读的最早块」，
+            # 记下缺口区间（scan_jobs.error 里有据可查），从那里继续往前跟。
+            # 丢掉的那段确实采不到了，但链在往前走，跟上当下比补死账重要——
+            # 这正是本地索引流水线要的输入。
+            gap_from: int | None = None
+            gap_to: int | None = None
             end = min(head, start + blocks - 1)
 
             async def run_collector() -> dict[str, Any]:
@@ -4209,11 +4289,59 @@ class LinkService:
                     start=start, end=end, on_batch=on_batch
                 )
 
-            result = asyncio.run(run_collector())
+            async def run_with_gap_recovery() -> tuple[dict[str, Any] | None, int, int]:
+                """撞上「state 已丢弃」就跳过不可读区间再试一次。
+
+                节点会丢弃较老区块的 state，报 ``UnknownBlock: State already
+                discarded``。这是**永久性**缺口：那些块再也读不出来，重试
+                多少次都一样。以前这里直接抛，游标原地不动，调度器每轮都撞
+                同一堵墙——实测索引因此停在 10 小时前，用户看到的表面像是
+                「巡检不采数据了」。
+
+                现在认账并跳过：从链头往回二分找「还能读的最早块」，把游标
+                跳到那里继续。丢掉的段确实采不到，但链在往前走，跟上当下
+                比补死账重要——这正是本地索引流水线要的输入。
+                """
+
+                try:
+                    return await collector.collect_range(
+                        start=start, end=end, on_batch=on_batch_cb()
+                    ), 0, 0
+                except Exception as exc:  # noqa: BLE001
+                    if not self._is_state_discarded(exc):
+                        raise
+                recovered = await self._earliest_readable(collector, head, start)
+                if recovered is None or recovered <= start:
+                    raise RuntimeError(
+                        f"索引落后过多，{start} 起已无法读取（节点丢弃了 state），"
+                        "且链头附近也读不出来；请检查 RPC 节点"
+                    )
+                gap_from_local = start
+                gap_to_local = recovered - 1
+                result = await collector.collect_range(
+                    start=recovered, end=min(head, recovered + blocks - 1),
+                    on_batch=on_batch_cb(),
+                )
+                return result, gap_from_local, gap_to_local
+
+            def on_batch_cb():
+                async def on_batch(rows, block_number, block_hash):
+                    commit_batch(rows, block_number, block_hash)
+
+                return on_batch
+
+            result, gap_from, gap_to = asyncio.run(run_with_gap_recovery())
+            if gap_from and gap_to:
+                result = {**result, "gap_from": gap_from, "gap_to": gap_to}
             with self.database.session() as db:
                 row = db.get(ScanJob, job_id)
                 if row:
                     row.status = "complete"
+                    if gap_from is not None and gap_to is not None:
+                        row.error = (
+                            f"跳过不可读区间 {gap_from}~{gap_to}"
+                            f"（{gap_to - gap_from + 1} 块，节点已丢弃 state）"
+                        )
                     row.head_block = result["head_block"]
                     row.start_block = result["start_block"]
                     row.end_block = result["end_block"]

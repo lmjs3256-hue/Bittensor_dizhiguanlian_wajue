@@ -240,6 +240,29 @@ class ChainCursor(Base):
     )
 
 
+class WatchSweepState(Base):
+    """本地索引流水线处理到哪一块（单行表，key 固定为 ``local-index``）。
+
+    与 :class:`WatchState` 是两套独立游标，必须分开：
+
+    - ``WatchState.last_block`` 是「用 API 逐个地址巡检」的地址级游标；
+    - 这张表是「拿本地索引里的新块去撞地址库」的块级游标。
+
+    分开记的原因：本地流水线不吃 API 额度、可以高频跑；而逐地址巡检受额度
+    约束、可能几天才轮一遍。混用一个游标会让两边互相把对方的进度推飞。
+    """
+
+    __tablename__ = "watch_sweep_state"
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    last_block: Mapped[int] = mapped_column(Integer, default=0)
+    last_sweep_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    scanned_total: Mapped[int] = mapped_column(Integer, default=0)
+    hits_total: Mapped[int] = mapped_column(Integer, default=0)
+    inserted_total: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class WatchState(Base):
     """某个库内地址上一次被巡检到哪。
 

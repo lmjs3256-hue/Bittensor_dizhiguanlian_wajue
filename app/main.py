@@ -67,7 +67,11 @@ WATCH_TICK_SECONDS = 30
 # 实测采集器能力约 0.32 块/秒（链速仅 0.083 块/秒，余量 4 倍），所以按
 # 「每轮要覆盖这期间链增长的量 + 一小段历史欠账」来取块数即可追上。
 LOCAL_AUTO_SCAN_ENABLED = True
-LOCAL_AUTO_SCAN_SECONDS = 300
+# 180 秒一轮：链在 180 秒内约长 15 块，仍按 75 块/轮扫（5 倍余量），
+# 既跟得住又能继续回补历史欠账。调快的原因见 sweep_local_index 的注释：
+# 本地索引是自动入库的唯一输入，它多滞后一分钟，库里地址的新往来就晚一分钟
+# 入库。
+LOCAL_AUTO_SCAN_SECONDS = 180
 # 链在 300 秒内约长 25 块；取 75 块（≈3 倍余量）既能跟住，又能以约
 # 50 块/轮的速度回补历史欠账（7,541 块 ≈ 2.5 小时追平）。
 LOCAL_AUTO_SCAN_BLOCKS = 75
@@ -318,7 +322,27 @@ async def _watch_scheduler() -> None:
                     # 让路期间也要打心跳：进度窗口据此区分「在排队等查询」
                     # 和「整个巡检停了」。
                     WATCH.mark_tick(paused=True)
+                    # 但本地流水线不需要让路：它不发任何 Taostats 请求，
+                    # 和用户的查询不抢额度。让路时停掉它等于白白少采一段链。
+                    try:
+                        await asyncio.to_thread(WATCH.sweep_local_index)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[watch] 本地索引流水线异常：{exc}", file=sys.stderr)
                     continue
+                # 先跑「本地索引流水线」：拿本地索引里的新块去撞地址库，
+                # 命中就入库。这条路径**完全不消耗 Taostats 额度**，所以不受
+                # 每日上限、每分钟限速、手动查询让路的任何约束——有就让路，
+                # 但本地流水线照跑。
+                #
+                # 它才是用户要的「库里地址一有新往来就立马入库」：链上转账
+                # 已经被 RPC 采进 transfers 表，没必要再为了这批数据去问
+                # 一次 API。逐地址巡检（下面那段）继续保留，用来补本地索引
+                # 覆盖不到的更早历史。
+                try:
+                    await asyncio.to_thread(WATCH.sweep_local_index)
+                except Exception as exc:  # noqa: BLE001 - 流水线失败不能拖垮巡检
+                    print(f"[watch] 本地索引流水线异常：{exc}", file=sys.stderr)
+
                 # 一次推进几个地址跟随「每分钟额度」：以前写死 1 个，升级到
                 # 60 次/分钟也只会 30 秒推 1 个（≈4 次/分钟），额度全浪费。
                 # 用户在巡检配置里填了固定值就用固定值。

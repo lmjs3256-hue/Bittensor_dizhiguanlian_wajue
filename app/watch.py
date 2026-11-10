@@ -29,6 +29,8 @@ from .db import (
     AddressLibrary,
     AutoImportLog,
     BookPairStat,
+    Transfer,
+    WatchSweepState,
     ChainCursor,
     Database,
     ScanJob,
@@ -61,6 +63,11 @@ AUTO_CATEGORY = "其他"
 # 记录仍被排进巡检队列。
 SKIP_CATEGORIES = {"EXCHANGE", "VALIDATOR", "PUBLIC", "系统", "SYSTEM"}
 MAX_LOGS_PAGE = 200
+# 本地索引流水线：每次最多处理的行数。宁可小步快跑——它和巡检、查询共用
+# 同一个 SQLite 文件，一次拿太多会把库锁住几十秒。
+SWEEP_MAX_ROWS = 4000
+# 游标键名（WatchSweepState 只有一条记录）。
+SWEEP_KEY = "local-index"
 # 本进程启动时刻：用来判断一个 running 轮次是本进程在推，还是上次进程
 # 被关掉后留下的（后者就是「断点续传」的状态，必须让用户看见）。
 PROCESS_STARTED_AT = datetime.now(timezone.utc)
@@ -474,6 +481,10 @@ class WatchService:
                 # 这一段能安全省额度。
                 "coverage": self.coverage(),
             },
+            # 本地索引流水线：不花 API 额度、按块撞地址库的那条路。
+            # 与上面的「逐地址巡检」是两条独立链路，界面要分开显示，
+            # 否则用户分不清"进度条不动"到底是巡检停了还是没额度了。
+            "sweep": self.sweep_status(),
         }
 
     @staticmethod
@@ -1032,6 +1043,182 @@ class WatchService:
                 .limit(1)
             )
         return seen is not None
+
+    # -- 本地索引流水线：不花 API 额度，边采边入库 ------------------------
+    def sweep_local_index(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
+        """拿本地索引里「新入库的块」去和地址库做交集，命中就直接自动入库。
+
+        为什么需要这个：原来的巡检是**逐地址问 API**（每地址 1~2 次请求），
+        754 个地址一轮约 1500 次请求，按每分钟 5~60 次要跑几十分钟到几小时。
+        而本地索引是另一条完全独立的链路——由 RPC 直采，**不吃 Taostats
+        API 额度**。既然链上每笔转账都已经落在 ``transfers`` 表里，就完全
+        没必要为了"库里地址有新往来"再去问一次 API：直接在本地做反向查询，
+        「这条新转账的 from/to 有没有在地址库里」一句话就能判断。
+
+        用户的诉求正是这个：「巡检应该是当下地址库里已有地址，发生转账转移，
+        立马入库，方便跟踪」。历史欠账（某地址几周前的旧转账）确实不重要——
+        真需要时去扫描那个地址，自然会把关联挖出来。
+
+        实现要点：
+
+        - **游标独立**：用 ``WatchSweepState`` 记「本地索引已经处理到哪一块」，
+          与逐地址巡检的 ``watch_state.last_block`` 互不干扰。两条路可以并存：
+          想让某个冷门地址也过一遍，仍然可以走 API 那条。
+        - **只处理新块**：首次启用时从「当前索引水位」开始，不回扫历史，
+          避免把几万条旧转账一次性灌进地址库（用户明确说历史数据不重要）。
+        - **同一笔只算一次**：转出方在库时按转出方归属的库累计；转入方在库时
+          按转入方的库累计。两边都在库时不重复计数（选金额归属明确的一侧）。
+        - **额度判断完全跳过**：这里零 API 请求，每日上限、每分钟限速都不适用。
+        """
+
+        config = config or self.config()
+        if not config.get("auto_import", True):
+            return {"skipped": True, "reason": "auto_import_off", "inserted": 0}
+
+        threshold = Decimal(str(config["threshold_tao"]))
+        with self.database.session() as db:
+            state = db.get(WatchSweepState, SWEEP_KEY)
+            if state is None:
+                # 首次启用：只从当前水位往后再看，**不回扫历史**。
+                #
+                # 用户的判断是对的：「历史数据不那么重要，真需要时去扫那个
+                # 地址自然会挖出来」。而全量回扫要处理 7 万多条历史转账，
+                # 会把一堆几周前的旧对手方一次性灌进地址库，噪音远大于价值。
+                #
+                # 水位取两个来源的较大值：本地索引最大块（兜底）和
+                # ``chain_cursors.last_block``（更权威——它表示"已扫到这里"，
+                # 而 max(block_number) 只是"恰好有转账的最后一块"，中间可能
+                # 有大段还没扫）。
+                cursor = db.scalar(select(func.max(Transfer.block_number))) or 0
+                for row in db.query(ChainCursor).all():
+                    cursor = max(int(cursor), int(row.last_block or 0))
+                state = WatchSweepState(key=SWEEP_KEY, last_block=int(cursor))
+                db.add(state)
+                db.flush()
+                result = {
+                    "initialized": True,
+                    "last_block": int(cursor),
+                    "scanned": 0,
+                    "hits": 0,
+                    "inserted": 0,
+                }
+                db.commit()
+                return result
+
+            since = int(state.last_block or 0)
+            # 一次最多处理这么多块：调用方是 30 秒一次的调度器，宁可少而稳，
+            # 也别让一次扫描把 SQLite 锁住几十秒（巡检/查询都要用同一个库）。
+            rows = db.execute(
+                select(
+                    Transfer.from_address,
+                    Transfer.to_address,
+                    Transfer.amount_tao,
+                    Transfer.block_number,
+                    Transfer.edge_type,
+                    Transfer.tx_hash,
+                )
+                .where(Transfer.block_number > since)
+                .order_by(Transfer.block_number.asc(), Transfer.event_index.asc())
+                .limit(SWEEP_MAX_ROWS)
+            ).all()
+            if not rows:
+                return {
+                    "scanned": 0,
+                    "hits": 0,
+                    "inserted": 0,
+                    "last_block": since,
+                }
+
+            library = db.scalars(select(AddressLibrary)).all()
+            by_address = {row.address: row for row in library}
+            revoked = set(
+                db.scalars(
+                    select(AutoImportLog.address).where(AutoImportLog.status == "revoked")
+                ).all()
+            )
+            pair_counter = self._counterparty_map(db)
+
+            inserted = 0
+            hits = 0
+            max_block = since
+            for row in rows:
+                max_block = max(max_block, int(row.block_number))
+                sides = [
+                    (str(row.from_address or ""), str(row.to_address or "")),
+                    (str(row.to_address or ""), str(row.from_address or "")),
+                ]
+                for owner, partner in sides:
+                    if not owner or not partner or owner == partner:
+                        continue
+                    owner_row = by_address.get(owner)
+                    if owner_row is None:
+                        continue  # 这一侧不在地址库，换另一侧判
+                    if not partner or partner.startswith(SYSTEM_PREFIX):
+                        continue
+                    if not is_valid_ss58(partner):
+                        continue
+                    if _categories(owner_row) & SKIP_CATEGORIES:
+                        continue  # 交易所/验证者/公共地址不作为触发源
+                    if partner in by_address or partner in revoked:
+                        continue
+                    hits += 1
+                    kind = "stake" if str(row.edge_type or "").startswith("stake") else "tao"
+                    edge = {
+                        "counterparty": partner,
+                        "block": int(row.block_number),
+                        "amount": Decimal(str(row.amount_tao or 0)),
+                        "tx": str(row.tx_hash or ""),
+                        "kind": kind,
+                    }
+                    if self._accumulate(
+                        db, partner, owner_row.book or "", edge, threshold, owner
+                    ):
+                        inserted += 1
+                    # 一侧已经记过账就别再从另一侧重复累计同一笔。
+                    break
+
+            state.last_block = max(int(state.last_block or 0), max_block)
+            state.last_sweep_at = utcnow()
+            state.scanned_total = int(state.scanned_total or 0) + len(rows)
+            state.hits_total = int(state.hits_total or 0) + hits
+            state.inserted_total = int(state.inserted_total or 0) + inserted
+        return {
+            "scanned": len(rows),
+            "hits": hits,
+            "inserted": inserted,
+            "last_block": max_block,
+        }
+
+    def sweep_status(self) -> dict[str, Any]:
+        """给界面看：本地流水线处理到哪、累计命中多少、还差多少块。"""
+
+        with self.database.session() as db:
+            state = db.get(WatchSweepState, SWEEP_KEY)
+            newest = db.scalar(select(func.max(Transfer.block_number))) or 0
+            if state is None:
+                return {
+                    "enabled": True,
+                    "initialized": False,
+                    "last_block": 0,
+                    "index_block": int(newest),
+                    "lag_blocks": 0,
+                    "scanned_total": 0,
+                    "hits_total": 0,
+                    "inserted_total": 0,
+                    "last_sweep_at": "",
+                }
+            last = int(state.last_block or 0)
+            return {
+                "enabled": True,
+                "initialized": True,
+                "last_block": last,
+                "index_block": int(newest),
+                "lag_blocks": max(int(newest) - last, 0),
+                "scanned_total": int(state.scanned_total or 0),
+                "hits_total": int(state.hits_total or 0),
+                "inserted_total": int(state.inserted_total or 0),
+                "last_sweep_at": iso_utc(state.last_sweep_at),
+            }
 
     # -- 单个地址 ---------------------------------------------------------
     def _check_address(self, address: str, config: dict[str, Any]) -> dict[str, Any]:

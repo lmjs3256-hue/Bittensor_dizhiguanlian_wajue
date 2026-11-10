@@ -4192,6 +4192,16 @@ function renderWatchProgress(data) {
       parts.push(`本地索引命中 <b>${localIndex.hits}</b> 次，省下 <b>${localIndex.api_saved || 0}</b> 次请求`);
     }
     parts.push(`今日请求 <b>${data.today_requests || 0}</b> / ${config.daily_budget || 0}`);
+    // 本地索引流水线：不花 API 额度的那条路，必须单独显示。
+    // 用户要的是「库里地址一有新往来就入库」，而这条路和上面那个受额度限制的
+    // 逐地址巡检是两件事——混在一起会让人以为"额度用完就全停了"。
+    const sweep = data.sweep || {};
+    if (sweep.initialized) {
+      parts.push(
+        `本地流水线已处理 <b>${number(sweep.scanned_total || 0)}</b> 笔，`
+        + `命中 <b>${number(sweep.hits_total || 0)}</b>、入库 <b>${number(sweep.inserted_total || 0)}</b>`,
+      );
+    }
     meta.innerHTML = parts.map((item) => `<span>${item}</span>`).join("");
   }
   if (hint) {
@@ -4220,6 +4230,22 @@ function renderWatchProgress(data) {
     } else {
       notes.push("还没有跑过巡检，点「立即巡检一轮」开始。");
     }
+    // 本地流水线：这条不看额度，所以即使上面因额度停住，它也照跑。
+    // 单独一句话说清，避免用户以为「每日上限到了就什么都不采了」。
+    const sweep = data.sweep || {};
+    if (sweep.initialized) {
+      if (sweep.lag_blocks > 200) {
+        notes.push(
+          `本地流水线落后 ${number(sweep.lag_blocks)} 个块（约 ${Math.round(sweep.lag_blocks * 12 / 60)} 分钟），`
+          + "正在补齐；这段补齐后库里地址的新往来会自动入库。",
+        );
+      } else {
+        notes.push(
+          "本地流水线已跟上链：库里地址一有新转账或代币转移，累计达标就直接入库，"
+          + "不消耗 Taostats 额度，也不受每日上限和查询让路影响。",
+        );
+      }
+    }
     hint.textContent = notes.join(" ");
     hint.classList.toggle("warn", warn);
   }
@@ -4243,6 +4269,11 @@ function scheduleWatchPolling(delay = 5000) {
       // 一轮刚结束：刷新地址库，让新入库的地址立刻出现在列表里。
       if (state.watchStatus?.last_run?.status === "running") await loadLibrary();
     }
+    // 本地流水线入库也算「库变了」：它的 inserted 会一直涨，跟上次比一下。
+    // 这段轮询只在地址库页启动（见 navigate），所以不必再判视图，直接刷新。
+    const sweptNow = Number(data?.sweep?.inserted_total || 0);
+    const sweptBefore = Number(state.watchStatus?.sweep?.inserted_total || 0);
+    if (sweptNow > sweptBefore) await loadLibrary();
   }, delay);
 }
 
