@@ -336,6 +336,10 @@ DEFAULT_WATCH_CONFIG: dict[str, Any] = {
     # 本地索引优先：本地已覆盖的区间不发 Taostats 请求（不花额度）。
     # 本地索引由链上 RPC 直采，完全不消耗 Taostats 配额。
     "prefer_local_index": True,
+    # 本地索引流水线：拿本地索引的新块去撞地址库，命中即入库。
+    # 与上面 prefer_local_index 的区别——那个是「逐地址巡检时先查本地」，
+    # 这个是完全独立的一条采集链路，零 API、可单独开关。
+    "sweep_enabled": True,
 }
 
 
@@ -358,6 +362,7 @@ def load_watch_config() -> dict[str, Any]:
     config["auto_import"] = bool(config["auto_import"])
     config["follow_auto_imported"] = bool(config["follow_auto_imported"])
     config["prefer_local_index"] = bool(config["prefer_local_index"])
+    config["sweep_enabled"] = bool(config["sweep_enabled"])
     return config
 
 

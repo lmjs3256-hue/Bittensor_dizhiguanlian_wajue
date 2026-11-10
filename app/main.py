@@ -497,6 +497,12 @@ class WatchConfigInput(BaseModel):
     addresses_per_tick: int | None = Field(default=None, ge=0, le=50)
     auto_import: bool | None = None
     follow_auto_imported: bool | None = None
+    # 逐地址巡检时先查本地索引（本地覆盖到就不发 API）。
+    # 以前漏了这个字段：前端一直在传，Pydantic 默默丢掉，
+    # 于是「本地索引优先」这个勾选框其实从来没生效过。
+    prefer_local_index: bool | None = None
+    # 本地索引流水线开关（独立的一条零 API 采集链路）。
+    sweep_enabled: bool | None = None
 
 
 class RelationInput(BaseModel):

@@ -4192,16 +4192,8 @@ function renderWatchProgress(data) {
       parts.push(`本地索引命中 <b>${localIndex.hits}</b> 次，省下 <b>${localIndex.api_saved || 0}</b> 次请求`);
     }
     parts.push(`今日请求 <b>${data.today_requests || 0}</b> / ${config.daily_budget || 0}`);
-    // 本地索引流水线：不花 API 额度的那条路，必须单独显示。
-    // 用户要的是「库里地址一有新往来就入库」，而这条路和上面那个受额度限制的
-    // 逐地址巡检是两件事——混在一起会让人以为"额度用完就全停了"。
-    const sweep = data.sweep || {};
-    if (sweep.initialized) {
-      parts.push(
-        `本地流水线已处理 <b>${number(sweep.scanned_total || 0)}</b> 笔，`
-        + `命中 <b>${number(sweep.hits_total || 0)}</b>、入库 <b>${number(sweep.inserted_total || 0)}</b>`,
-      );
-    }
+    // 本地索引流水线单独一块（见 renderSweepPanel），这里不再混进来：
+    // 两条链路放同一行会让人误以为"额度用完就全停了"。
     meta.innerHTML = parts.map((item) => `<span>${item}</span>`).join("");
   }
   if (hint) {
@@ -4230,21 +4222,95 @@ function renderWatchProgress(data) {
     } else {
       notes.push("还没有跑过巡检，点「立即巡检一轮」开始。");
     }
-    // 本地流水线：这条不看额度，所以即使上面因额度停住，它也照跑。
-    // 单独一句话说清，避免用户以为「每日上限到了就什么都不采了」。
-    const sweep = data.sweep || {};
-    if (sweep.initialized) {
-      if (sweep.lag_blocks > 200) {
+    hint.textContent = notes.join(" ");
+    hint.classList.toggle("warn", warn);
+  }
+}
+
+/* 本地索引流水线的实时展示。
+   ------------------------------------------------------------------------
+   为什么要单独一块：它是**另一条链路**（本地索引 × 地址库求交集，零 API），
+   和上面那个"逐地址问 API"的进度条是两件事。混在一起看，用户会以为
+   "额度用完了就是全停了"——实际这条一直在跑。
+
+   三种状态要能一眼分清：
+     已关闭   —— 开关关掉了，这条不干活
+     正在跑   —— running=true（调度器此刻正在处理），绿点 + 呼吸
+     等待中   —— 开关开着、但这一刻不在处理（30 秒一轮的间隙），灰点
+   再加一个「落后多少块」，让用户知道本地索引有没有跟上链。 */
+function renderSweepPanel(data) {
+  const box = $("#sweep-panel");
+  if (!box) return;
+  const sweep = data?.sweep;
+  if (!sweep) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+
+  const dot = $("#sweep-dot");
+  const title = $("#sweep-title");
+  const rate = $("#sweep-rate");
+  const meta = $("#sweep-meta");
+  const hint = $("#sweep-hint");
+  const enabled = sweep.enabled !== false;
+  const running = enabled && Boolean(sweep.running);
+
+  if (dot) {
+    dot.className = `sweep-dot${!enabled ? " off" : running ? " running" : " idle"}`;
+  }
+  if (title) {
+    title.textContent = !enabled
+      ? "本地索引流水线 · 已关闭"
+      : running
+        ? "本地索引流水线 · 正在处理"
+        : "本地索引流水线 · 等待下一轮";
+  }
+  if (rate) {
+    rate.textContent = enabled ? "不消耗 API 额度" : "开关已关";
+    rate.classList.toggle("off", !enabled);
+  }
+
+  if (meta) {
+    if (!enabled) {
+      meta.innerHTML = '<span>已关闭：勾选「本地索引流水线」再点「保存设置」即可重新开启。</span>';
+    } else if (!sweep.initialized) {
+      meta.innerHTML = '<span>已启用，等下一轮巡检开始时建立游标（从当前区块往后，不回扫历史）。</span>';
+    } else {
+      const parts = [
+        `已处理 <b>${number(sweep.scanned_total || 0)}</b> 笔`,
+        `命中库里地址 <b>${number(sweep.hits_total || 0)}</b> 条`,
+        `已入库 <b>${number(sweep.inserted_total || 0)}</b> 个`,
+        `处理到区块 <b>${number(sweep.last_block || 0)}</b>`,
+      ];
+      meta.innerHTML = parts.map((item) => `<span>${item}</span>`).join("");
+    }
+  }
+
+  if (hint) {
+    const notes = [];
+    let warn = false;
+    if (!enabled) {
+      notes.push("这条链路已关停；上面那条逐地址巡检不受影响。");
+    } else if (sweep.initialized && sweep.lag_blocks > 0) {
+      const blocks = Number(sweep.lag_blocks) || 0;
+      const minutes = Math.round((blocks * 12) / 60);
+      if (blocks > 200) {
         notes.push(
-          `本地流水线落后 ${number(sweep.lag_blocks)} 个块（约 ${Math.round(sweep.lag_blocks * 12 / 60)} 分钟），`
-          + "正在补齐；这段补齐后库里地址的新往来会自动入库。",
+          `本地索引还有 ${number(blocks)} 个块没处理（约 ${minutes} 分钟），正在补齐；补齐后库里地址的新往来会立刻入库。`,
         );
+        warn = true;
       } else {
-        notes.push(
-          "本地流水线已跟上链：库里地址一有新转账或代币转移，累计达标就直接入库，"
-          + "不消耗 Taostats 额度，也不受每日上限和查询让路影响。",
-        );
+        notes.push(`落后 ${number(blocks)} 个块，下一轮（约 30 秒内）就会追上。`);
       }
+    } else if (sweep.initialized) {
+      notes.push(
+        "已跟上链：库里地址一有新转账或代币转移，累计达到阈值就直接入库。不消耗 Taostats 额度，也不受每日上限和手动查询让路影响。",
+      );
+    }
+    // 上一轮什么时候跑完的，用来判断是不是真在动。
+    if (enabled && sweep.last_done_at) {
+      notes.push(`上次处理：${historyTime(sweep.last_done_at)}。`);
     }
     hint.textContent = notes.join(" ");
     hint.classList.toggle("warn", warn);
@@ -4346,6 +4412,8 @@ function fillWatchConfig(config) {
   if (follow) follow.checked = Boolean(config.follow_auto_imported);
   const localFirst = $("#watch-local-first");
   if (localFirst) localFirst.checked = config.prefer_local_index !== false;
+  const sweep = $("#watch-sweep");
+  if (sweep) sweep.checked = config.sweep_enabled !== false;
 }
 
 async function loadWatchStatus() {
@@ -4356,6 +4424,7 @@ async function loadWatchStatus() {
     if (label) label.textContent = watchStatusText(data);
     state.watchStatus = data;
     renderWatchProgress(data);
+    renderSweepPanel(data);
     return data;
   } catch (_) {
     if (label) label.textContent = "巡检状态：读取失败";
@@ -4373,6 +4442,7 @@ async function saveWatchConfig() {
     include_stake: Boolean($("#watch-stake")?.checked),
     follow_auto_imported: Boolean($("#watch-follow")?.checked),
     prefer_local_index: Boolean($("#watch-local-first")?.checked),
+    sweep_enabled: Boolean($("#watch-sweep")?.checked),
   };
   try {
     await api("/api/watch/config", { method: "POST", body: JSON.stringify(payload) });
@@ -4381,7 +4451,8 @@ async function saveWatchConfig() {
     const perTickText = payload.addresses_per_tick > 0
       ? `每 30 秒推进 ${payload.addresses_per_tick} 个地址`
       : "每 30 秒推进量跟随每分钟额度自动算";
-    toast(`巡检设置已保存：${payload.enabled ? "开启" : "关闭"}，阈值 ${payload.threshold_tao} TAO，${payload.include_stake ? "含" : "不含"}代币转移，${perTickText}。`);
+    const sweepText = payload.sweep_enabled ? "本地流水线开启" : "本地流水线关闭";
+    toast(`巡检设置已保存：${payload.enabled ? "开启" : "关闭"}，${sweepText}，阈值 ${payload.threshold_tao} TAO，${payload.include_stake ? "含" : "不含"}代币转移，${perTickText}。`);
   } catch (error) {
     toast(`保存巡检设置失败：${error.message}`, true);
   }

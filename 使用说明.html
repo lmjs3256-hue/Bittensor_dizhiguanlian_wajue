@@ -988,8 +988,71 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <td>关</td>
 <td>打开后自动入库的地址也会被巡检，会一层层扩散，慎用</td>
 </tr>
+<tr>
+<td>本地索引优先</td>
+<td>开</td>
+<td>逐地址巡检时先查本地索引，本地已覆盖就不发 API 请求</td>
+</tr>
+<tr>
+<td><strong>本地索引流水线</strong></td>
+<td><strong>开</strong></td>
+<td>独立的一条采集链路：拿本地新块撞地址库，命中即入库。零 API、不受每日上限与查询让路影响。可随时关掉</td>
+</tr>
 </tbody>
 </table>
+<p><strong>两个「本地索引」开关的区别</strong>（容易搞混，这里说清）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>本地索引优先</th>
+<th>本地索引流水线</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>干什么</td>
+<td>逐地址巡检时，本地有数据就不问 API</td>
+<td>独立跑：本地新块 × 地址库求交集</td>
+</tr>
+<tr>
+<td>关掉会怎样</td>
+<td>每个地址都会问 API（更慢更费额度）</td>
+<td>这条链路完全停，只剩逐地址巡检</td>
+</tr>
+<tr>
+<td>影响范围</td>
+<td>只影响「逐地址巡检」那一条</td>
+<td>独立一条，互不影响</td>
+</tr>
+</tbody>
+</table>
+<p><strong>流水线的实时状态</strong>（面板上一次独立区域）</p>
+<p>开关旁边有「本地索引流水线」勾选框，勾选 + 点「保存设置」才生效。面板上会单独显示它的状态，三种情况一眼可辨：</p>
+<table>
+<thead>
+<tr>
+<th>显示</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>空心点 · <strong>已关闭</strong></td>
+<td>开关关掉了，这条不干活</td>
+</tr>
+<tr>
+<td>实心点（呼吸） · <strong>正在处理</strong></td>
+<td>此刻正在扫新块</td>
+</tr>
+<tr>
+<td>灰点 · <strong>等待下一轮</strong></td>
+<td>开关开着，处于 30 秒一轮的间隙</td>
+</tr>
+</tbody>
+</table>
+<p>下面还显示「已处理 N 笔 / 命中库里地址 N 条 / 已入库 N 个 / 处理到区块 N」，以及<strong>落后多少块</strong>——超过 200 块会标黄并提示预计补齐时间。</p>
+<p><strong>关掉不丢数据</strong>：游标停在原处，重新打开后从那里继续，关掉期间攒下的新块会补上。</p>
 <p><strong>进度窗口：能看出到底跑没跑</strong></p>
 <p>巡检面板上有常驻的进度窗口，显示：</p>
 <ul>

@@ -160,6 +160,10 @@ class WatchService:
         }
         # 调度器心跳：进度窗口用它区分「正在推进」和「停在上次断点」。
         self._progress_heartbeat: dict[str, Any] = {"at": None, "paused": False}
+        # 本地索引流水线的实时状态（进程内，供界面展示「正在跑」）。
+        self._sweep_running = False
+        self._sweep_started: datetime | None = None
+        self._sweep_last_done: datetime | None = None
         # 本进程内「走本地索引」的次数与省下的 API 请求数，给界面显示。
         self._local_hits = 0
         self._api_saved = 0
@@ -1072,8 +1076,23 @@ class WatchService:
         """
 
         config = config or self.config()
+        if not config.get("sweep_enabled", True):
+            return {"skipped": True, "reason": "sweep_disabled", "inserted": 0}
         if not config.get("auto_import", True):
             return {"skipped": True, "reason": "auto_import_off", "inserted": 0}
+
+        # 「正在跑」的可见性：调度器每 30 秒调一次，一次可能处理几千行。
+        # 界面靠这两个字段判断它是真在动，还是被关掉了/卡住了。
+        self._sweep_running = True
+        self._sweep_started = utcnow()
+        try:
+            return self._sweep_local_index(config)
+        finally:
+            self._sweep_running = False
+            self._sweep_last_done = utcnow()
+
+    def _sweep_local_index(self, config: dict[str, Any]) -> dict[str, Any]:
+        """``sweep_local_index`` 的实际实现（外面那层只管开关与运行状态）。"""
 
         threshold = Decimal(str(config["threshold_tao"]))
         with self.database.session() as db:
@@ -1189,18 +1208,29 @@ class WatchService:
             "last_block": max_block,
         }
 
-    def sweep_status(self) -> dict[str, Any]:
-        """给界面看：本地流水线处理到哪、累计命中多少、还差多少块。"""
+    def sweep_status(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
+        """给界面看：本地流水线开没开、正在跑没有、处理到哪、还差多少块。"""
+
+        cfg = config or self.config()
+        enabled = bool(cfg.get("sweep_enabled", True))
 
         with self.database.session() as db:
             state = db.get(WatchSweepState, SWEEP_KEY)
             newest = db.scalar(select(func.max(Transfer.block_number))) or 0
+            base = {
+                # 「开关打开了吗」与「有没有真的在动」是两件事，都要给：
+                # 关了 → 界面显示"已关闭"；开着但长时间没动 → 显示"等下一轮"。
+                "enabled": enabled,
+                "running": bool(self._sweep_running),
+                "started_at": iso_utc(self._sweep_started),
+                "last_done_at": iso_utc(self._sweep_last_done),
+                "index_block": int(newest),
+            }
             if state is None:
                 return {
-                    "enabled": True,
+                    **base,
                     "initialized": False,
                     "last_block": 0,
-                    "index_block": int(newest),
                     "lag_blocks": 0,
                     "scanned_total": 0,
                     "hits_total": 0,
@@ -1209,10 +1239,9 @@ class WatchService:
                 }
             last = int(state.last_block or 0)
             return {
-                "enabled": True,
+                **base,
                 "initialized": True,
                 "last_block": last,
-                "index_block": int(newest),
                 "lag_blocks": max(int(newest) - last, 0),
                 "scanned_total": int(state.scanned_total or 0),
                 "hits_total": int(state.hits_total or 0),

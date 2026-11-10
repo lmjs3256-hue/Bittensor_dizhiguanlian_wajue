@@ -407,3 +407,205 @@ def test_local_scan_interval_is_faster_than_five_minutes():
     )
     seconds = int(line.split("=")[1].strip())
     assert seconds <= 300, f"扫描间隔 {seconds}s 太长，链上数据会积压"
+
+
+# -- 开关与实时状态（0.8.44）------------------------------------------------
+def test_sweep_can_be_switched_off(database, service, config):
+    """关掉开关后整条流水线不干活：不扫、不累计、不入库。"""
+
+    _library(database, OWNER)
+    _cursor(database, 1000)
+    service.sweep_local_index(config)  # 初始化
+
+    config["sweep_enabled"] = False
+    _transfer(database, 1, OWNER, PARTNER, "99", 1001)
+    result = service.sweep_local_index(config)
+
+    assert result["skipped"] is True
+    assert result["reason"] == "sweep_disabled"
+    assert not _in_library(database, PARTNER)
+
+
+def test_sweep_resumes_after_re_enable(database, service, config):
+    """关掉期间的新块不会丢：重新打开后从原游标继续处理。"""
+
+    _library(database, OWNER)
+    _cursor(database, 1000)
+    service.sweep_local_index(config)
+
+    config["sweep_enabled"] = False
+    _transfer(database, 1, OWNER, PARTNER, "45", 1001)
+    assert service.sweep_local_index(config)["skipped"] is True
+
+    config["sweep_enabled"] = True
+    result = service.sweep_local_index(config)
+    assert result["scanned"] == 1
+    assert result["inserted"] == 1, "关掉期间攒下的块，重开后要补上"
+    assert _in_library(database, PARTNER)
+
+
+def test_status_reports_enabled_flag(database, service, config):
+    """状态里必须能看出开关是开还是关。"""
+
+    _cursor(database, 1000)
+    service.sweep_local_index(config)
+
+    assert service.sweep_status(config)["enabled"] is True
+    config["sweep_enabled"] = False
+    assert service.sweep_status(config)["enabled"] is False
+
+
+def test_status_reports_running_flag(database, service, config):
+    """要能看出"此刻正在处理"——界面靠它区分「在跑」和「等下一轮」。"""
+
+    _library(database, OWNER)
+    _cursor(database, 1000)
+    service.sweep_local_index(config)
+
+    assert service.sweep_status(config)["running"] is False  # 没在跑
+    _transfer(database, 1, OWNER, PARTNER, "5", 1001)
+    service.sweep_local_index(config)
+    # 同步调用结束后 running 必须回到 False，否则界面会一直显示"正在处理"
+    assert service.sweep_status(config)["running"] is False
+    assert service.sweep_status(config)["last_done_at"]
+
+
+def test_running_flag_is_cleared_even_on_error(database, service, config, monkeypatch):
+    """流水线内部抛异常时，running 标记也要复位，不能永远卡在"正在处理"。"""
+
+    _library(database, OWNER)
+    _cursor(database, 1000)
+    service.sweep_local_index(config)
+
+    def _boom(_cfg):
+        raise RuntimeError("模拟内部错误")
+
+    monkeypatch.setattr(service, "_sweep_local_index", _boom)
+    with pytest.raises(RuntimeError):
+        service.sweep_local_index(config)
+    assert service.sweep_status(config)["running"] is False
+
+
+def test_config_has_sweep_enabled_default_on():
+    from app.settings_store import DEFAULT_WATCH_CONFIG as DEFAULTS
+
+    assert DEFAULTS.get("sweep_enabled") is True, "新链路默认应开启"
+
+
+# -- 前端契约：开关 + 独立动态面板 ------------------------------------------
+def _js() -> str:
+    from pathlib import Path
+
+    return (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_frontend_has_sweep_switch():
+    """开关要能回填、能保存。"""
+
+    js = _js()
+    assert 'const sweep = $("#watch-sweep");' in js
+    assert "sweep.checked = config.sweep_enabled !== false;" in js
+    assert "sweep_enabled: Boolean($(\"#watch-sweep\")?.checked)" in js
+
+
+def test_frontend_renders_dedicated_sweep_panel():
+    """流水线要有独立面板：和"逐地址巡检"的进度条分开显示。"""
+
+    js = _js()
+    assert "function renderSweepPanel(" in js
+    assert "renderSweepPanel(data)" in js
+    # 三种状态都要能表达
+    start = js.index("function renderSweepPanel(")
+    body = js[start : start + 2600]
+    assert "已关闭" in body
+    assert "正在处理" in body
+    assert "等待下一轮" in body
+    assert "sweep.lag_blocks" in body
+
+
+def test_progress_box_no_longer_duplicates_sweep():
+    """两条链路不能混在同一行显示，否则会误以为额度用完就全停了。"""
+
+    js = _js()
+    start = js.index("function renderWatchProgress(")
+    end = js.index("function renderSweepPanel(")
+    assert "本地流水线已处理" not in js[start:end]
+
+
+# -- 前端契约：开关 + 独立动态面板 ------------------------------------------
+def _js() -> str:
+    from pathlib import Path
+
+    return (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_frontend_has_sweep_switch():
+    """开关要能回填、能保存。"""
+
+    js = _js()
+    assert 'const sweep = $("#watch-sweep");' in js
+    assert "sweep.checked = config.sweep_enabled !== false;" in js
+    assert "sweep_enabled: Boolean($(\"#watch-sweep\")?.checked)" in js
+
+
+def test_frontend_renders_dedicated_sweep_panel():
+    """流水线要有独立面板：和"逐地址巡检"的进度条分开显示。"""
+
+    js = _js()
+    assert "function renderSweepPanel(" in js
+    assert "renderSweepPanel(data)" in js
+    # 三种状态都要能表达
+    start = js.index("function renderSweepPanel(")
+    body = js[start : start + 2600]
+    assert "已关闭" in body
+    assert "正在处理" in body
+    assert "等待下一轮" in body
+    assert "sweep.lag_blocks" in body
+
+
+def test_progress_box_no_longer_duplicates_sweep():
+    """两条链路不能混在同一行显示，否则会误以为额度用完就全停了。"""
+
+    js = _js()
+    start = js.index("function renderWatchProgress(")
+    end = js.index("function renderSweepPanel(")
+    assert "本地流水线已处理" not in js[start:end]
+
+
+# -- 入参模型不能吞字段（真实踩过）-----------------------------------------
+def test_config_input_model_accepts_sweep_enabled():
+    """`/api/watch/config` 的 Pydantic 模型必须声明这两个字段。
+
+    真实踩到的坑：前端一直在传 `sweep_enabled` / `prefer_local_index`，
+    但 `WatchConfigInput` 没声明它们，Pydantic 默认忽略未知字段——于是
+    接口返回 200、前端以为存上了，实际设置被默默丢掉。「本地索引优先」
+    这个勾选框因此从上线起就没生效过。
+    """
+
+    from app.main import WatchConfigInput
+
+    fields = set(WatchConfigInput.model_fields)
+    assert "sweep_enabled" in fields, "入参模型缺 sweep_enabled，设置会被丢弃"
+    assert "prefer_local_index" in fields, "入参模型缺 prefer_local_index"
+
+    # 且要能真正解析出来（不是声明了却永远 None）
+    parsed = WatchConfigInput(**{"sweep_enabled": False, "prefer_local_index": False})
+    assert parsed.sweep_enabled is False
+    assert parsed.prefer_local_index is False
+
+
+def test_saved_config_reaches_disk(tmp_path, monkeypatch):
+    """保存后必须落盘到 `address_watch`，下次启动能读回来。"""
+
+    from app import settings_store
+
+    monkeypatch.setenv("WALLET_LINK_SETTINGS", str(tmp_path / "settings.json"))
+    assert settings_store.save_watch_config({"sweep_enabled": False}) is True
+    assert settings_store.load_watch_config()["sweep_enabled"] is False
+
+    assert settings_store.save_watch_config({"sweep_enabled": True}) is True
+    assert settings_store.load_watch_config()["sweep_enabled"] is True
