@@ -168,14 +168,42 @@ def terminal_roles(library: Iterable[LibraryEntry]) -> dict[str, tuple[str, ...]
         named: set[str] = set()
         if "EXCHANGE" in categories and entry.exchange_confirmed:
             named.add("EXCHANGE")
+        # 「人工否定交易所」的地址：分类仍是 EXCHANGE，但结论是"不是交易所"。
+        # 它不是关联终点（不该拿它当截止点剪线索），也不能靠标签里的「交易所」
+        # 三字反推回来。
+        if getattr(entry, "exchange_rejected", False):
+            named.discard("EXCHANGE")
         if "VALIDATOR" in categories:
             named.add("VALIDATOR")
         if "PUBLIC" in categories:
             named.add("PUBLIC")
-        if not named and not entry.exchange_rejected and (
-            "交易所" in (entry.note or "") or "交易所" in (entry.label or "")
+        # 标签/备注里写明角色的同样算终点。
+        #
+        # 以前只对「交易所」这么做，公共地址和验证者只认分类。于是出现一类
+        # 隐蔽的不一致：地址被"手动添加到某个叫「公共地址」的组"、或整组改分类
+        # 之后，label 是「公共地址」而 categories 里没有 PUBLIC——它就不再是
+        # 终点，扫描会继续往下扩展，结果里冒出穿过它的三级下游地址。
+        # 用户看到的现象是"我明明标了公共地址，怎么还有它下游的地址"。
+        label_text = str(getattr(entry, "label", "") or "")
+        note_text = str(getattr(entry, "note", "") or "")
+        blob = label_text + " " + note_text
+        # 「已否定 / 不是 / 取消」这类措辞表示结论是"不算"，不能当终点。
+        # 注意不能只用「否定」两字匹配：像「人工否定交易所」这种标签本身
+        # 已经由 exchange_rejected 表达，这里只影响公共地址/验证者的推断。
+        negated = any(word in blob for word in ("否定", "不是", "取消"))
+        if (
+            not named
+            and not entry.exchange_rejected
+            and not negated
+            and ("交易所" in note_text or "交易所" in label_text)
         ):
             named.add("EXCHANGE")
+        # 公共地址：标签/备注里写明，且没有被明确否定。
+        if "PUBLIC" not in named and not negated and "公共地址" in blob:
+            named.add("PUBLIC")
+        # 验证者同理。
+        if "VALIDATOR" not in named and not negated and "验证者" in blob:
+            named.add("VALIDATOR")
         if (
             "系统" in (entry.categories or ())
             or "SYSTEM" in (entry.categories or ())

@@ -3512,6 +3512,70 @@ function applyLocalFilters() {
   return { hidden, shown };
 }
 
+/* 本地版「关联终点」判定，与后端 relation.terminal_roles() 同一口径。
+   ------------------------------------------------------------------------
+   为什么要在前端也做一份：用户要求「只要标记上，历史查询记录、刷新仍然要能
+   自动校正」。刷新结果现在是纯本地重算（不调 API），如果只看当前结果行里的
+   身份，就认不出"刚在别处标成公共地址、这一行还没刷新过"的地址；而地址库
+   全量在 state.library 里，够用来算。
+
+   口径必须和后端一致，否则"后端剪掉了、前端刷新又放回来"会来回打架：
+     · EXCHANGE 分类且已人工确认（人工否定的不算）
+     · VALIDATOR / PUBLIC 分类
+     · 标签或备注里写明角色；带「否定 / 不是 / 取消」的不算
+   注意：隧道访问时前端状态可能是旧的，所以这里只是"本地能算多少算多少"，
+   最终以标记后后端返回的 correction 为准。 */
+function localTerminalRoles() {
+  const roles = new Map();
+  const add = (address, name) => {
+    if (!address) return;
+    if (!roles.has(address)) roles.set(address, new Set());
+    roles.get(address).add(name);
+  };
+  for (const row of state.library || []) {
+    const names = [row.category, ...(row.categories || [])]
+      .map((value) => String(value || "").toUpperCase())
+      .filter(Boolean);
+    const blob = `${row.label || ""} ${row.note || ""}`;
+    const negated = ["否定", "不是", "取消"].some((word) => blob.includes(word));
+    const hit = new Set();
+    if (names.includes("EXCHANGE") && row.exchange_confirmed && !row.exchange_rejected) {
+      hit.add("EXCHANGE");
+    }
+    if (names.includes("VALIDATOR")) hit.add("VALIDATOR");
+    if (names.includes("PUBLIC")) hit.add("PUBLIC");
+    if (!hit.size && !row.exchange_rejected && !negated && blob.includes("交易所")) {
+      hit.add("EXCHANGE");
+    }
+    if (!hit.has("PUBLIC") && !negated && blob.includes("公共地址")) hit.add("PUBLIC");
+    if (!hit.has("VALIDATOR") && !negated && blob.includes("验证者")) hit.add("VALIDATOR");
+    if (names.includes("系统") || names.includes("SYSTEM")) hit.add("SYSTEM");
+    for (const name of hit) add(row.address, name);
+  }
+  return roles;
+}
+
+/* 这一行是不是「穿过终点才连上的」。
+   ------------------------------------------------------------------------
+   后端 prune_archive_payload 的判据是 path[:-1] 里出现终点就剔掉。前端按
+   同一条路径（row.path_transfers）判断，才能保证刷新与后端结果一致。
+   终点自己也出现在结果里（它是一级/二级邻居），所以判断时要把它自己排除，
+   否则会把终点本行也删掉。 */
+function passesThroughTerminal(row, terminals, seed) {
+  const hops = row.path_transfers || [];
+  if (!hops.length) return false;
+  const chain = [];
+  for (const hop of hops) {
+    const from = hop.path_from || hop.from_address;
+    const to = hop.path_to || hop.to_address;
+    if (from) chain.push(from);
+    if (to) chain.push(to);
+  }
+  return chain.some(
+    (address) => address && address !== row.address && address !== seed && terminals.has(address),
+  );
+}
+
 function rebuildRelationsLocally() {
   const data = state.lastResult;
   if (!data) return { pruned: 0, kept: 0 };
@@ -3595,12 +3659,17 @@ function rebuildRelationsLocally() {
     }
   }
 
+  const terminals = localTerminalRoles();
   let pruned = 0;
+  let prunedByRole = 0;
   const keptRows = [];
   for (const row of data.related || []) {
     if (state.removedAddresses.has(row.address)) { pruned += 1; continue; }
     // 不可达 = 只经由被移除的地址连通，剔掉。
     if (seed && !reachable.has(row.address)) { pruned += 1; continue; }
+    // 路径穿过交易所/验证者/公共地址：这条线索是"顺着该终点往下挖"挖出来的，
+    // 与后端口径一致剔掉。标记之后刷新即可生效，不用重新扫描。
+    if (passesThroughTerminal(row, terminals, seed)) { pruned += 1; prunedByRole += 1; continue; }
     // 层级优先用重算值；被终点截断而算不出的，沿用它原来的层级。
     const depth = depthOf.has(row.address) ? depthOf.get(row.address) : row.depth;
     keptRows.push({ ...row, depth: Math.max(1, Number(depth) || 1) });
@@ -3609,7 +3678,7 @@ function rebuildRelationsLocally() {
   // 只替换 related；edges 保持原样（下游仍可用于路径明细）。
   state.lastResult = { ...data, related: keptRows };
   state.exchangePruned.clear();
-  return { pruned, kept: keptRows.length };
+  return { pruned, prunedByRole, kept: keptRows.length };
 }
 
 function pruneDownstreamOf(address) {
@@ -3635,8 +3704,67 @@ function pruneDownstreamOf(address) {
   return count;
 }
 
+// 系统角色互斥的确认框。
+//
+// 用户要求：「公共地址和交易所地址互斥，以最后操作为准，要有弹窗提示该地址
+// 要从原来的库移出、并移入后面确认的库。」
+//
+// 这里在**发请求前**先看该地址当前是什么身份：如果已经是另一种系统角色，
+// 就把"将从 X 分组移到 Y 分组"写清楚让用户确认；没有冲突就不打扰。
+const ROLE_CONFLICT_LABEL = {
+  PUBLIC: "公共地址",
+  EXCHANGE: "交易所",
+  VALIDATOR: "验证者",
+};
+
+function currentRolesOf(address) {
+  const row = (state.lastResult?.related || []).find((entry) => entry.address === address);
+  const names = [];
+  if (row) {
+    for (const name of row.library_categories || []) names.push(String(name).toUpperCase());
+    if (row.library_category) names.push(String(row.library_category).toUpperCase());
+  }
+  // 地址库清单里的记录（没有扫描结果时）
+  const libRow = (state.library || []).find((entry) => entry.address === address);
+  if (libRow) {
+    for (const name of libRow.categories || []) names.push(String(name).toUpperCase());
+    if (libRow.category) names.push(String(libRow.category).toUpperCase());
+  }
+  return new Set(names);
+}
+
+function confirmRoleSwitch(address, targetRole) {
+  const roles = currentRolesOf(address);
+  const conflicts = ["PUBLIC", "EXCHANGE", "VALIDATOR"].filter(
+    (name) => name !== targetRole && roles.has(name),
+  );
+  if (!conflicts.length) return true;
+  const from = conflicts.map((name) => ROLE_CONFLICT_LABEL[name]).join("、");
+  const to = ROLE_CONFLICT_LABEL[targetRole];
+  return window.confirm(
+    `这个地址已被标为「${from}」。\n\n` +
+      `系统角色是互斥的，确认后将以本次操作为准：\n` +
+      `· 从「${from}」分组移出\n` +
+      `· 移入「${to}」分组\n\n` +
+      `地址：${address}\n\n确定要改为「${to}」吗？`,
+  );
+}
+
+// 后端回报「这条路以前是别的角色」时补一句。
+//
+// 远程经隧道访问时本地状态可能还是旧的（用户说的"主机那边还没改过来"），
+// 此时前端压根看不出冲突、也就不会弹确认框；真正的切换结果由后端返回，
+// 这里据实告知，不能默默把地址从一个分组挪到另一个分组。
+function switchedText(result) {
+  const from = result?.switched_from || [];
+  if (!from.length) return "";
+  return `（已从「${from.join("、")}」分组移出）`;
+}
+
 async function decideExchange(address, decision, button) {
   if (!address) return;
+  // 确认交易所 = 切换系统身份，可能与现有的公共地址/验证者冲突。
+  if (decision === "confirm" && !confirmRoleSwitch(address, "EXCHANGE")) return;
   button.disabled = true;
   try {
     const result = await api("/api/library/confirm-exchange-address", {
@@ -3670,7 +3798,7 @@ async function decideExchange(address, decision, button) {
       const corrected = correctionText(result.correction);
       toast((pruned
         ? `已标为交易所：其下游 ${pruned} 个关联地址已从列表隐藏，点「刷新结果」重查后不会再出现。`
-        : "已标为交易所：该地址作为关联终点，刷新后不再向下扩展。") + corrected, false);
+        : "已标为交易所：该地址作为关联终点，刷新后不再向下扩展。") + switchedText(result) + corrected, false);
     } else if (decision === "reject") {
       toast("已人工否定该地址；后续扫描不会再将其列为交易所候选。判错可点「改为交易所」。", false);
     } else {
@@ -3684,6 +3812,8 @@ async function decideExchange(address, decision, button) {
 
 async function decidePublic(address, decision, button) {
   if (!address) return;
+  const marking = decision === "mark";
+  if (marking && !confirmRoleSwitch(address, "PUBLIC")) return;
   button.disabled = true;
   const marked = decision === "mark";
   try {
@@ -3718,7 +3848,7 @@ async function decidePublic(address, decision, button) {
       const corrected = correctionText(result.correction);
       toast((pruned
         ? `已标为公共地址：其下游 ${pruned} 个关联地址已从列表隐藏，点「刷新结果」重查后不会再展开。`
-        : "已标为公共地址：该地址作为关联终点，刷新后不再向下扩展。") + corrected, false);
+        : "已标为公共地址：该地址作为关联终点，刷新后不再向下扩展。") + switchedText(result) + corrected, false);
     } else {
       toast("已取消公共地址标记（原有分类保持不变）。", false);
     }
@@ -3730,6 +3860,8 @@ async function decidePublic(address, decision, button) {
 
 async function decideValidator(address, decision, button) {
   if (!address) return;
+  const marking = decision === "mark";
+  if (marking && !confirmRoleSwitch(address, "VALIDATOR")) return;
   button.disabled = true;
   const marked = decision === "mark";
   try {
@@ -3761,7 +3893,7 @@ async function decideValidator(address, decision, button) {
       const corrected = correctionText(result.correction);
       toast((pruned
         ? `已标为验证者：其下游 ${pruned} 个关联地址已从列表隐藏，点「刷新结果」重查后不会再展开。`
-        : "已标为验证者：该地址作为关联终点，刷新后不再向下扩展。") + corrected, false);
+        : "已标为验证者：该地址作为关联终点，刷新后不再向下扩展。") + switchedText(result) + corrected, false);
     } else {
       toast("已取消验证者标记（原有分类保持不变）。", false);
     }
@@ -5004,13 +5136,14 @@ $("#refresh-result").addEventListener("click", () => {
   // 它们连通的线索"，这件事用结果里已有的 edges 就能算完。以前这里跑
   // runRelations(true)，等于每次点刷新都重查一遍，慢且白烧额度。
   // 真要看最新链上数据，请点「扫描关联」重新查询。
-  const { pruned, kept } = rebuildRelationsLocally();
+  const { pruned, prunedByRole, kept } = rebuildRelationsLocally();
   state.removedAddresses.clear();     // 已固化成"剔除"，不再反复扣减
   state.page = 1;
   refreshRelatedTable();
   updateRefreshButton();
+  const byRole = Number(prunedByRole) || 0;
   if (pruned > 0) {
-    toast(`已按本地数据重算：剔除 ${pruned} 个无效关联（已移除的、或只经由它们连通的），保留 ${kept} 个。未调用 API。`, false);
+    toast(`已按本地数据重算：剔除 ${pruned} 个无效关联（已移除的、只经由它们连通的${byRole ? `、以及穿过交易所/验证者/公共地址的 ${byRole} 个` : ""}），保留 ${kept} 个。未调用 API。`, false);
   } else {
     toast(`已按本地数据重算，${kept} 个关联地址均有效。未调用 API。`, false);
   }

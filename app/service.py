@@ -432,6 +432,49 @@ def book_derived_label(row: AddressLibrary) -> str:
 
 PUBLIC_LABEL_TEXT = "公共地址"
 VALIDATOR_LABEL_TEXT = "验证者地址"
+EXCHANGE_LABEL_TEXT = "人工确认交易所"
+# 系统角色互斥：一个地址最终只能有一个"身份结论"。
+#
+# 用户明确要求：「公共地址和交易所地址互斥，如果一个地址先标记公共地址、
+# 后又标记交易所地址，以最后操作为准，要有弹窗提示该地址要从原来的库移出、
+# 并移入后面确认的库。」
+#
+# 以前各入口各写各的：decide_exchange_address 只设 EXCHANGE，从不清 PUBLIC，
+# 于是同一地址可以同时带 EXCHANGE 和 PUBLIC——终端身份判定先命中谁看字典顺序，
+# 用户看到的"身份"和他最后一次操作对不上。
+EXCLUSIVE_ROLES = ("EXCHANGE", "VALIDATOR", "PUBLIC")
+ROLE_LABEL_TEXT = {
+    "EXCHANGE": EXCHANGE_LABEL_TEXT,
+    "VALIDATOR": VALIDATOR_LABEL_TEXT,
+    "PUBLIC": PUBLIC_LABEL_TEXT,
+}
+
+
+def _drop_other_roles(row: AddressLibrary, keep: str) -> list[str]:
+    """把 ``row`` 上除 ``keep`` 以外的系统角色分类全部去掉。
+
+    返回被移除的角色名（大写），调用方据此判断"身份是否发生了切换"，
+    以便在响应里告诉前端"已从原分组移到新分组"。
+    """
+
+    current = row_categories(row)
+    dropped: list[str] = []
+    kept: list[str] = []
+    for name in current:
+        upper = name.upper()
+        if upper in EXCLUSIVE_ROLES and upper != keep.upper():
+            dropped.append(upper)
+            continue
+        kept.append(name)
+    if not dropped:
+        return []
+    # 主分类被移除时，回落到剩下的第一个（或默认分类）
+    if str(row.category or "").strip().upper() in set(dropped):
+        row.category = kept[0] if kept else DEFAULT_CATEGORY
+        if not kept:
+            kept = [DEFAULT_CATEGORY]
+    row.categories = encode_categories(kept)
+    return dropped
 
 
 def move_out_of_book(row: AddressLibrary, group_label: str) -> str:
@@ -1206,12 +1249,24 @@ class LinkService:
                     current.label = ""
                 # 目标组带分类时同步分类（前端会把组的主分类一起传上来）；
                 # 自建库/标签组的分类不动原记录的情况只在没传分类时发生。
+                #
+                # 注意保留已有的系统角色：把「已标为公共地址/验证者」的地址
+                # 拖进一个自建库时，不能顺手把角色标记抹掉——那会让它重新变成
+                # 普通地址、扫描时继续向下扩展。
                 if group_category:
                     merged_categories = [group_category]
+                    merged_categories.extend(
+                        name
+                        for name in row_categories(current)
+                        if name.upper() in SYSTEM_CATEGORIES
+                        and name not in merged_categories
+                    )
                     if is_official_exchange_row(current):
                         merged_categories.append("EXCHANGE")
                     current.category = group_category
-                    current.categories = encode_categories(merged_categories)
+                    current.categories = encode_categories(
+                        list(dict.fromkeys(merged_categories))
+                    )
                 if force_confirmed or force_rejected:
                     current.exchange_confirmed = force_confirmed
                     current.exchange_rejected = force_rejected
@@ -1829,8 +1884,21 @@ class LinkService:
                 raise InputError(lock_message)
             for name in values:
                 self._ensure_category(db, name)
-            current.category = values[0]
-            current.categories = encode_categories(values)
+            # 人工改分类不能顺手把系统角色冲掉。以前这里是直接
+            # ``categories = values`` 整体覆盖，导致「标了公共地址 / 验证者」
+            # 的地址只要再改一次分类，角色标记就静默消失，扫描时又会被当作
+            # 普通地址继续向下扩展。保留角色分类，用合并代替覆盖。
+            kept_roles = [
+                name
+                for name in row_categories(current)
+                if name.upper() in SYSTEM_CATEGORIES
+            ]
+            merged = list(values)
+            for name in kept_roles:
+                if name not in merged:
+                    merged.append(name)
+            current.category = merged[0]
+            current.categories = encode_categories(merged)
             payload = {"saved": True, "item": address_dict(current)}
             changed_address = current.address
         # 分类可能带出「交易所/验证者/公共地址」的备注口径，改完顺手校正一次。
@@ -1868,20 +1936,34 @@ class LinkService:
                 raise InputError("没有找到这个标签组")
             for name in values:
                 self._ensure_category(db, name)
-            # 系统分类（交易所/验证者）不参与人工分类：这些地址跳过，避免把角色信息冲掉。
+            # 系统分类（交易所/验证者/公共地址）不参与人工分类：这些地址跳过，
+            # 避免把角色信息冲掉。以前漏了 PUBLIC，导致「先标公共地址、后整组
+            # 改分类」的地址被静默降级成普通地址，扫描时又会被继续向下扩展，
+            # 结果里冒出穿过它的下游噪音。
             editable = [
                 row
                 for row in rows
                 if not (row.exchange_confirmed or row.exchange_rejected)
-                and not set(row_categories(row)) & {"EXCHANGE", "VALIDATOR"}
+                and not set(row_categories(row))
+                & {"EXCHANGE", "VALIDATOR", PUBLIC_CATEGORY}
             ]
             if not editable:
-                raise InputError("这一组都是交易所/验证者地址，不能改人工分类")
+                raise InputError("这一组都是交易所/验证者/公共地址，不能改人工分类")
             updated: list[dict[str, Any]] = []
             for row in editable:
                 updated.append({"address": row.address, "snapshot": _library_row_snapshot(row)})
-                row.category = values[0]
-                row.categories = encode_categories(values)
+                # 保留已有的系统角色分类（不只 PUBLIC，防止将来再加新角色时重犯）。
+                kept_roles = [
+                    name
+                    for name in row_categories(row)
+                    if name.upper() in SYSTEM_CATEGORIES
+                ]
+                merged = list(values)
+                for name in kept_roles:
+                    if name not in merged:
+                        merged.append(name)
+                row.category = merged[0]
+                row.categories = encode_categories(merged)
             _record_import_batch(
                 db,
                 kind="category",
@@ -1915,6 +1997,16 @@ class LinkService:
             # 重置）都把地址移出用户地址库，并把「只是库名复制」的标签归位到
             # 结论分组——否则清单里仍会以旧库名分组显示，扫描结果的库名徽标
             # 也不会变。以后关联到别的库时再单独加回去。
+            # 身份互斥：确认交易所时先清掉公共地址/验证者标记，以最后一次
+            # 操作为准。必须**在**设 category 之前调用——它会重写 categories
+            # 并可能把主分类改成残留的那个，顺序反了会把 EXCHANGE 又冲掉。
+            # 只有「确认」才算身份切换；「否定」只是说"它不是交易所"，不该
+            # 顺手把已有的公共地址/验证者标记也抹掉。重置同理不动身份。
+            dropped_roles = (
+                _drop_other_roles(current, "EXCHANGE")
+                if decision == "confirm"
+                else []
+            )
             current.category = "EXCHANGE"
             group_label = {
                 "confirm": "人工确认交易所",
@@ -1928,7 +2020,14 @@ class LinkService:
             old_book = move_out_of_book(current, group_label)
             if old_book:
                 prune_empty_book(db, old_book)
-            payload = {"saved": True, "item": address_dict(current)}
+            payload = {
+                "saved": True,
+                "item": address_dict(current),
+                # 身份切换：告诉前端"它原来是 X，现在改成 Y，已移出原分组"。
+                "switched_from": [
+                    ROLE_LABEL_TEXT.get(name, name) for name in dropped_roles
+                ],
+            }
             changed_address = current.address
         # 确认为交易所 = 新增一个关联终点：把以前从该地址继续展开出来的
         # 下游关联从历史结果里剪掉（只重扫提到过这个地址的快照，很快）。
@@ -1953,6 +2052,8 @@ class LinkService:
         if not is_valid_ss58(address):
             raise InputError("invalid SS58 address")
         with self.database.session() as db:
+            # 新建分支不会经历"清掉旧角色"，但要保证后面统一引用时不报未定义。
+            dropped_roles: list[str] = []
             current = db.scalar(select(AddressLibrary).where(AddressLibrary.address == address))
             if decision not in {"confirm", "reject", "reset"}:
                 raise InputError("交易所状态只能是 confirm、reject 或 reset")
@@ -1991,6 +2092,15 @@ class LinkService:
                 db.add(current)
                 db.flush()
             else:
+                # 身份互斥：先清掉公共地址/验证者，再设主分类（顺序见
+                # decide_exchange 里的说明）。只有「确认」才是身份切换——
+                # 「否定」只是说它不是交易所，不该顺手抹掉已有的公共地址标记；
+                # 「重置」同理，保持原有身份不动。
+                dropped_roles = (
+                    _drop_other_roles(current, "EXCHANGE")
+                    if decision == "confirm"
+                    else []
+                )
                 current.category = "EXCHANGE"
                 if label.strip():
                     current.label = label.strip()
@@ -2019,7 +2129,13 @@ class LinkService:
                 # 库被搬空了就把台账记录也删掉，别留一个「0 个地址」的空库。
                 if old_book:
                     prune_empty_book(db, old_book)
-            payload = {"saved": True, "item": address_dict(current)}
+            payload = {
+                "saved": True,
+                "item": address_dict(current),
+                "switched_from": [
+                    ROLE_LABEL_TEXT.get(name, name) for name in dropped_roles
+                ],
+            }
         if decision == "confirm":
             payload["correction"] = self.reconcile_history(addresses=[address], watch=False)
         return payload
@@ -2042,8 +2158,10 @@ class LinkService:
             row = db.scalar(
                 select(AddressLibrary).where(AddressLibrary.address == address)
             )
+            # 新建分支不经历"清掉旧角色"，但后面统一引用，先初始化。
+            dropped_roles: list[str] = []
             if row is None and not marked:
-                return {"saved": True, "item": None, "marked": False}
+                return {"saved": True, "item": None, "marked": False, "switched_from": []}
             if row is not None and not marked and is_builtin_row(row):
                 raise InputError(
                     "该地址来自内置固定名单（公共地址），不能取消标记"
@@ -2060,6 +2178,8 @@ class LinkService:
                 db.add(row)
                 db.flush()
             elif marked:
+                # 身份互斥：标公共地址时清掉交易所/验证者（以最后一次操作为准）。
+                dropped_roles = _drop_other_roles(row, PUBLIC_CATEGORY)
                 if not row_has_category(row, PUBLIC_CATEGORY):
                     row.categories = encode_categories(
                         [*row_categories(row), PUBLIC_CATEGORY]
@@ -2093,7 +2213,14 @@ class LinkService:
                     row.label = ""
                 if old_book:
                     prune_empty_book(db, old_book)
-            payload = {"saved": True, "item": address_dict(row), "marked": bool(marked)}
+            payload = {
+                "saved": True,
+                "item": address_dict(row),
+                "marked": bool(marked),
+                "switched_from": [
+                    ROLE_LABEL_TEXT.get(name, name) for name in dropped_roles
+                ],
+            }
         # 标记为公共地址同样新增一个关联终点，历史结果里它的下游就是噪音。
         if marked:
             payload["correction"] = self.reconcile_history(addresses=[address], watch=False)
@@ -2117,8 +2244,10 @@ class LinkService:
             row = db.scalar(
                 select(AddressLibrary).where(AddressLibrary.address == address)
             )
+            # 新建分支不经历"清掉旧角色"，但后面统一引用，先初始化。
+            dropped_roles: list[str] = []
             if row is None and not marked:
-                return {"saved": True, "item": None, "marked": False}
+                return {"saved": True, "item": None, "marked": False, "switched_from": []}
             if row is not None and not marked and is_builtin_row(row):
                 raise InputError("该地址来自内置固定名单（验证者），不能取消标记")
             old_book = ""
@@ -2134,6 +2263,8 @@ class LinkService:
                 db.add(row)
                 db.flush()
             elif marked:
+                # 身份互斥：标验证者时清掉交易所/公共地址（以最后一次操作为准）。
+                dropped_roles = _drop_other_roles(row, "VALIDATOR")
                 if not row_has_category(row, "VALIDATOR"):
                     row.categories = encode_categories(
                         [*row_categories(row), "VALIDATOR"]
@@ -2162,6 +2293,9 @@ class LinkService:
                 "saved": True,
                 "item": address_dict(row),
                 "marked": bool(marked),
+                "switched_from": [
+                    ROLE_LABEL_TEXT.get(name, name) for name in dropped_roles
+                ],
             }
         if marked:
             payload["correction"] = self.reconcile_history(
