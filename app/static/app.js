@@ -4458,7 +4458,18 @@ async function loadHistory(offset = state.history.offset) {
   }
 }
 
-async function viewHistoryRecord(id) {
+async function viewHistoryRecord(id, button) {
+  // 经公网隧道访问时，一条历史记录可能要传 1~2MB，光等就要十几秒。
+  // 以前这里既没有加载态也没有提示，用户看到的就是"点了完全没反应"。
+  const label = button ? button.textContent : "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "读取中…";
+  }
+  const slowTimer = window.setTimeout(() => {
+    if (button) button.textContent = "仍在读取…";
+    toast("这条历史记录较大，经隧道传输需要点时间，请稍候…");
+  }, 3000);
   try {
     const data = await api(`/api/relations/history/${id}`);
     if (!data.result) {
@@ -4482,6 +4493,12 @@ async function viewHistoryRecord(id) {
     if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     toast(`历史记录读取失败：${error.message}`, true);
+  } finally {
+    window.clearTimeout(slowTimer);
+    if (button) {
+      button.disabled = false;
+      button.textContent = label || "查看结果";
+    }
   }
 }
 
@@ -5167,7 +5184,7 @@ document.addEventListener("click", (event) => {
   const removeRelationButton = event.target.closest("[data-remove-relation]");
   if (removeRelationButton) removeRelation(removeRelationButton.dataset.removeRelation);
   const historyView = event.target.closest("[data-history-view]");
-  if (historyView) viewHistoryRecord(historyView.dataset.historyView);
+  if (historyView) viewHistoryRecord(historyView.dataset.historyView, historyView);
   const historyExport = event.target.closest("[data-history-export]");
   if (historyExport) exportHistoryRecord(historyExport.dataset.historyId, historyExport.dataset.historyExport);
   const historySync = event.target.closest("[data-history-sync]");

@@ -514,6 +514,37 @@ def is_note_only_row(row: AddressLibrary) -> bool:
     return str(row.source or "").startswith(NOTE_ONLY_SOURCE)
 
 
+def _slim_archive_payload(payload: Any) -> Any:
+    """精简历史快照再回传，主要针对 ``edges``。
+
+    实测一条 171 个关联地址的历史记录，payload 5.5MB 里有 **5.2MB 是 edges**
+    （3,700+ 条逐跳边，单条含 tx_hash / block_hash / timestamp / reason 等
+    十多个字段），而 ``related`` 只有 282KB。
+
+    这些字段前端根本不用：路径明细来自 ``related[].path_transfers``，
+    ``edges`` 只被 ``rebuildRelationsLocally()`` 拿去做邻接计算，只读
+    ``from_address`` / ``to_address``。
+
+    在**返回时**裁掉冗余字段（库里的 payload 保持原样，随时可完整导出），
+    经公网隧道访问时体积从 5.5MB 降到 1MB 以内，点「查看结果」不再等几十秒。
+    """
+
+    if not isinstance(payload, dict):
+        return payload
+    edges = payload.get("edges")
+    if not isinstance(edges, list) or not edges:
+        return payload
+    # 只留邻接计算需要的两端地址。前端对 edges 的唯一用途是
+    # ``rebuildRelationsLocally()`` 里的 ``link(edge.from_address, edge.to_address)``，
+    # 金额/区块/类型都在 related[].path_transfers 里另有完整副本。
+    slim_edges = [
+        {"from_address": edge.get("from_address", ""), "to_address": edge.get("to_address", "")}
+        for edge in edges
+        if isinstance(edge, dict)
+    ]
+    return {**payload, "edges": slim_edges}
+
+
 def address_dict(row: AddressLibrary) -> dict[str, Any]:
     label = row.label.strip()
     official = is_official_exchange_row(row)
@@ -3633,7 +3664,7 @@ class LinkService:
             payload = json.loads(row.payload) if row.payload else None
         except ValueError:
             payload = None
-        return {"item": self._archive_summary(row), "result": payload}
+        return {"item": self._archive_summary(row), "result": _slim_archive_payload(payload)}
 
     def delete_relation_history(self, archive_ids: list[int]) -> int:
         ids = {item for item in archive_ids if item > 0}
