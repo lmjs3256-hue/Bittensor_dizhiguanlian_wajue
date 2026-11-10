@@ -1,5 +1,52 @@
 # 变更记录
 
+## 0.8.39 · 跨机迁移本地索引 / 查询记录 / 巡检日志 · 2026-11-10
+
+用户在远端导入地址库后发现：本地索引、历史查询、巡检日志都是空的。
+
+**原因**：`/api/library/export` 导出的 JSON **只含地址库**。这些数据都在同一个
+SQLite 里，但换机器不会跟着走——索引丢了要从链头重扫几万块，巡检游标丢了
+已查过的地址要全部重查，历史查询与入库日志直接空白。
+
+新增 `tools/migrate_runtime.py`，做**幂等合并**而不是覆盖（远端可能已经跑过
+几轮巡检，不能被冲掉）：
+
+```powershell
+# 本机导出（只读源库）
+python tools\migrate_runtime.py export --out migrate-20261110.db
+
+# 远端先预览（不加 --apply 一行都不写）
+python tools\migrate_runtime.py merge --from migrate-20261110.db --target data\wallet_link.db
+
+# 确认后写入
+python tools\migrate_runtime.py merge --from ... --target ... --apply
+```
+
+- **迁 7 张表**：`transfers`（本地索引）、`relation_archives`（历史查询）、
+  `auto_import_log`（入库日志）、`watch_state`（巡检游标）、`watch_candidates`、
+  `book_pair_stats`、`watch_runs`。
+- **按业务唯一键去重**：`transfers` 同时按 `event_key` 和 `(block_number, event_index)`
+  判重——不同机器生成的 event_key 可能不同，只比 key 会漏判；`watch_state` 按地址。
+- **明确不迁**：`api_requests`（本机额度统计）、`scan_jobs` / `chain_cursors`
+  （目标机自己维护）、`settings.json`（含 DPAPI 加密的 key）、`license.key`（一机一码）。
+- **支持 `--only`** 只搬部分表：只要日志和查询记录时约 36MB，全量约 62MB
+  （主要是 5.7 万条索引）。
+
+**踩到一个真 bug 并修掉**：源库和目标库的 `id` 各自自增，直接搬 `id` 会撞主键
+（实测 `UNIQUE constraint failed: transfers.id`）。改为**不迁移自增 `id`**，
+交给目标库自己分配；去重靠业务唯一键，不受影响。
+
+**安全设计**（`tests/test_migrate_runtime.py` 11 条测试守着）：
+默认只预览、幂等（第二次合并是「写入 0 行、跳过 N 行」）、
+**不覆盖远端已有记录**（远端 `watch_state.last_block=77777` 原样保留）。
+真实数据端到端实测：远端原有 2 条 → 合并后 57,989 条，地址库 2508 条一字未动。
+
+迁移包已加入 `.gitignore`（`migrate-*.db`），避免 63MB 数据被误提交。
+
+`docs/固定主机迁移.md` 新增 2.3.2 节完整说明。
+
+全量 539 passed / 0 failed。
+
 ## 0.8.38 · 起始地址框优先显示后四位 + 迁移/云部署文档 · 2026-11-10
 
 三件事。

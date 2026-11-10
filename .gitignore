@@ -32,6 +32,12 @@ license.key
 # 签发出来的授权码备份
 授权码/
 
+# 跨机迁移包（tools/migrate_runtime.py export 生成，含运行时数据，不进仓库）
+migrate-*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # 外发包（由 tools/make_release.py 生成，不进仓库）
 *.zip
 .pytest_tmp*/
