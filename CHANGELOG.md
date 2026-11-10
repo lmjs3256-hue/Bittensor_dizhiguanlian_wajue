@@ -1,5 +1,35 @@
 # 变更记录
 
+## 0.8.42 · 修隧道越权：远程不再被当成本机，key 管理只留主机 · 2026-11-10
+
+用户报障：「远程访问板块不只本机可见了，远程的电脑手机都能看到；API key 也要只本机可见。」
+
+排查发现这远不止「面板没隐藏」，而是**访问控制被整条绕过**：
+
+- 服务用 `run.py --remote` 启动（不是 `--tunnel`），所以 `trust_proxy()` 为 False，不采信 `CF-Connecting-IP`；
+- cloudflared 从 127.0.0.1 连进来，TCP 对端是回环 → `is_local()` 为 True；
+- 结论：任何拿到隧道网址的人都被当成「坐在主机前」。
+
+实测（经隧道、不带任何 Cookie）：
+
+- `GET /api/access/status` → `local: true`，`endpoints` 里含**完整访问口令**
+- `GET /api/access/token` → 直接返回 `JX9C-GVKL-JWGS-EXBA`
+- `POST /api/settings/taostats/rate` → 200，能改每分钟额度
+- `GET /api/settings/taostats/keys` → 200，能看到 key 尾号与剩余额度
+- `GET /api/library` → 200，地址库全量可读
+
+**修法两层，缺一不可。**
+
+- **第一层：来源判定不再依赖启动参数。** `client_ip()` 改为「对端回环 **且** 带转发头 ⇒ 经代理进来」。本机浏览器访问 127.0.0.1 不会带 `CF-Connecting-IP`，所以不会误判；反代把来源写成回环时仍按本机处理（反向边界有测试守）。`trust_proxy()` 退化为纯展示标记。
+- **第二层：管理面留在主机。** 新增 `_require_local()`，key 池的读、写、限速、单 key 保存/清除全部加本机校验，非本机一律 403；`/api/overview` 的 `taostats_key_storage` 对远程返回空串（「有没有配 key」仍给，因为决定数据源能不能用）。
+- **前端**：`state.isLocal` + `applyLocalOnlyVisibility()`，「远程访问」面板（`#hero-panel`）与「Taostats API key」面板整块隐藏——不做「可见但打码」，标题和地址行本身也是主机信息。远程不再请求 key 池接口（后端会 403，没必要反复撞），状态文案统一成「密钥已由主机配置」，**不再显示配了几把**。
+- 新增 `access.is_host()`，把「这次请求算不算坐在主机前」收成一个判据：未开远程模式时服务只监听 127.0.0.1，一律算主机；远程模式才看真实来源。`_require_local()` 与 `/api/overview` 都走它，避免两处口径漂移（第一版只在远程模式下才拦，结果六个既有测试 403——那条修正是对的，但第二个接口漏了同一个判断）。
+- **一条既有测试改了语义**：`test_proxy_headers_ignored_without_tunnel_flag` 原本断言「未开隧道时不看请求头，隧道请求当本机」——那正是这个漏洞。改为 `test_forward_headers_mean_proxied_even_without_tunnel_flag`，并补反向边界 `test_forwarded_loopback_still_counts_as_local`。
+- 新增 `tests/test_local_only_panels.py` 15 条：隧道来源判定、无口令读不到口令、登录后仍 403、五个 key 管理接口逐一验证、本机照常可用、未认证先 401 再 403、overview 字段、前端契约。实测把 `client_ip` 改回旧逻辑 → 9 条立刻红。
+- **测试隔离坑**：新测试会真调 `POST /api/settings/taostats/rate`，而限速是**进程级全局状态**，不跟 settings 文件走。第一版没还原，把后面所有「每分钟 5 次」口径的测试带跑——8 条 job 测试从 `waiting` 变成 `complete`，全量跑 7 分钟。fixture 已加 `finally: taostats.set_requests_per_minute(原值)`，全量回到 3 分 52 秒。
+
+隧道实测（真实 cloudflared）：`/api/access/token`、`/api/settings/taostats/keys`、`/api/library` 全部 401；本机仍 `local: true` 且能取到口令。浏览器实测登录后：两块面板 `display: none`，扫描页正常，`#remote-badge` 显示「远程访问中」。
+
 ## 0.8.41 · 系统角色互斥，标记后刷新即校正 · 2026-11-10
 
 用户提三件事：①公共地址与交易所互斥，先标 A 又标 B 要以最后操作为准，并弹窗说明「从原分组移出、移入新分组」；②只要标记上，历史查询记录和「刷新结果」都要能自动校正；③远程隧道有延迟，主机那边可能还没改过来。

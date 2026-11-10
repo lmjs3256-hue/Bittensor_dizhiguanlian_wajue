@@ -152,13 +152,43 @@ def test_x_forwarded_for_is_used_as_fallback(isolated_settings, licensed, monkey
     assert response.status_code == 401
 
 
-def test_proxy_headers_ignored_without_tunnel_flag(isolated_settings, licensed, monkeypatch):
-    """未开隧道时不看请求头：普通 --remote 的行为必须原样保留。"""
+def test_forward_headers_mean_proxied_even_without_tunnel_flag(
+    isolated_settings, licensed, monkeypatch
+):
+    """只开 ``--remote``、后台另起 cloudflared 时，隧道请求也必须输口令。
+
+    这条以前断言的是相反的结论（「未开隧道时不看请求头」），而那个行为就是
+    一个真实漏洞：服务用 ``--remote`` 起、隧道由 tunnel.ps1 单独拉起时，
+    cloudflared 从 127.0.0.1 连进来，所有公网访客都被当成「坐在主机前」——
+    免口令读地址库、拿到访问口令本身、还能改 key 和每分钟限速（0.8.42 实测
+    经隧道 ``GET /api/access/token`` 直接返回了口令）。
+
+    现在判据是「对端回环 + 带转发头 ⇒ 经代理进来」，与启动参数无关：本机
+    浏览器访问 127.0.0.1 不会带 ``CF-Connecting-IP``，所以不会误判。
+    """
 
     monkeypatch.setenv("WALLET_LINK_REMOTE", "1")
     _issue_token(isolated_settings)
 
     response = _client().get("/api/library", headers={"CF-Connecting-IP": PUBLIC_IP})
+    assert response.status_code == 401
+    assert response.json()["code"] == "need_access_token"
+
+
+def test_forwarded_loopback_still_counts_as_local(
+    isolated_settings, licensed, monkeypatch
+):
+    """反代把来源写成回环（或系统代理加了头）时仍算本机。
+
+    否则坐在主机前的人反而会被要求输口令——这是新判据必须守住的反向边界。
+    """
+
+    monkeypatch.setenv("WALLET_LINK_REMOTE", "1")
+    _issue_token(isolated_settings)
+
+    response = _client().get(
+        "/api/library", headers={"X-Forwarded-For": "127.0.0.1, 172.70.1.1"}
+    )
     assert response.status_code == 200
 
 

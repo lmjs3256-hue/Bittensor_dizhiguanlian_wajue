@@ -59,7 +59,12 @@ def remote_enabled() -> bool:
 
 
 def trust_proxy() -> bool:
-    """是否采信反向代理传来的真实来源（公网隧道模式）。"""
+    """是否显式声明「本服务在隧道/反代后面」（``--tunnel``）。
+
+    来源判定不再依赖这个开关（见 :func:`client_ip`：回环 + 转发头即视为
+    经代理进来）。保留它只用于状态展示，让界面能说清"这台机器挂着公网
+    入口"，以及兼容既有部署脚本。
+    """
 
     return os.getenv(TRUST_PROXY_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -71,21 +76,9 @@ def _peer(request: Request) -> str:
     return client.host if client else ""
 
 
-def client_ip(request: Request) -> str:
-    """判断访问者身份时应该用的地址。
+def _forwarded_candidate(request: Request) -> str:
+    """请求头里写的「真实来源」，没有则空串。"""
 
-    走隧道时所有请求的对端都是 127.0.0.1——如果直接拿它做判断，公网上的
-    任何人都会被当成「坐在主机前」，免口令进站，还能读到口令本身。所以
-    隧道模式下要看 Cloudflare 写进来的真实来源。
-
-    但请求头是可以伪造的，因此**只有对端本身是回环**时才采信：隧道和本机
-    反向代理必然是回环连接；局域网设备直连 0.0.0.0 时对端是 192.168.x.x，
-    它带任何头都不改变结论。
-    """
-
-    peer = _peer(request)
-    if not trust_proxy() or peer not in LOCAL_HOSTS:
-        return peer
     for name in FORWARD_HEADERS:
         value = (request.headers.get(name) or "").strip()
         if not value:
@@ -93,7 +86,42 @@ def client_ip(request: Request) -> str:
         candidate = value.split(",")[0].strip()
         if candidate:
             return candidate
-    return peer
+    return ""
+
+
+def client_ip(request: Request) -> str:
+    """判断访问者身份时应该用的地址。
+
+    走隧道时所有请求的对端都是 127.0.0.1——如果直接拿它做判断，公网上的
+    任何人都会被当成「坐在主机前」，免口令进站，还能读到口令本身。所以
+    这种连接要看 Cloudflare 写进来的真实来源。
+
+    判据分两层，缺一不可：
+
+    1. **对端必须是回环**。隧道（cloudflared）和本机反向代理都是从本机
+       发起的回环连接；局域网设备直连 0.0.0.0 时对端是 192.168.x.x，
+       它带任何头都不改变结论——否则任何人都能发一个头冒充本机。
+    2. **必须带转发头**。v0.8.42 修的就是这一层：以前只在 ``--tunnel``
+       启动时才看头，于是用 ``--remote`` 起服务、后面又挂了 cloudflared
+       隧道时，所有隧道请求都被当成主机本机——免口令、能读访问口令、能改
+       key 和额度（实测远程直接 ``GET /api/access/token`` 就拿到了口令）。
+
+    本机浏览器直接访问 127.0.0.1:8766 不会带 ``CF-Connecting-IP`` 这类头，
+    所以「回环 + 带转发头」这个组合足以区分"坐在主机前"和"经隧道进来"，
+    不再依赖用户有没有记得加 ``--tunnel``。
+    """
+
+    peer = _peer(request)
+    if peer not in LOCAL_HOSTS:
+        return peer
+    candidate = _forwarded_candidate(request)
+    if not candidate:
+        return peer
+    # 反代把来源写成回环（本机上的其他反代、或系统代理加了头）时，
+    # 仍然按本机处理——不然坐在主机前的人反而被要求输口令。
+    if candidate in LOCAL_HOSTS:
+        return peer
+    return candidate
 
 
 def is_local(request: Request) -> bool:
@@ -102,10 +130,28 @@ def is_local(request: Request) -> bool:
     return client_ip(request) in LOCAL_HOSTS
 
 
-def via_tunnel(request: Request) -> bool:
-    """本次请求是否经隧道转进来（对端是回环，但真实来源在外网/局域网）。"""
+def is_host(request: Request) -> bool:
+    """本次请求是否「等同于坐在主机前」。
 
-    return trust_proxy() and _peer(request) in LOCAL_HOSTS and not is_local(request)
+    分两种情形，合并成一个判断是为了让调用方不必各写一遍：
+
+    - **未开远程模式**：服务只监听 127.0.0.1，能连上来的一定出自本机
+      （含本机反代、测试客户端），一律算主机。
+    - **远程模式**：只有真实来源在回环上才算主机。
+
+    管理类接口（key 池、访问口令）与「主机专属字段」都用它，避免出现
+    「一个接口用 remote_enabled、另一个只用 is_local」这种口径漂移。
+    """
+
+    if not remote_enabled():
+        return True
+    return is_local(request)
+
+
+def via_tunnel(request: Request) -> bool:
+    """本次请求是否经隧道/反代转进来（对端是回环，但真实来源在外网/局域网）。"""
+
+    return _peer(request) in LOCAL_HOSTS and not is_local(request)
 
 
 def _generate() -> str:

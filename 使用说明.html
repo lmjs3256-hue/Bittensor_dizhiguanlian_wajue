@@ -1259,6 +1259,53 @@ git reset --hard origin/main
 <li>口令<strong>只能在主机上查看和重置</strong>，远程设备即使已经登录也不给看。</li>
 </ul>
 <p><strong>安全边界</strong>：口令是防「同网段的其他人误入」，不是防公网。<strong>不要把 8766 端口直接映射到公网</strong>——要在外网用，走下面的「做法二」，让隧道替你挡在前面。</p>
+<h3 id="远程设备看得到什么看不到什么">远程设备看得到什么、看不到什么</h3>
+<p>远程（别的电脑、手机）<strong>只能查询，看不到管理面</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>内容</th>
+<th>主机本机</th>
+<th>远程设备</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>地址扫描 / 查询记录 / 已知地址库</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>「远程访问」面板（各种地址 + 访问口令）</td>
+<td>✅</td>
+<td>❌ 整块不显示</td>
+</tr>
+<tr>
+<td>「Taostats API key」面板（key 列表 / 额度 / 限速）</td>
+<td>✅</td>
+<td>❌ 整块不显示</td>
+</tr>
+<tr>
+<td>页面上「密钥已配置 / 配了几把」</td>
+<td>具体把数</td>
+<td>只说「密钥已由主机配置」</td>
+</tr>
+<tr>
+<td><code>GET /api/access/token</code>（读口令）</td>
+<td>✅</td>
+<td>❌ 403</td>
+</tr>
+<tr>
+<td><code>POST /api/settings/taostats/rate</code>（改限速）</td>
+<td>✅</td>
+<td>❌ 403</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么不给</strong>：知道口令只应该换来「能查询、能用主机的 key」，不该顺带换来「能换 key、能改额度、能看到主机都有哪些网络地址」。管理入口留在那台机器上。</p>
+<blockquote>
+<p>0.8.42 修了一个真实漏洞：服务用 <code>--remote</code> 启动、隧道另起时，所有隧道请求都被当成「坐在主机前」——远程直接 <code>GET /api/access/token</code> 就能拿到完整口令，也能改 key 和额度。现在「对端是回环 <strong>且</strong> 带转发头」即判定为经代理进来，无论有没有加 <code>--tunnel</code>；同时 key 管理的每个接口都加了本机校验。</p>
+</blockquote>
 <h3 id="做法二外网访问客户端零安装公网隧道">做法二（外网访问、客户端零安装）：公网隧道</h3>
 <p>Tailscale 好是好，但每台手机、每台电脑都得装一遍。如果你只想「打开浏览器就能用」，用 Cloudflare 隧道：</p>
 <ol>

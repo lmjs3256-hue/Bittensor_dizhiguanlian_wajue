@@ -804,13 +804,16 @@ def version_info():
 
 
 @app.get("/api/overview")
-def overview(svc: Annotated[LinkService, Depends(service)]):
+def overview(request: Request, svc: Annotated[LinkService, Depends(service)]):
+    local = access_mod.is_host(request)
     return {
         "index": svc.index_summary(),
         "default_seed": svc.seed_address(),
         "rpc_url": svc.rpc_url,
+        # 「有没有配 key」远程需要知道（决定 Taostats 数据源能不能用），
+        # 但「怎么保存的」（DPAPI / 明文）属于主机管理信息，远程不给。
         "taostats_configured": taostats_is_configured(),
-        "taostats_key_storage": settings_store.storage_kind(),
+        "taostats_key_storage": settings_store.storage_kind() if local else "",
         "api_usage": svc.api_usage_summary(),
         # 页面初始化时一并带回上次保存的扫描阈值，省一次请求。
         "scan_thresholds": settings_store.load_scan_thresholds(),
@@ -835,6 +838,7 @@ async def save_taostats_key(request: Request):
     candidate = payload.get("api_key")
     if not isinstance(candidate, str) or not candidate.strip() or len(candidate) > 1024:
         raise HTTPException(422, "API key 不能为空且不得超过 1024 个字符")
+    _require_local(request, "保存 API key")
     key = candidate.strip()
     configure_taostats_api_key(key)
     # 同时也存到本机（DPAPI 加密），重启服务后自动装回内存。
@@ -843,10 +847,27 @@ async def save_taostats_key(request: Request):
 
 
 @app.delete("/api/settings/taostats")
-def delete_taostats_key():
+def delete_taostats_key(request: Request):
+    _require_local(request, "清除 API key")
     clear_taostats_api_key()
     settings_store.clear_api_key()
     return {"configured": False, "storage": ""}
+
+
+def _require_local(request: Request, what: str) -> None:
+    """管理类接口只允许主机本机调用。
+
+    以前只有 ``/api/access/token`` 做了这道检查，key 池的读写没有——远程
+    设备（哪怕已过口令）都能看到还剩多少额度、换掉 key、改每分钟限速。
+    已登录的远程用户本来就能正常查询，不需要这些管理能力；把管理面留在
+    主机上，「知道口令」就不等于「能改配置」。
+
+    判据用 :func:`access.is_host`：未开远程模式时服务只监听 127.0.0.1，
+    一律算主机（否则只监听回环的部署和测试客户端会全部 403）。
+    """
+
+    if not access_mod.is_host(request):
+        raise HTTPException(403, f"{what}只能在运行服务的那台电脑上操作")
 
 
 # -- Taostats API key 池（多把 key）----------------------------------------
@@ -869,9 +890,10 @@ class ApiKeyPoolInput(BaseModel):
 
 
 @app.get("/api/settings/taostats/keys")
-def get_taostats_keys():
+def get_taostats_keys(request: Request):
     """当前 key 池状态。**永不回显明文**，只给尾四位、剩余额度和冷却时间。"""
 
+    _require_local(request, "查看 API key 池")
     return {
         "items": taostats.key_pool_status(),
         "storage": settings_store.api_keys_storage_kind(),
@@ -886,7 +908,7 @@ class RateLimitInput(BaseModel):
 
 
 @app.post("/api/settings/taostats/rate")
-def set_taostats_rate(payload: RateLimitInput):
+def set_taostats_rate(payload: RateLimitInput, request: Request):
     """设置「每把 key 每分钟」的本地限速。
 
     为什么需要手动填：Taostats 没有提供任何接口能让本地查询出「这把 key 属于
@@ -897,6 +919,7 @@ def set_taostats_rate(payload: RateLimitInput):
     配低了会白白浪费额度。改完立即生效，不需要重启。
     """
 
+    _require_local(request, "修改每分钟额度")
     limit = taostats.set_requests_per_minute(payload.per_minute)
     settings_store.save_requests_per_minute(limit)
     return {
@@ -907,7 +930,7 @@ def set_taostats_rate(payload: RateLimitInput):
 
 
 @app.post("/api/settings/taostats/keys")
-def save_taostats_keys(payload: ApiKeyPoolInput):
+def save_taostats_keys(payload: ApiKeyPoolInput, request: Request):
     """整体替换 key 池。
 
     整体替换而不是逐条增删：页面上就是一张表，用户改完点保存，服务端照单
@@ -919,6 +942,7 @@ def save_taostats_keys(payload: ApiKeyPoolInput):
     直接忽略——宁可少存，也不能凭空造出一把空 key。
     """
 
+    _require_local(request, "管理 API key")
     existing = {item["id"]: item for item in taostats.key_pool_status()}
     # 明文只在服务端内存里有；按 id 从这里取回，避免让明文穿过浏览器。
     secrets_by_id = {state.key_id: state.secret for state in taostats._key_pool}

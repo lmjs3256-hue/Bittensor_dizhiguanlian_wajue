@@ -2,6 +2,12 @@
 
 const $ = (selector) => document.querySelector(selector);
 const state = {
+  // 本次会话是不是在「跑服务的那台电脑」上打开的。
+  // 远程访问面板、API key 面板都只该在本机出现：前者是主机地址与访问口令，
+  // 后者是能改额度和换 key 的入口，远程能看到就等于把管理面暴露出去。
+  isLocal: true,
+  // 本机专属接口（口令 / key 池）在远程会被后端 403，记下来避免反复重试。
+  localOnlyBlocked: false,
   lastResult: null,
   library: [],
   books: [],
@@ -263,6 +269,16 @@ function showTaostatsKeyStatus(configured, storage) {
   }
   state.taostatsConfigured = configured;
   state.taostatsKeyStorage = storage || state.taostatsKeyStorage || "";
+  // 远程设备不显示把数：key 数量、额度、加密方式都属于主机的管理信息。
+  // 这里直接给中性文案并返回，别让后面的分支把数字又写回去。
+  if (!state.isLocal) {
+    status.textContent = configured ? "密钥已由主机配置" : "主机尚未配置密钥";
+    status.classList.toggle("warn-text", !configured);
+    const counter = $("#api-key-count");
+    if (counter) counter.textContent = configured ? "由主机管理" : "主机尚未配置";
+    detail.textContent = "密钥由主机管理；远程设备只能使用，不能查看或修改。";
+    return;
+  }
   const count = state.keyPool.length;
   const perKey = state.keyPoolPerKey || 5;
   if (configured && count > 1) {
@@ -279,6 +295,8 @@ function showTaostatsKeyStatus(configured, storage) {
   }
   if (!configured) {
     detail.textContent = "勾选「使用 Taostats 历史索引」前必须先保存 key，否则查询会被拒绝。";
+  } else if (!state.isLocal) {
+    detail.textContent = "密钥由主机管理，远程设备只能使用、不能查看或修改。";
   } else if (state.taostatsKeyStorage === "dpapi") {
     detail.textContent = "key 已加密保存在本机（Windows DPAPI，绑定当前用户），服务重启后自动恢复，不会回显。";
   } else if (state.taostatsKeyStorage === "plain") {
@@ -462,6 +480,13 @@ async function saveKeyPool(button) {
 }
 
 async function loadKeyPool() {
+  // 远程设备不碰 key 管理接口：后端对它 403，前端也没必要一直去撞。
+  // 「有没有配 key」由 /api/overview 的 taostats_configured 给出，够用。
+  if (!state.isLocal) {
+    state.keyPool = [];
+    renderKeyPool();
+    return null;
+  }
   try {
     const data = await api("/api/settings/taostats/keys");
     state.keyPool = (data.items || []).map((item) => ({ ...item }));
@@ -549,7 +574,32 @@ function applyAccessStatus(status) {
   document.body.classList.remove("access-locked");
   // 在别的设备上操作时给个明确标识，免得误以为服务跑在这台机器上。
   if (badge) badge.hidden = !(status && status.remote_mode && !status.local);
+  // 后端说「不是本机」就整块隐藏，不做「可见但内容打码」——面板本身
+  // （标题、地址行、口令提示）也是主机信息，远程设备连看都不该看到。
+  state.isLocal = status ? status.local !== false : true;
+  applyLocalOnlyVisibility();
   renderAccessEndpoints(status);
+}
+
+/* 本机专属面板的显隐。
+   涉及两块：
+   - 「远程访问」面板：主机局域网 / Tailscale / 隧道地址 + 访问口令。
+   - 「Taostats API key」面板：能看额度和改 key，等于管理面。
+   远程设备只该看到「查询」相关的界面；管理入口留在主机上。
+   注意后端也有一道闸（这些接口对非本机直接 403），这里只是不把它摆出来。 */
+function applyLocalOnlyVisibility() {
+  const hero = $("#hero-panel");
+  if (hero) hero.classList.toggle("hidden", !state.isLocal);
+  const keyPanel = $(".api-key-panel");
+  if (keyPanel) keyPanel.classList.toggle("hidden", !state.isLocal);
+  // key 状态串在扫描页「数据来源」那一行也有，远程同样改成中性文案。
+  // （showTaostatsKeyStatus 随后会用同样口径覆盖，这里只是先把旧文案遮住。）
+  if (!state.isLocal) {
+    const status = $("#taostats-status");
+    if (status && status.textContent.trim()) {
+      status.textContent = state.taostatsConfigured ? "密钥已由主机配置" : "主机尚未配置密钥";
+    }
+  }
 }
 
 /* 页面顶部「远程访问」面板：地址一行一个，行尾带复制按钮。
