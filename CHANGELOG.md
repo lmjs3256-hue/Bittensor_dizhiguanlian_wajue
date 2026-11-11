@@ -1,5 +1,16 @@
 # 变更记录
 
+## 0.8.46 · 修远程访问按钮一直转圈 + 启动器不再卡在进程树 · 2026-11-11
+
+用户点页面上的「启动远程访问」后反馈「不是短暂离开，是页面直接挂了，没反应很久」。复盘发现是三层问题叠加。
+
+- **现象（本机实测）**：服务其实在 09:14:30 就已恢复（0.8.45 / PID 3220），但 `logs/remote-launch.json` 永远停在 `launching`、消息还是初始那句，启动器进程也消失了。前端把「状态文件写回 ready」当成唯一成功判据，于是一直轮询、按钮一直禁用，看起来就是页面挂死。
+- **修 1：不再依赖启动器回报**。`GET /api/access/status` 新增 `server_started_at`（服务自己上报的启动时间）。前端点击前记下基线，轮询时只要这个值变了就判定「服务确实重启过」并刷新页面；状态文件降级为文案来源。
+- **修 2：状态自愈**。`remote_launch.read_state()` 发现 `launching` 超过 90 秒就自动判成 `error`，前端 120 秒超时兜底。启动器被系统终止时页面最多等 90 秒，不会再无限转圈。
+- **修 3：启动器不再卡死**。`launch_mode.ps1` 原来用 `Start-Process -NoNewWindow -Wait` 调 `start.ps1`；PowerShell 的 `-Wait` 会等「该进程及其所有后代进程」，而 `start.ps1` 拉起的是常驻服务，启动器会永远等下去、写不回 `ready`。改成 `-WindowStyle Hidden -PassThru` + `WaitForExit(超时)`；并加 `CREATE_BREAKAWAY_FROM_JOB`，避免启动器随服务所在的 Job Object 被连带终止。
+- **可观测性**：新增 `logs/remote-launch.log`，启动器从第一行起逐步记录（开始、每一步脚本、exit code、状态变更、失败堆栈），以后再出问题不用猜。
+- 新增 3 条测试（陈旧 launching 自动判 error、新 launching 不误判、status 带 `server_started_at`），并给 `launch_mode.ps1` 加静态契约断言（有日志、有 `WaitForExit`、不再有 `-NoNewWindow -Wait`）。
+
 ## 0.8.45 · 修 hotkey-swap 假关联 + 远程访问启动按钮 · 2026-11-11
 
 用户核查一条「一级强关联」时发现两地址在关联明细检索里根本没有直接往来，追问挖掘逻辑是否漏了。复核后确认**是的，这是 bug，不是用户理解错**。

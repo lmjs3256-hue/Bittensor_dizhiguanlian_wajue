@@ -837,3 +837,22 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 ### 验收边界
 - 6 跳以上单轮 5 次请求几乎必然「只展开一部分」，这是 Taostats 免费档限速决定的，不是层级逻辑问题；界面已明确告知并给出「再点一次」的路径。
 - 翻页上限只影响「组模式取 A 的流水」和「地址模式取 A↔B 直连」的页数，不影响逐跳展开（每层固定 1 页），这是原有设计，未改动。
+
+## 0.8.46 验证记录（2026-11-11 09:17）
+
+**问题**：用户点「启动远程访问」后页面长期无反应。
+
+**现场事实**：服务在 09:14:30 已恢复（0.8.45 / PID 3220 / 127.0.0.1:8766），
+`logs/remote-launch.json` 停在 `launching` 且消息仍是初始句，启动器进程已消失；
+`/api/access/status` 返回 `remote_mode=False`，即模式并未切换成功。
+
+**修复验证**
+
+| 项 | 结果 |
+| --- | --- |
+| `tests/test_remote_launch.py` | 16 passed（新增陈旧 launching 自愈、新 launching 不误判、status 带 `server_started_at`、脚本静态契约） |
+| 全量测试 | 见提交记录 |
+| `node --check app/static/app.js` | 通过 |
+| `launch_mode.ps1` BOM | 保留 |
+
+**端到端**：本轮用修好的启动器实测一次重启，以 `logs/remote-launch.log` 为准。

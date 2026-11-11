@@ -112,6 +112,48 @@ def test_write_state_merges_fields(isolated_launch):
     assert data["updated_at"]
 
 
+def test_stale_launching_state_is_auto_resolved(isolated_launch):
+    """启动器被终止时状态会永远停在 launching，页面不能因此一直转圈。"""
+
+    from datetime import datetime, timedelta, timezone
+
+    old = (datetime.now(timezone.utc) - timedelta(seconds=200)).isoformat(timespec="seconds")
+    isolated_launch.write_text(
+        json.dumps(
+            {
+                "state": "launching",
+                "mode": "remote",
+                "message": "正在切换…",
+                "url": "",
+                "started_at": old,
+                "finished_at": "",
+                "updated_at": old,
+            }
+        ),
+        encoding="utf-8",
+    )
+    data = remote_launch.read_state()
+    assert data["state"] == "error"
+    assert "没有回报" in data["message"]
+    assert data["finished_at"]
+
+
+def test_fresh_launching_state_is_kept(isolated_launch):
+    remote_launch.write_state(
+        state="launching", mode="remote", started_at=remote_launch._now()
+    )
+    assert remote_launch.read_state()["state"] == "launching"
+
+
+def test_access_status_reports_server_started_at(isolated_launch, licensed):
+    """前端靠这个字段判断服务确实重启过，不依赖启动器写回 ready。"""
+
+    with _client() as client:
+        payload = client.get("/api/access/status").json()
+    assert "server_started_at" in payload
+    assert payload["server_started_at"]
+
+
 # -- HTTP 接口 -------------------------------------------------------------
 
 
@@ -158,6 +200,7 @@ def test_remote_panel_has_both_launch_buttons():
     assert 'id="launch-tunnel"' in html
     assert "/api/access/launch" in js
     assert "renderLaunchStatus" in js
+    assert "server_started_at" in js
     assert ".remote-actions" in css
 
 
@@ -178,3 +221,8 @@ def test_launch_mode_script_exists_and_has_bom():
     assert "Set-LaunchState" in text
     assert "Wait-TunnelUrl" in text
     assert "Start-Sleep -Seconds 3" in text
+    # 0.8.45 复盘：Start-Process -Wait 会等「进程及其所有后代」，
+    # start.ps1 拉起的是常驻服务，启动器会永远卡住、状态写不回 ready。
+    assert "Write-LaunchLog" in text
+    assert "WaitForExit(" in text
+    assert "-NoNewWindow -Wait -PassThru" not in text

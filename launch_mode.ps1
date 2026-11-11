@@ -19,8 +19,19 @@ $Cloudflared = Join-Path $Root 'tools\cloudflared.exe'
 $StopScript = Join-Path $Root 'stop.ps1'
 $StartScript = Join-Path $Root 'start.ps1'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$LaunchLog = Join-Path $LogDir 'remote-launch.log'
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+
+function Write-LaunchLog {
+    param([string]$Message)
+    $line = "$(Get-Date -Format 'HH:mm:ss') [PID $PID] $Message"
+    try {
+        [System.IO.File]::AppendAllText($LaunchLog, "$line`r`n", $Utf8NoBom)
+    } catch { }
+}
+
+Write-LaunchLog "===== 启动器开始 mode=$Mode port=$Port ====="
 
 function Set-LaunchState {
     param([string]$State, [string]$Message, [string]$Url = '')
@@ -52,14 +63,25 @@ function Set-LaunchState {
         ($payload | ConvertTo-Json -Compress),
         $Utf8NoBom
     )
+    Write-LaunchLog "状态 -> $State : $Message"
 }
 
 function Invoke-Step {
-    param([string]$Script, [string[]]$Arguments)
+    param([string]$Script, [string[]]$Arguments, [int]$TimeoutMs = 180000)
 
+    $name = [System.IO.Path]::GetFileName($Script)
+    Write-LaunchLog "步骤开始 $name $($Arguments -join ' ')"
     $p = Start-Process -FilePath 'powershell.exe' `
         -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + $Arguments) `
-        -WorkingDirectory $Root -NoNewWindow -Wait -PassThru
+        -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+    # 不能用 Start-Process -Wait：PowerShell 的 -Wait 会等「该进程及其所有后代」，
+    # start.ps1 拉起的是常驻服务，启动器会永远卡在这里、状态写不回 ready。
+    # WaitForExit(ms) 只等这个脚本本身，并带超时兜底。
+    if (-not $p.WaitForExit($TimeoutMs)) {
+        Write-LaunchLog "步骤超时 $name"
+        throw "启动步骤超时：$name"
+    }
+    Write-LaunchLog "步骤完成 $name exit=$($p.ExitCode)"
     return $p.ExitCode
 }
 
@@ -81,9 +103,11 @@ function Wait-TunnelUrl {
     return ''
 }
 
+Write-LaunchLog '等待 3 秒，让触发请求的 HTTP 响应发完'
 Start-Sleep -Seconds 3
 
 try {
+    Write-LaunchLog '停止当前服务'
     Set-LaunchState -State 'launching' -Message '正在停止当前服务…'
 
     # 1. 停掉当前实例，腾出端口。stop.ps1 只处理本端口上的 python 进程。
@@ -131,5 +155,6 @@ try {
     Set-LaunchState -State 'ready' -Message $done -Url $url
 } catch {
     $tip = "$($_.Exception.Message) 如未能自动恢复，请双击对应的「启动-远程访问.cmd」或「启动-公网隧道.cmd」。"
+    Write-LaunchLog "失败: $($_.Exception.Message)"
     Set-LaunchState -State 'error' -Message $tip
 }

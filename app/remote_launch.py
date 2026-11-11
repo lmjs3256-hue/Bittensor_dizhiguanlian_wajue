@@ -26,6 +26,9 @@ STATE_FILE = LOG_DIR / "remote-launch.json"
 LAUNCH_SCRIPT = ROOT_DIR / "launch_mode.ps1"
 VALID_MODES = frozenset({"remote", "tunnel"})
 _LOCK = threading.Lock()
+# 启动器没回报时，多久之后把 launching 判成失败。比前端轮询超时（120 秒）
+# 短，好让页面拿到具体的 error 文案，而不是只等到一句笼统的「超时」。
+LAUNCH_STALE_SECONDS = 90
 
 
 def _now() -> str:
@@ -48,11 +51,43 @@ def _read_unlocked() -> dict[str, Any]:
     }
 
 
+def _write_unlocked(data: dict[str, Any]) -> dict[str, Any]:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(
+        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+    )
+    return data
+
+
 def read_state() -> dict[str, Any]:
-    """读最近一次启动状态；文件坏了按 idle 处理，不让页面卡住。"""
+    """读最近一次启动状态；文件坏了按 idle 处理，不让页面卡住。
+
+    启动器可能被系统终止而永远写不回 ``ready``（0.8.45 实测踩到过）。
+    超过 ``LAUNCH_STALE_SECONDS`` 仍停在 launching 就自动判成 error，
+    页面因此一定能结束等待，用户也能重新点一次按钮。
+    """
 
     with _LOCK:
-        return _read_unlocked()
+        data = _read_unlocked()
+        if data.get("state") != "launching":
+            return data
+        started = str(data.get("started_at") or "")
+        try:
+            moment = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - moment).total_seconds()
+        except ValueError:
+            age = 0.0
+        if age > LAUNCH_STALE_SECONDS:
+            data["state"] = "error"
+            data["message"] = (
+                "启动器超过 90 秒没有回报结果（可能被系统终止）。"
+                "请查看 logs/remote-launch.log，或双击对应的启动脚本；"
+                "服务本身通常已经恢复，刷新页面即可继续使用。"
+            )
+            data["finished_at"] = _now()
+            data["updated_at"] = _now()
+            _write_unlocked(data)
+        return data
 
 
 def write_state(**fields: Any) -> dict[str, Any]:
@@ -62,11 +97,7 @@ def write_state(**fields: Any) -> dict[str, Any]:
         data = _read_unlocked()
         data.update(fields)
         data["updated_at"] = _now()
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(
-            json.dumps(data, ensure_ascii=False), encoding="utf-8"
-        )
-        return data
+        return _write_unlocked(data)
 
 
 def start_launch(mode: str) -> dict[str, Any]:
@@ -99,22 +130,28 @@ def start_launch(mode: str) -> dict[str, Any]:
         "-Mode",
         mode,
     ]
+    kwargs = {
+        "cwd": str(ROOT_DIR),
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
     creationflags = 0
     if os.name == "nt":
+        # BREAKAWAY 很关键：服务 spawn 的启动器如果留在同一个 Job Object 里，
+        # 停旧服务时可能被连带终止，状态文件就永远停在 launching。
         creationflags = (
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
         )
     try:
-        subprocess.Popen(
-            command,
-            cwd=str(ROOT_DIR),
-            creationflags=creationflags,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-        )
+        try:
+            subprocess.Popen(command, creationflags=creationflags, **kwargs)
+        except OSError:
+            # 进程不在 Job 里时 BREAKAWAY 会失败，退回默认标志再试一次。
+            subprocess.Popen(command, creationflags=0, **kwargs)
     except OSError as exc:
         write_state(
             state="error",

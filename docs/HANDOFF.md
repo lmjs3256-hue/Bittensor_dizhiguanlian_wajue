@@ -1087,3 +1087,24 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u al
   `app/static/styles.css` 样式。
 - 版本 0.8.45，两处 `?v=` 同步；CHANGELOG / README 第 77 条 / 使用说明 md+html /
   VERIFICATION 0.8.45 节 / 本条均已更新。
+
+## 63. 2026-11-11 0.8.46 交接：远程访问按钮「一直转圈」的根因与修复（**改启动器前必读**）
+
+- 用户点按钮后服务其实 09:14:30 就恢复了，但状态文件永远停在 `launching`、
+  消息还是初始句，启动器进程消失。前端把「状态文件写回 ready」当唯一成功判据
+  → 无限轮询 + 按钮永久禁用 → 用户看到「页面直接挂了，没反应很久」。
+- **三条铁律**：
+  1. 判断「服务有没有重启」用服务自己上报的 `server_started_at`（`GET /api/access/status`），
+     **不要用启动器写回的状态文件当唯一依据**。启动器可能被系统终止、被 Job 连带杀掉、
+     或卡在任何一步，它写的 ready 不可靠。
+  2. `remote_launch.read_state()` 对超过 90 秒的 `launching` 自动判 error，
+     前端 120 秒超时兜底。任何「等待外部进程回报」的状态机都要有超时自愈。
+  3. **PS 5.1 的 `Start-Process -Wait` 会等待该进程及其所有后代进程**。
+     `start.ps1` 拉起的是常驻服务，用 `-Wait` 启动器就永远不返回。
+     必须 `-PassThru` + `WaitForExit(ms)`（只等脚本本身）并带超时。
+- `remote_launch.start_launch()` 加 `CREATE_BREAKAWAY_FROM_JOB`，失败回退 `creationflags=0`；
+  服务 spawn 的启动器若留在同一 Job，停旧服务时可能被连带终止。
+- `launch_mode.ps1` 新增 `logs/remote-launch.log`，从第一行起逐步记录
+  （启动、每个脚本步骤与 exit code、状态变更、失败堆栈）。以后再出问题先看它。
+- 现场处置：把卡住的 `launching` 手工写成 `error` 即可立刻解除页面转圈，
+  不必重启服务。状态文件是 `logs/remote-launch.json`（无 BOM UTF-8）。

@@ -678,6 +678,10 @@ def access_status(request: Request):
         # 启动按钮的最近一次结果（idle / launching / ready / error）。
         # 服务重启期间接口短暂不可用，新服务起来后靠它把结果补回页面。
         payload["launch"] = remote_launch.read_state()
+    # 服务自己上报的启动时间。前端据此判断「服务确实重启过了」，
+    # 不再把启动器能否写回 ready 当成唯一成功判据——启动器被系统终止时
+    # 状态文件会永远停在 launching，页面就会一直转圈（0.8.45 实测踩到）。
+    payload["server_started_at"] = diagnostics.STARTED_AT.isoformat(timespec="seconds")
     return payload
 
 

@@ -735,11 +735,11 @@ function renderLaunchStatus(launch, endpoints) {
       : "当前仅本机可访问；点上面的按钮切换。";
 }
 
-async function pollLaunchResult(deadline) {
+async function pollLaunchResult(deadline, baseline) {
   if (Date.now() > deadline) {
     const label = $("#launch-status");
     if (label) {
-      label.textContent = "等待超时：请查看 logs/wallet-link.stderr.log，或双击对应的启动脚本。";
+      label.textContent = "等待超时：请查看 logs/remote-launch.log，或双击对应的启动脚本。";
       label.classList.remove("is-ready");
       label.classList.add("is-error");
     }
@@ -748,6 +748,17 @@ async function pollLaunchResult(deadline) {
   }
   try {
     const status = await api("/api/access/status");
+    // 服务自己上报的启动时间变了，就一定重启过了。这个判据不依赖启动器
+    // 能否把 ready 写回状态文件——启动器被系统终止时，页面也能正常刷新。
+    const restarted = !!(
+      baseline && status.server_started_at && status.server_started_at !== baseline
+    );
+    if (restarted) {
+      setLaunchButtonsDisabled(false);
+      toast("服务已重启，页面即将刷新");
+      setTimeout(() => location.reload(), 1000);
+      return;
+    }
     const launch = status && status.launch;
     renderLaunchStatus(launch, status && status.endpoints);
     if (launch && launch.state !== "launching") {
@@ -756,14 +767,14 @@ async function pollLaunchResult(deadline) {
         toast("模式已切换，页面即将刷新");
         setTimeout(() => location.reload(), 1200);
       } else if (launch.state === "error") {
-        toast("启动失败，请看面板里的提示", true);
+        toast("启动未完成，请看面板里的提示", true);
       }
       return;
     }
   } catch (_) {
     // 服务重启期间接口会短暂不可用，忽略这次，继续等下一轮。
   }
-  launchPolling = setTimeout(() => pollLaunchResult(deadline), 2000);
+  launchPolling = setTimeout(() => pollLaunchResult(deadline, baseline), 2000);
 }
 
 async function launchAccessMode(mode) {
@@ -772,6 +783,14 @@ async function launchAccessMode(mode) {
     ? "将重启服务并重建公网隧道，页面会短暂断开约 10–60 秒，网址会重新分配。继续吗？"
     : "将重启服务以开放局域网 / Tailscale 访问，页面会短暂断开约 10–30 秒。继续吗？";
   if (!window.confirm(tip)) return;
+  // 先记下当前服务的启动时间，重启后用它判断「服务确实换过了」。
+  let baseline = null;
+  try {
+    const before = await api("/api/access/status");
+    baseline = (before && before.server_started_at) || null;
+  } catch (_) {
+    baseline = null;
+  }
   try {
     await api("/api/access/launch", {
       method: "POST",
@@ -787,7 +806,7 @@ async function launchAccessMode(mode) {
     null
   );
   if (launchPolling) clearTimeout(launchPolling);
-  pollLaunchResult(Date.now() + 120000);
+  pollLaunchResult(Date.now() + 120000, baseline);
 }
 
 async function submitAccessToken() {
