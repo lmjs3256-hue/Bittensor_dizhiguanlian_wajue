@@ -1,6 +1,6 @@
 # Bittensor 地址关联挖掘工具
 
-版本：**0.8.48**
+版本：**0.8.49**
 
 这是一个独立运行的 Bittensor 地址关联分析工具。输入公开地址后，工具可以调用 Taostats 历史转账索引，或查询本地 SQLite 索引，查找最多十级（默认三级）的普通 TAO 转账和子网 stake 转移关系。工具会把关联地址与人工维护的已知地址库匹配，并支持交易所、验证者和备注管理。
 
@@ -122,6 +122,8 @@
 79. **启动器改用 Python，彻底修好公网模式按钮（0.8.47）**：用户点「启动公网模式」仍无反应，日志显示 `launch_mode.ps1` 连第一行都没执行——服务用 `DETACHED_PROCESS` spawn 的 PowerShell 在无控制台环境下直接退出。启动器整体换成 `launch_mode.py`，由服务自己的 `sys.executable` 启动（`CREATE_NO_WINDOW + CREATE_BREAKAWAY_FROM_JOB`），`Popen.wait(timeout)` 只等脚本本身；`start_launch()` 在 spawn 后半秒检查进程存活，立即退出就马上报错而非等 90 秒。旧 `launch_mode.ps1` 删除，公网隧道建网址逻辑一并移植。
 
 80. **按钮不再重启服务（0.8.48）**：0.8.45–0.8.47 三次修复都卡在同一个死结——切换模式要重启服务，而启动器是服务 spawn 的子进程，服务一退出启动器就被连带清理。这一版取消重启：`remote_launch.start_launch()` 运行时改 `WALLET_LINK_REMOTE` / `WALLET_LINK_TRUST_PROXY` 打开口令与隧道判定，公网入口只是额外拉起一个 cloudflared 进程拿网址，服务全程不动、页面不断开。`run.py` 把实际绑定地址写进 `WALLET_LINK_BIND_HOST`，若服务只绑回环，按钮会明确提示先用「启动-远程访问.cmd」启动一次（一次性前提）。删掉 `launch_mode.py` / `launch_mode.ps1` 与服务自杀定时器；顺带修掉删日志文件被 safe-delete 钩子拦下的问题（改成写空）。测试重写为 17 条。
+
+81. **本地索引流水线看得见在动（0.8.49）**：用户反馈地址库页的流水线面板完全静止，没法判断有没有在工作。原因是流水线 30 秒一轮、单轮常常不到 1 秒，而前端 5 秒才轮询一次，`running` 几乎抓不到；追上进度后累计数字也不再涨，整块面板就死住。现在每次 tick 都记心跳（`last_tick_at` / `tick_count` / `last_duration_ms` / `last_scanned` / `heartbeat_seconds_ago` / `next_tick_in_seconds` / `tick_seconds`），前端轮询改 3 秒，面板加「距下一轮 Ns」本地倒计时（每秒推进，不等接口）、本轮进度条、心跳行「已跑 N 轮 · 最近一轮 X 秒前 · 本轮扫描 M 笔 / D ms」；抓到 `running` 后至少显示 2.5 秒，空闲时轨道仍有流动感。关掉或切走页面时本地定时器会停。
 
 ## 快速开始
 **普通用户（推荐，无需命令行）**

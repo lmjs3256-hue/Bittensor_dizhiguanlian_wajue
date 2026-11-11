@@ -516,51 +516,11 @@ def test_frontend_renders_dedicated_sweep_panel():
     js = _js()
     assert "function renderSweepPanel(" in js
     assert "renderSweepPanel(data)" in js
-    # 三种状态都要能表达
+    # 三种状态都要能表达。按函数边界截取，别用固定字符数——面板一加内容
+    # 就会把后半段截掉，测试会假失败（0.8.49 加心跳行时正好踩到）。
     start = js.index("function renderSweepPanel(")
-    body = js[start : start + 2600]
-    assert "已关闭" in body
-    assert "正在处理" in body
-    assert "等待下一轮" in body
-    assert "sweep.lag_blocks" in body
-
-
-def test_progress_box_no_longer_duplicates_sweep():
-    """两条链路不能混在同一行显示，否则会误以为额度用完就全停了。"""
-
-    js = _js()
-    start = js.index("function renderWatchProgress(")
-    end = js.index("function renderSweepPanel(")
-    assert "本地流水线已处理" not in js[start:end]
-
-
-# -- 前端契约：开关 + 独立动态面板 ------------------------------------------
-def _js() -> str:
-    from pathlib import Path
-
-    return (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(
-        encoding="utf-8"
-    )
-
-
-def test_frontend_has_sweep_switch():
-    """开关要能回填、能保存。"""
-
-    js = _js()
-    assert 'const sweep = $("#watch-sweep");' in js
-    assert "sweep.checked = config.sweep_enabled !== false;" in js
-    assert "sweep_enabled: Boolean($(\"#watch-sweep\")?.checked)" in js
-
-
-def test_frontend_renders_dedicated_sweep_panel():
-    """流水线要有独立面板：和"逐地址巡检"的进度条分开显示。"""
-
-    js = _js()
-    assert "function renderSweepPanel(" in js
-    assert "renderSweepPanel(data)" in js
-    # 三种状态都要能表达
-    start = js.index("function renderSweepPanel(")
-    body = js[start : start + 2600]
+    end = js.index("function stopWatchPolling(", start)
+    body = js[start:end]
     assert "已关闭" in body
     assert "正在处理" in body
     assert "等待下一轮" in body
@@ -609,3 +569,52 @@ def test_saved_config_reaches_disk(tmp_path, monkeypatch):
 
     assert settings_store.save_watch_config({"sweep_enabled": True}) is True
     assert settings_store.load_watch_config()["sweep_enabled"] is True
+
+
+def test_sweep_status_reports_a_heartbeat_for_every_tick(database, service, config):
+    """0.8.49：即使没有新块、累计数字不涨，也要能证明调度器在按节奏跑。"""
+
+    from app.watch import SWEEP_TICK_SECONDS
+
+    _library(database, OWNER)
+    _cursor(database, 1000)
+
+    before = service.sweep_status(config)
+    assert before["tick_count"] == 0
+    assert before["heartbeat_seconds_ago"] is None
+    assert before["next_tick_in_seconds"] == SWEEP_TICK_SECONDS
+    assert before["tick_seconds"] == SWEEP_TICK_SECONDS
+
+    service.sweep_local_index(config)  # 初始化游标
+    first = service.sweep_status(config)
+    assert first["tick_count"] == 1
+    assert first["last_tick_at"]
+    assert first["heartbeat_seconds_ago"] is not None
+    assert first["last_duration_ms"] >= 0
+    assert first["last_scanned"] >= 0
+    assert 0 <= first["next_tick_in_seconds"] <= SWEEP_TICK_SECONDS
+
+    service.sweep_local_index(config)  # 这一轮没有新块
+    second = service.sweep_status(config)
+    assert second["tick_count"] == 2
+    assert second["last_scanned"] == 0
+
+
+def test_sweep_heartbeat_also_advances_when_disabled(database, service, config):
+    """关掉的轮次也记心跳，界面才能区分「关了」和「卡了」。"""
+
+    config["sweep_enabled"] = False
+    service.sweep_local_index(config)
+    status = service.sweep_status(config)
+    assert status["enabled"] is False
+    assert status["tick_count"] == 1
+    assert status["last_reason"] == "sweep_disabled"
+    assert status["heartbeat_seconds_ago"] is not None
+
+
+def test_watch_tick_seconds_is_single_source_of_truth():
+    """前端倒计时依赖这个间隔，main.py 不能另写一份会漂移的数字。"""
+
+    import app.main as main_module
+
+    assert main_module.WATCH_TICK_SECONDS == watch_module.SWEEP_TICK_SECONDS

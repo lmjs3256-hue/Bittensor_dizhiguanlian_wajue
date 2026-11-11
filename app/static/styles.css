@@ -568,8 +568,17 @@ body.access-locked .shell { filter:blur(2px); pointer-events:none; user-select:n
 .sweep-panel { margin-top:10px; padding:12px 14px; border:1px solid var(--line); border-radius:11px; background:var(--bg); display:grid; gap:7px; }
 .sweep-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .sweep-head strong { font-size:12.5px; }
+.sweep-countdown { font-family:var(--mono); font-size:11px; color:var(--muted); }
+.sweep-countdown.off { color:var(--warn); }
 .sweep-rate { margin-left:auto; color:var(--muted); font-size:11px; }
 .sweep-rate.off { color:var(--warn); }
+/* 本轮进度：30 秒一格，每秒推进，让"没新数据"和"没在跑"能分开看。 */
+.sweep-track { height:3px; border-radius:99px; background:var(--line); overflow:hidden; }
+.sweep-activity-bar { height:100%; width:0; border-radius:99px; background:var(--accent); opacity:.55; transition:width .9s linear; }
+.sweep-panel.is-alive .sweep-track { background:linear-gradient(90deg,var(--line),var(--accent),var(--line)); background-size:200% 100%; animation:sweepFlow 2.6s linear infinite; }
+@keyframes sweepFlow { 0% { background-position:0% 0; } 100% { background-position:-200% 0; } }
+.sweep-pulse { color:var(--muted); font-size:11px; font-family:var(--mono); line-height:1.6; }
+.sweep-pulse b { color:var(--ink); }
 .sweep-dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; background:var(--muted); }
 .sweep-dot.running { background:var(--accent); animation:sweepPulse 1.6s ease-in-out infinite; }
 .sweep-dot.idle { background:var(--muted); opacity:.55; }

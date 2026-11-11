@@ -40,7 +40,7 @@ from .taostats import (
     is_configured as taostats_is_configured,
 )
 from .version_info import read_version_info
-from .watch import WatchService
+from .watch import SWEEP_TICK_SECONDS, WatchService
 
 
 ROOT = Path(__file__).resolve().parent
@@ -57,7 +57,9 @@ BUILTIN_ADDRESSES_ENABLED = True
 BUILTIN_STARTUP_RESULT: dict[str, Any] | None = None
 # 地址库巡检：调度器每 30 秒推进一批地址（每地址 1~2 次请求，批量大小
 # 跟随每分钟额度；见 WatchService.addresses_per_tick）。
-WATCH_TICK_SECONDS = 30
+# 与 watch.py 的 SWEEP_TICK_SECONDS 同源：前端「距下一轮」倒计时依赖这个值，
+# 两处写死同一个数字迟早会漂移。
+WATCH_TICK_SECONDS = SWEEP_TICK_SECONDS
 # 本地索引定期自动扫描：不消耗 Taostats 额度，走链上 RPC。
 #
 # 以前的配置是「每 300 秒扫 16 块」，而 Bittensor 每 300 秒新增长约 25 块

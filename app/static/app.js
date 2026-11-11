@@ -913,6 +913,8 @@ function navigate(view, updateHash = true) {
     scheduleWatchPolling(3000);
   } else {
     stopWatchPolling();
+    // 倒计时是本地每秒跑的，切走页面就停，别留个空转的定时器。
+    stopSweepTicker();
   }
   if (view === "history") loadHistory();
   if (view === "release") {
@@ -4254,6 +4256,11 @@ async function syncValidatorLibrary() {
 // 以前界面上只有一句「本轮已查 N 个」，没有分母、没有心跳，用户看不出
 // 是在慢慢推进、在让路等查询、还是整个停了。这里补一个常驻的进度窗口。
 let watchPollTimer = null;
+// 0.8.49：本地索引流水线的「活着」证明。一次流水线可能不到 1 秒就跑完，
+// 接口轮询几乎抓不到 running；追平后累计数字也不涨，面板会像死了一样。
+// 这一组负责每秒更新的倒计时、进度条，以及 running 状态的最短显示时长。
+let sweepTickTimer = null;
+let sweepRunningUntil = 0;
 
 function formatEta(seconds) {
   const total = Math.max(0, Math.round(Number(seconds) || 0));
@@ -4359,12 +4366,49 @@ function renderWatchProgress(data) {
      正在跑   —— running=true（调度器此刻正在处理），绿点 + 呼吸
      等待中   —— 开关开着、但这一刻不在处理（30 秒一轮的间隙），灰点
    再加一个「落后多少块」，让用户知道本地索引有没有跟上链。 */
+function stopSweepTicker() {
+  if (sweepTickTimer) {
+    clearInterval(sweepTickTimer);
+    sweepTickTimer = null;
+  }
+}
+
+function updateSweepTicker() {
+  const countdown = $("#sweep-countdown");
+  const bar = $("#sweep-activity-bar");
+  if (!countdown && !bar) {
+    stopSweepTicker();
+    return;
+  }
+  const enabled = state.sweepEnabled !== false;
+  const total = Number(state.sweepTickSeconds || 30);
+  const left = Math.max(0, Math.ceil(((state.sweepNextAt || 0) - Date.now()) / 1000));
+  if (countdown) {
+    countdown.textContent = enabled ? `距下一轮 ${left}s` : "已关闭";
+    countdown.classList.toggle("off", !enabled);
+  }
+  if (bar) {
+    const ratio = enabled ? Math.max(0, Math.min(1, 1 - left / total)) : 0;
+    bar.style.width = `${(ratio * 100).toFixed(1)}%`;
+  }
+}
+
+function startSweepTicker() {
+  if (sweepTickTimer) return;
+  updateSweepTicker();
+  sweepTickTimer = setInterval(updateSweepTicker, 1000);
+}
+
 function renderSweepPanel(data) {
   const box = $("#sweep-panel");
-  if (!box) return;
+  if (!box) {
+    stopSweepTicker();
+    return;
+  }
   const sweep = data?.sweep;
   if (!sweep) {
     box.classList.add("hidden");
+    stopSweepTicker();
     return;
   }
   box.classList.remove("hidden");
@@ -4375,7 +4419,20 @@ function renderSweepPanel(data) {
   const meta = $("#sweep-meta");
   const hint = $("#sweep-hint");
   const enabled = sweep.enabled !== false;
-  const running = enabled && Boolean(sweep.running);
+  const runningNow = enabled && Boolean(sweep.running);
+  // 一次流水线可能一闪而过，抓到后至少显示 2.5 秒，别让它一闪就没。
+  if (runningNow) sweepRunningUntil = Date.now() + 2500;
+  const running = enabled && (runningNow || Date.now() < sweepRunningUntil);
+  const heartbeatAge = sweep.heartbeat_seconds_ago;
+  const hasHeartbeat = heartbeatAge !== null && heartbeatAge !== undefined;
+  const alive = enabled && (runningNow || (hasHeartbeat && Number(heartbeatAge) <= 90));
+  box.classList.toggle("is-alive", alive);
+
+  // 倒计时在本地每秒推进，接口轮询只负责把基准时间校正回后端口径。
+  state.sweepEnabled = enabled;
+  state.sweepTickSeconds = Number(sweep.tick_seconds || 30);
+  state.sweepNextAt = Date.now() + Math.max(0, Number(sweep.next_tick_in_seconds || 0)) * 1000;
+  startSweepTicker();
 
   if (dot) {
     dot.className = `sweep-dot${!enabled ? " off" : running ? " running" : " idle"}`;
@@ -4385,7 +4442,9 @@ function renderSweepPanel(data) {
       ? "本地索引流水线 · 已关闭"
       : running
         ? "本地索引流水线 · 正在处理"
-        : "本地索引流水线 · 等待下一轮";
+        : alive
+          ? "本地索引流水线 · 运行中（等待下一轮）"
+          : "本地索引流水线 · 等待首轮";
   }
   if (rate) {
     rate.textContent = enabled ? "不消耗 API 额度" : "开关已关";
@@ -4405,6 +4464,21 @@ function renderSweepPanel(data) {
         `处理到区块 <b>${number(sweep.last_block || 0)}</b>`,
       ];
       meta.innerHTML = parts.map((item) => `<span>${item}</span>`).join("");
+    }
+  }
+
+  const pulse = $("#sweep-pulse");
+  if (pulse) {
+    if (!enabled) {
+      pulse.textContent = "开关已关：调度器仍按节奏检查，但这一轮不会处理数据。";
+    } else {
+      const ago = hasHeartbeat
+        ? `最近一轮 ${Math.round(Number(heartbeatAge))} 秒前`
+        : "等待首轮";
+      pulse.innerHTML =
+        `已跑 <b>${number(sweep.tick_count || 0)}</b> 轮 · ${ago} · ` +
+        `本轮扫描 <b>${number(sweep.last_scanned || 0)}</b> 笔 / ` +
+        `<b>${number(sweep.last_duration_ms || 0)}</b> ms`;
     }
   }
 
@@ -4445,12 +4519,14 @@ function stopWatchPolling() {
   }
 }
 
-function scheduleWatchPolling(delay = 5000) {
+function scheduleWatchPolling(delay = 3000) {
   stopWatchPolling();
   watchPollTimer = setTimeout(async () => {
     watchPollTimer = null;
     const data = await loadWatchStatus();
-    if (!document.hidden) scheduleWatchPolling(5000);
+    // 流水线 30 秒一轮、单轮可能不到 1 秒；轮询太慢会整块静止，
+    // 让人以为没在工作。3 秒足够抓到 running，也不至于打爆接口。
+    if (!document.hidden) scheduleWatchPolling(3000);
     else scheduleWatchPolling(30000);
     if (data?.last_run && data.last_run.status !== "running") {
       // 一轮刚结束：刷新地址库，让新入库的地址立刻出现在列表里。
@@ -4568,7 +4644,7 @@ async function saveWatchConfig() {
   try {
     await api("/api/watch/config", { method: "POST", body: JSON.stringify(payload) });
     await loadWatchStatus();
-    scheduleWatchPolling(5000);
+    scheduleWatchPolling(3000);
     const perTickText = payload.addresses_per_tick > 0
       ? `每 30 秒推进 ${payload.addresses_per_tick} 个地址`
       : "每 30 秒推进量跟随每分钟额度自动算";

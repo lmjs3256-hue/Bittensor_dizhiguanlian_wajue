@@ -68,6 +68,9 @@ MAX_LOGS_PAGE = 200
 SWEEP_MAX_ROWS = 4000
 # 游标键名（WatchSweepState 只有一条记录）。
 SWEEP_KEY = "local-index"
+# 调度器一个 tick 的间隔（秒）。前端用它算「距下一轮还有几秒」，
+# 所以必须和 main.py 的 WATCH_TICK_SECONDS 是同一个值（那边直接引用这里）。
+SWEEP_TICK_SECONDS = 30
 # 本进程启动时刻：用来判断一个 running 轮次是本进程在推，还是上次进程
 # 被关掉后留下的（后者就是「断点续传」的状态，必须让用户看见）。
 PROCESS_STARTED_AT = datetime.now(timezone.utc)
@@ -164,6 +167,15 @@ class WatchService:
         self._sweep_running = False
         self._sweep_started: datetime | None = None
         self._sweep_last_done: datetime | None = None
+        # 0.8.49 心跳：一次流水线可能不到 1 秒就跑完，前端 3~5 秒轮询几乎
+        # 抓不到 running；追平后累计数字也不涨，面板看起来像死的一样。
+        # 这里记录「每一轮 tick 都来过」，让界面能持续显示轮次、最近一轮
+        # 时间和距下一轮的倒计时，用户才知道它确实在工作。
+        self._sweep_last_tick: datetime | None = None
+        self._sweep_tick_count = 0
+        self._sweep_last_duration_ms = 0
+        self._sweep_last_scanned = 0
+        self._sweep_last_reason = ""
         # 本进程内「走本地索引」的次数与省下的 API 请求数，给界面显示。
         self._local_hits = 0
         self._api_saved = 0
@@ -1076,20 +1088,32 @@ class WatchService:
         """
 
         config = config or self.config()
-        if not config.get("sweep_enabled", True):
-            return {"skipped": True, "reason": "sweep_disabled", "inserted": 0}
-        if not config.get("auto_import", True):
-            return {"skipped": True, "reason": "auto_import_off", "inserted": 0}
-
-        # 「正在跑」的可见性：调度器每 30 秒调一次，一次可能处理几千行。
-        # 界面靠这两个字段判断它是真在动，还是被关掉了/卡住了。
-        self._sweep_running = True
-        self._sweep_started = utcnow()
+        # 每一轮 tick 都记心跳，包括被开关跳过的轮次：界面要能区分
+        # 「关掉了」和「开着但这一轮没新块」。
+        tick_started = utcnow()
+        self._sweep_last_tick = tick_started
+        self._sweep_tick_count += 1
+        result: dict[str, Any] = {"inserted": 0}
         try:
-            return self._sweep_local_index(config)
+            if not config.get("sweep_enabled", True):
+                result = {"skipped": True, "reason": "sweep_disabled", "inserted": 0}
+            elif not config.get("auto_import", True):
+                result = {"skipped": True, "reason": "auto_import_off", "inserted": 0}
+            else:
+                # 「正在跑」的可见性：调度器每 30 秒调一次，一次可能处理几千行。
+                # 界面靠这两个字段判断它是真在动，还是被关掉了/卡住了。
+                self._sweep_running = True
+                self._sweep_started = tick_started
+                result = self._sweep_local_index(config)
+            return result
         finally:
             self._sweep_running = False
             self._sweep_last_done = utcnow()
+            self._sweep_last_duration_ms = max(
+                0, int((self._sweep_last_done - tick_started).total_seconds() * 1000)
+            )
+            self._sweep_last_scanned = int(result.get("scanned") or 0)
+            self._sweep_last_reason = str(result.get("reason") or "")
 
     def _sweep_local_index(self, config: dict[str, Any]) -> dict[str, Any]:
         """``sweep_local_index`` 的实际实现（外面那层只管开关与运行状态）。"""
@@ -1213,6 +1237,15 @@ class WatchService:
 
         cfg = config or self.config()
         enabled = bool(cfg.get("sweep_enabled", True))
+        now = utcnow()
+        # 距上一次 tick 的秒数 + 距下一轮的倒计时。前端据此每秒本地更新，
+        # 不用等接口轮询，面板就一直有东西在动。
+        if self._sweep_last_tick is None:
+            heartbeat_age: float | None = None
+            next_in = SWEEP_TICK_SECONDS
+        else:
+            heartbeat_age = max(0.0, (now - self._sweep_last_tick).total_seconds())
+            next_in = max(0, int(SWEEP_TICK_SECONDS - heartbeat_age))
 
         with self.database.session() as db:
             state = db.get(WatchSweepState, SWEEP_KEY)
@@ -1225,6 +1258,18 @@ class WatchService:
                 "started_at": iso_utc(self._sweep_started),
                 "last_done_at": iso_utc(self._sweep_last_done),
                 "index_block": int(newest),
+                # 0.8.49 心跳：即使这一轮没有新块、累计数字不涨，界面也能
+                # 靠轮次、最近一轮时间和倒计时证明调度器在按节奏工作。
+                "last_tick_at": iso_utc(self._sweep_last_tick),
+                "tick_count": self._sweep_tick_count,
+                "last_duration_ms": self._sweep_last_duration_ms,
+                "last_scanned": self._sweep_last_scanned,
+                "last_reason": self._sweep_last_reason,
+                "heartbeat_seconds_ago": (
+                    round(heartbeat_age, 1) if heartbeat_age is not None else None
+                ),
+                "next_tick_in_seconds": next_in,
+                "tick_seconds": SWEEP_TICK_SECONDS,
             }
             if state is None:
                 return {

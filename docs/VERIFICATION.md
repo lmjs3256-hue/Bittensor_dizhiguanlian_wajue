@@ -908,3 +908,49 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 **测试夹具坑**：把全局 `threading.Thread` 换成 NoopThread 会让 FastAPI TestClient
 内部线程无法启动，第 11 个接口测试直接挂住（pytest exit 124）。
 改为只替换 `remote_launch` 模块自己引用的名字后 17 条全过。
+
+## 0.8.49 验证记录（2026-11-11 12:35）
+
+**结论**：面板静止是两个原因叠加——后端没有心跳字段，模板里也没有能承载动态的元素。
+只修任一层都不会有效果。
+
+| 项 | 结果 |
+| --- | --- |
+| `tests/test_sweep_live_panel.py` | 6 passed（后端字段 / 模板三元素 / 样式动效 / 本地 ticker / 轮询频率 / 定时器回收） |
+| `tests/test_watch_sweep.py` | 31 passed（新增 3 条心跳断言） |
+| 全量 `pytest` | **656 passed**（647 → 656） |
+| `node --check app/static/app.js` | 通过 |
+| 静态资源戳 | `styles.css?v=0.8.49` / `app.js?v=0.8.49` |
+
+**真实接口实测（0.8.49，PID 580）**
+
+启动后 `/api/watch/status` 的 `sweep` 段：
+
+| 时刻 | tick_count | heartbeat_seconds_ago | next_tick_in_seconds |
+| --- | --- | --- | --- |
+| 刚启动 | 0 | `null` | 30 |
+| 约 38 秒后 | 2 | 15.7 | 14 |
+| 再约 32 秒后 | 3 | 17.9 | 12 |
+
+轮次递增、心跳归零重计、倒计时递减，三者一致。`last_scanned=0 / last_duration_ms=0`
+是「游标之后没有新块」的正常结果（`_sweep_local_index` 在 `if not rows` 处直接返回），
+不是空转。
+
+**浏览器探针（`.probe/chk_sweep_live_0849.py`，headless Chrome 1440×1100）**
+
+| 检查项 | 结果 |
+| --- | --- |
+| 面板可见（未 hidden） | PASS |
+| 三个新元素存在且高度 > 0 | PASS（倒计时 70×13、进度条 546×3、心跳行 1008×18） |
+| 倒计时隔 2.2 秒变化 | PASS（`距下一轮 13s` → `距下一轮 11s`） |
+| 进度条宽度变化 | PASS（56.7% → 63.3%） |
+| 心跳行含轮次 | PASS（`已跑 6 轮 · 最近一轮 19 秒前 · 本轮扫描 0 笔 / 0 ms`） |
+| 活着态 class | PASS（`is-alive`） |
+| 标题状态 | PASS（`运行中（等待下一轮）`，圆点 `idle`） |
+| 页面横向溢出 | 无 |
+| 资源戳 | 两处均 0.8.49 |
+
+**顺带修掉的测试坑**：`test_frontend_renders_dedicated_sweep_panel` 用固定 2600 字符
+截取函数体，面板加内容后截断导致假失败；已改为按 `function stopWatchPolling(` 边界截取。
+同时清掉 `tests/test_watch_sweep.py` 里重复追加的同名测试块（同名函数后定义会静默覆盖前者，
+等于有一份测试从未真正跑过）。

@@ -1145,3 +1145,31 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u al
 - 两个环境坑：清空 `cloudflared.url` / `cloudflared.log` 用 `write_text("")` 或
   `open("wb")`，**不要 unlink**——删文件会被 safe-delete 钩子拦下；测试里若要把
   `threading.Thread` 换成假对象，只替换目标模块的名字，改全局会让 TestClient 挂死。
+
+## 66. 2026-11-11 0.8.49 交接：流水线面板要证明「在动」（**改巡检面板前必读**）
+
+- 用户反馈：地址库页的「本地索引流水线」面板纹丝不动，看不出有没有在工作。
+  这是**两层原因叠加**，只修一层没用：
+  1. 调度器 `asyncio.sleep(WATCH_TICK_SECONDS)` 30 秒一轮，`_sweep_local_index`
+     在没新块时不到 1 毫秒就返回；前端当时 5 秒轮询一次，`running=true` 几乎抓不到。
+     追上进度后累计数字也不再涨，面板就完全静止。
+  2. 模板里只有 `#sweep-dot/title/rate/meta/hint`，没有倒计时、进度条、心跳行，
+     后端给再多字段也没处显示。
+- **现在的契约**（改动时三处要一起改，`tests/test_sweep_live_panel.py` 盯着）：
+  - 后端：`sweep_local_index()` 每轮先记 `_sweep_last_tick` / `_sweep_tick_count += 1`，
+    `finally` 里记 `_sweep_last_duration_ms` / `_sweep_last_scanned` / `_sweep_last_reason`。
+    **被开关跳过的轮次也要记**，否则界面分不清「关了」和「卡了」。
+    `sweep_status()` 返回 `last_tick_at / tick_count / last_duration_ms / last_scanned /
+    heartbeat_seconds_ago / next_tick_in_seconds / tick_seconds`。
+  - `SWEEP_TICK_SECONDS = 30` 是唯一来源，`main.py` 的 `WATCH_TICK_SECONDS` 从它取；
+    `test_watch_tick_seconds_is_single_source_of_truth` 会拦两处漂移。
+  - 前端：轮询 3 秒（`scheduleWatchPolling(3000)`，**不要改回 5000**）；
+    `updateSweepTicker()` 每秒本地推进 `state.sweepNextAt`，接口只负责校正基准；
+    `running` 抓到后至少显示 2.5 秒（`sweepRunningUntil`）。
+  - 模板必须有 `#sweep-countdown` / `#sweep-activity-bar` / `#sweep-pulse` 三个 id。
+- **别把心跳做成「最近一次 tick 时间」以外的口径**：`heartbeat_seconds_ago > 90` 时
+  标题会退回「等待首轮」，这是判断「真没在跑」的唯一依据。
+- 本地定时器要在三处停：切出地址库视图、`#sweep-panel` 不存在、`data.sweep` 为空。
+- `scanned=0 / duration=0ms` 是正常态（游标后无新块），**不要**把它当异常报错。
+- 测试坑：静态契约测试别用固定字符数截取函数体，面板一加内容就假失败；
+  同名测试函数后定义会静默覆盖前者，追加前先 grep 一下有没有同名。
