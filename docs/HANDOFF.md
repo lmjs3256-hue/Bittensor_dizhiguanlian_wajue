@@ -1108,3 +1108,40 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u al
   （启动、每个脚本步骤与 exit code、状态变更、失败堆栈）。以后再出问题先看它。
 - 现场处置：把卡住的 `launching` 手工写成 `error` 即可立刻解除页面转圈，
   不必重启服务。状态文件是 `logs/remote-launch.json`（无 BOM UTF-8）。
+
+## 64. 2026-11-11 0.8.47 交接：启动器必须是 Python（**再改远程访问前必读**）
+
+- 0.8.46 修完 `-Wait` 后，点「启动公网模式」仍无反应。有 `remote-launch.log` 后一眼看清：
+  **日志一行都没新增**、服务 PID 没变 → 启动器进程根本没跑起来。
+  状态文件的 `error` 是 90 秒超时自愈写的，不是启动器写的。
+- **根因**：服务进程用 `DETACHED_PROCESS` spawn 的 PS 进程，无控制台环境下直接退出。
+  0.8.45 第一次点按钮其实也是同一现象，当时没日志所以误判成卡住。
+- **结论**：由服务 spawn 的长期/复杂子进程，一律用**服务自己的 `sys.executable` 跑 Python**，
+  配 `CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`；不要用 PS 脚本当启动器。
+  Python 里调 `start.ps1` / `stop.ps1` 没问题（那时已有隐藏控制台），
+  而且 `Popen.wait(timeout)` 只等脚本本身，天然避开 `-Wait` 等整棵进程树的坑。
+- `start_launch()` 在 spawn 后 sleep 0.4 秒 `process.poll()`，发现立即退出就写 `error`
+  并抛错——任何「spawn 外部进程」都要有这一步，否则前端又要白等超时。
+- 排障顺序固定：`logs/remote-launch.log`（启动器有没有跑）→ `logs/remote-launch.json`
+  （状态与文案）→ `logs/wallet-link.stderr.log`（服务本身）→ `/api/access/status`
+  的 `server_started_at`（服务有没有真的重启）。
+
+## 65. 2026-11-11 0.8.48 交接：按钮绝不重启服务（**改远程访问前必读**）
+
+- 0.8.45 → 0.8.46 → 0.8.47 三次都没修好，根因始终是一个：**启动器是服务进程
+  spawn 的子进程，服务一退出/被杀，启动器就被连带清理**。三次日志分别断在
+  「完全没有新行」（PS 无控制台直接退出）、「stop.ps1」（启动器被连带杀）、
+  「等待端口释放」（同样被连带杀）。别再往「让子进程更彻底地脱离」这条路走了。
+- **最终架构**：按钮不重启服务。`WALLET_LINK_REMOTE` / `WALLET_LINK_TRUST_PROXY`
+  都是运行时读的环境变量，直接 `os.environ[...] = "1"` 即可；公网入口只是额外
+  一个 cloudflared 进程 + 把网址写进 `logs/cloudflared.url`。服务全程不退出，
+  页面不会断开，启动器也就没有机会被清理。
+- `run.py` 把实际 host 写进 `WALLET_LINK_BIND_HOST`。绑回环时按钮明确拒绝并提示
+  「请先用启动-远程访问.cmd 启动一次」——监听地址是启动时定的，这一点无法运行时改，
+  必须让用户做一次一次性操作，别偷偷尝试重启。
+- 已删除：`launch_mode.py`、`launch_mode.ps1`、`main.py` 里的 `_schedule_self_shutdown`、
+  启动器里的 `stop.ps1` 调用。代码里不许再出现 `LAUNCH_SCRIPT` / `sys.executable`
+  那套东西，测试 `test_no_restart_launcher_contract` 会盯着。
+- 两个环境坑：清空 `cloudflared.url` / `cloudflared.log` 用 `write_text("")` 或
+  `open("wb")`，**不要 unlink**——删文件会被 safe-delete 钩子拦下；测试里若要把
+  `threading.Thread` 换成假对象，只替换目标模块的名字，改全局会让 TestClient 挂死。

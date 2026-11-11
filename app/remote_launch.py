@@ -1,21 +1,27 @@
-"""主机「远程访问 / 公网隧道」的页面启动器（0.8.45）。
+"""主机「远程访问 / 公网隧道」的页面开关（0.8.48 起不再重启服务）。
 
-页面上的两个按钮走这里。服务自己改不了 uvicorn 的监听地址（host 在启动时
-定），所以切换模式必须重启：本模块 spawn 一个独立的 PowerShell 启动器，让它
-停掉当前服务、按目标模式重启，公网模式还会先把 cloudflared 的网址拿到再启
-服务。启动器开头先睡几秒，等这次 HTTP 响应发完再动手。
+0.8.45–0.8.47 反复踩同一个死结：按钮要切换模式就得重启服务，而启动器是服务
+自己 spawn 的子进程，服务一退出/被杀，启动器就会被连带清理，状态永远停在
+launching。这里改成**运行时切换**：
+
+* ``WALLET_LINK_REMOTE`` / ``WALLET_LINK_TRUST_PROXY`` 都是运行时读的环境变量，
+  直接改就能开启口令校验与隧道来源判定，不需要重启 uvicorn；
+* 公网入口只是额外拉起一个 cloudflared 进程、把分配到的网址写进
+  ``logs/cloudflared.url``，服务本身不动；
+* 监听地址仍是启动时决定的。服务若绑在回环上，按钮会明确提示先用
+  「启动-远程访问.cmd」启动一次（一次性），而不是偷偷尝试重启。
 
 状态写在 ``logs/remote-launch.json``，前端轮询 ``/api/access/status`` 读取。
-PowerShell 启动器是独立进程，即使服务重启期间接口不可用，状态文件也能在
-新服务起来后被读到。
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,12 +29,15 @@ from typing import Any
 ROOT_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT_DIR / "logs"
 STATE_FILE = LOG_DIR / "remote-launch.json"
-LAUNCH_SCRIPT = ROOT_DIR / "launch_mode.ps1"
+URL_FILE = LOG_DIR / "cloudflared.url"
+CF_LOG = LOG_DIR / "cloudflared.log"
+CF_OUT = LOG_DIR / "cloudflared.stdout.log"
+CLOUDFLARED = ROOT_DIR / "tools" / "cloudflared.exe"
+BIND_HOST_ENV = "WALLET_LINK_BIND_HOST"
 VALID_MODES = frozenset({"remote", "tunnel"})
 _LOCK = threading.Lock()
-# 启动器没回报时，多久之后把 launching 判成失败。比前端轮询超时（120 秒）
-# 短，好让页面拿到具体的 error 文案，而不是只等到一句笼统的「超时」。
 LAUNCH_STALE_SECONDS = 90
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _now() -> str:
@@ -53,18 +62,15 @@ def _read_unlocked() -> dict[str, Any]:
 
 def _write_unlocked(data: dict[str, Any]) -> dict[str, Any]:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(
-        json.dumps(data, ensure_ascii=False), encoding="utf-8"
-    )
+    STATE_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     return data
 
 
 def read_state() -> dict[str, Any]:
-    """读最近一次启动状态；文件坏了按 idle 处理，不让页面卡住。
+    """读最近一次状态；文件坏了按 idle 处理，不让页面卡住。
 
-    启动器可能被系统终止而永远写不回 ``ready``（0.8.45 实测踩到过）。
-    超过 ``LAUNCH_STALE_SECONDS`` 仍停在 launching 就自动判成 error，
-    页面因此一定能结束等待，用户也能重新点一次按钮。
+    超过 ``LAUNCH_STALE_SECONDS`` 仍停在 launching 就自动判 error，
+    页面一定能结束等待。
     """
 
     with _LOCK:
@@ -80,9 +86,8 @@ def read_state() -> dict[str, Any]:
         if age > LAUNCH_STALE_SECONDS:
             data["state"] = "error"
             data["message"] = (
-                "启动器超过 90 秒没有回报结果（可能被系统终止）。"
-                "请查看 logs/remote-launch.log，或双击对应的启动脚本；"
-                "服务本身通常已经恢复，刷新页面即可继续使用。"
+                "操作超过 90 秒没有完成。请查看 logs/cloudflared.log，"
+                "或双击「启动-公网隧道.cmd」；服务本身没有中断，刷新页面即可继续使用。"
             )
             data["finished_at"] = _now()
             data["updated_at"] = _now()
@@ -100,64 +105,110 @@ def write_state(**fields: Any) -> dict[str, Any]:
         return _write_unlocked(data)
 
 
-def start_launch(mode: str) -> dict[str, Any]:
-    """触发一次模式切换；真正的重启由独立进程完成，这里立刻返回。"""
+def _wait_tunnel_url(process: subprocess.Popen, timeout: int = 60) -> str:
+    pattern = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            match = pattern.search(CF_LOG.read_text(encoding="utf-8", errors="ignore"))
+            if match:
+                return match.group(0)
+        except OSError:
+            pass
+        if process.poll() is not None:
+            return ""
+        time.sleep(0.4)
+    return ""
+
+
+def _start_tunnel(port: int) -> str:
+    if not CLOUDFLARED.exists():
+        raise RuntimeError(
+            "找不到 tools/cloudflared.exe，请先双击一次「启动-公网隧道.cmd」下载。"
+        )
+    # 只清空、不删除：cloudflared 还占着日志文件句柄，删文件会被
+    # 环境的 safe-delete 钩子拦下；下面 open("wb") 本来就会截断日志。
+    URL_FILE.write_text("", encoding="utf-8")
+    try:
+        subprocess.run(
+            ["taskkill", "/IM", "cloudflared.exe", "/F"],
+            capture_output=True,
+            timeout=10,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except Exception:  # noqa: BLE001 - 清理是尽力而为
+        pass
+    time.sleep(1)
+    with CF_OUT.open("wb") as out, CF_LOG.open("wb") as err:
+        process = subprocess.Popen(
+            [
+                str(CLOUDFLARED),
+                "tunnel",
+                "--url",
+                f"http://127.0.0.1:{port}",
+                "--no-autoupdate",
+            ],
+            cwd=str(ROOT_DIR),
+            creationflags=CREATE_NO_WINDOW,
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=err,
+        )
+    url = _wait_tunnel_url(process)
+    if not url:
+        raise RuntimeError(
+            f"隧道没有在 60 秒内分配到网址，详见 {CF_LOG}"
+            "（常见于出站 UDP 7844 被拦）。"
+        )
+    URL_FILE.write_text(url, encoding="utf-8")
+    return url
+
+
+def _finish_launch(mode: str, port: int) -> None:
+    """后台线程：公网模式拉起隧道，远程模式直接完成。服务全程不重启。"""
+
+    try:
+        url = ""
+        if mode == "tunnel":
+            os.environ["WALLET_LINK_TRUST_PROXY"] = "1"
+            url = _start_tunnel(port)
+            message = f"公网隧道已就绪：{url}"
+        else:
+            message = "远程访问已开启"
+        write_state(state="ready", message=message, url=url, finished_at=_now())
+    except Exception as exc:  # noqa: BLE001 - 任何失败都要写回状态
+        write_state(state="error", message=str(exc), finished_at=_now())
+
+
+def start_launch(mode: str, port: int = 8766) -> dict[str, Any]:
+    """运行时开启远程访问 / 公网隧道；不重启服务、不 spawn 启动器。"""
 
     if mode not in VALID_MODES:
         raise ValueError("模式只能是 remote 或 tunnel")
-    if not LAUNCH_SCRIPT.exists():
-        raise RuntimeError(f"找不到启动器脚本：{LAUNCH_SCRIPT.name}")
-    current = read_state()
-    if current.get("state") == "launching":
+    if read_state().get("state") == "launching":
         raise RuntimeError("已有一次启动正在进行，请等它完成")
 
+    bind_host = os.getenv(BIND_HOST_ENV, "").strip()
+    if bind_host in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError(
+            "当前服务只监听本机，外部设备连不上。请先用「启动-远程访问.cmd」"
+            "或「启动-公网隧道.cmd」启动一次服务；之后本按钮可秒级切换，不再重启。"
+        )
+
+    # remote_enabled() / trust_proxy() 都直接读环境变量，改完立即生效。
+    os.environ["WALLET_LINK_REMOTE"] = "1"
     write_state(
         state="launching",
         mode=mode,
-        message="正在切换访问模式，页面会短暂断开…",
+        message="正在建立公网隧道…" if mode == "tunnel" else "正在开启远程访问…",
         url="",
         started_at=_now(),
         finished_at="",
     )
-
-    command = [
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(LAUNCH_SCRIPT),
-        "-Mode",
-        mode,
-    ]
-    kwargs = {
-        "cwd": str(ROOT_DIR),
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
+    worker = threading.Thread(target=_finish_launch, args=(mode, port), daemon=True)
+    worker.start()
+    return {
+        "ok": True,
+        "mode": mode,
+        "message": "正在准备公网入口…" if mode == "tunnel" else "远程访问已开启",
     }
-    creationflags = 0
-    if os.name == "nt":
-        # BREAKAWAY 很关键：服务 spawn 的启动器如果留在同一个 Job Object 里，
-        # 停旧服务时可能被连带终止，状态文件就永远停在 launching。
-        creationflags = (
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
-        )
-    try:
-        try:
-            subprocess.Popen(command, creationflags=creationflags, **kwargs)
-        except OSError:
-            # 进程不在 Job 里时 BREAKAWAY 会失败，退回默认标志再试一次。
-            subprocess.Popen(command, creationflags=0, **kwargs)
-    except OSError as exc:
-        write_state(
-            state="error",
-            message=f"启动器没能启动：{exc}",
-            finished_at=_now(),
-        )
-        raise RuntimeError(f"启动器没能启动：{exc}") from exc
-
-    return {"ok": True, "mode": mode, "message": "已触发，服务将短暂重启"}

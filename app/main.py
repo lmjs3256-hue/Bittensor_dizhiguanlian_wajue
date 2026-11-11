@@ -646,16 +646,17 @@ class AccessLaunchInput(BaseModel):
 
 @app.post("/api/access/launch")
 def access_launch(payload: AccessLaunchInput, request: Request):
-    """远程访问组件上的两个按钮：触发一次模式重启。
+    """远程访问组件上的两个按钮：运行时开启远程访问或公网隧道。
 
-    只认主机本机发起的请求。真正的重启由独立进程完成，所以这里立刻返回，
-    前端改轮询 ``/api/access/status`` 里的 ``launch`` 字段看结果。
+    只认主机本机发起的请求。0.8.48 起不再重启服务——监听地址是启动时定的，
+    但远程开关、隧道来源判定都是运行时读的环境变量，公网入口也只是额外一个
+    cloudflared 进程。服务绑在回环上时会明确提示先用对应启动脚本启动一次。
     """
 
     if not access_mod.is_local(request):
         raise HTTPException(403, "只有主机本机可以切换访问模式")
     try:
-        return remote_launch.start_launch(payload.mode)
+        return remote_launch.start_launch(payload.mode, _request_port(request))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except RuntimeError as exc:

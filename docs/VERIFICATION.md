@@ -860,3 +860,51 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 全程 9 秒。旧版卡在 `start.ps1` 的 `-Wait` 上永不返回，改 `WaitForExit` 后正常结束。
 注意：由工具会话拉起的服务进程会在会话结束时被清理，因此实测后另用后台进程恢复了服务；
 用户从桌面双击启动的服务不受此影响。
+
+## 0.8.47 验证记录（2026-11-11 09:50）
+
+**问题**：点「启动公网模式」仍是长时间无反应。
+
+**现场事实**：`logs/remote-launch.json` 是 90 秒超时自愈写成的 `error`（0.8.46 自愈生效），
+但 `logs/remote-launch.log` 最后一行仍是 09:30:35 上一次实测，服务 PID 11652 自 09:32 起未变。
+→ 启动器**根本没启动**，不是卡住。服务用 `DETACHED_PROCESS` spawn 的 PS 进程
+在无控制台环境下直接退出，连脚本第一行都执行不到。
+
+**修复**：启动器整体改为 `launch_mode.py`（服务自己的 `sys.executable` + `CREATE_NO_WINDOW
+| CREATE_BREAKAWAY_FROM_JOB`），`Popen.wait(timeout)` 只等脚本本身；
+`start_launch()` 在 spawn 后 0.4 秒检查进程存活，立即退出就写 `error` 并快速失败。
+旧的 PS 启动器脚本删除。
+
+| 项 | 结果 |
+| --- | --- |
+| `tests/test_remote_launch.py` | 17 passed（新增启动器契约、进程立即退出快速报错） |
+| `py_compile launch_mode.py app/remote_launch.py` | 通过 |
+| 全量测试 | 见提交记录 |
+| 端到端 | 见下方实测结果 |
+
+## 0.8.48 验证记录（2026-11-11 10:12）
+
+**结论**：前三次失败是同一个死结——按钮要重启服务，启动器却被连带清理。
+日志三次分别停在「无新行」「stop.ps1」「等待端口」，服务 PID 要么没变、要么退出后启动器也没了。
+本版取消重启，改为运行时切换 + 独立隧道进程。
+
+| 项 | 结果 |
+| --- | --- |
+| `tests/test_remote_launch.py` | 17 passed（重写：运行时开关、回环绑定拒绝、后台线程完成态、静态契约） |
+| `py_compile app/remote_launch.py app/main.py run.py` | 通过 |
+| `node --check app/static/app.js` | 通过 |
+| 全量测试 | 见提交记录 |
+| 端到端 | 通过真实 `POST /api/access/launch` 验证，见下方 |
+
+**端到端实测（0.8.48 服务，PID 20036，全程未变）**
+
+- 点「启动远程访问」：接口返回 `{"ok":true,...}`，2 秒内状态 `ready`，服务 PID 不变。
+- 点「启动公网隧道」：接口立刻返回，6 秒后状态
+  `ready / 公网隧道已就绪：https://farmers-dylan-saw-stolen.trycloudflare.com`，
+  `logs/cloudflared.url` 同步更新，`/api/access/status` 的 `items` 出现「公网隧道」，
+  服务 PID **仍是 20036**——证明按钮不再重启服务、页面不会断开。
+- 这两条正是 0.8.45–0.8.47 反复失败的场景。
+
+**测试夹具坑**：把全局 `threading.Thread` 换成 NoopThread 会让 FastAPI TestClient
+内部线程无法启动，第 11 个接口测试直接挂住（pytest exit 124）。
+改为只替换 `remote_launch` 模块自己引用的名字后 17 条全过。

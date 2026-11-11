@@ -1,8 +1,11 @@
-"""0.8.45：远程访问启动按钮 + 公网隧道网址获取顺序的回归测试。"""
+"""远程访问按钮 / 公网隧道的回归测试（0.8.48：按钮不再重启服务）。"""
 
 from __future__ import annotations
 
 import json
+import os
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,27 +19,48 @@ LOCAL_CLIENT = ("127.0.0.1", 54123)
 
 @pytest.fixture()
 def isolated_launch(tmp_path, monkeypatch):
-    """把状态文件和启动器指到临时目录，测试绝不触发真实重启。"""
+    """把状态与隧道文件指到临时目录，并禁止后台线程真的启动。"""
 
     state = tmp_path / "remote-launch.json"
-    script = tmp_path / "launch_mode.ps1"
-    script.write_text("# stub\n", encoding="utf-8")
     monkeypatch.setattr(remote_launch, "STATE_FILE", state)
     monkeypatch.setattr(remote_launch, "LOG_DIR", tmp_path)
-    monkeypatch.setattr(remote_launch, "LAUNCH_SCRIPT", script)
-    return state
+    monkeypatch.setattr(remote_launch, "URL_FILE", tmp_path / "cloudflared.url")
+    monkeypatch.setattr(remote_launch, "CF_LOG", tmp_path / "cloudflared.log")
+    monkeypatch.setattr(remote_launch, "CF_OUT", tmp_path / "cloudflared.stdout.log")
+    monkeypatch.setattr(remote_launch, "CLOUDFLARED", tmp_path / "cloudflared.exe")
 
+    # start_launch() 用 os.environ[...] = "1" 直接赋值，monkeypatch 追踪不到这种
+    # 写入；必须自己保存/恢复，否则 WALLET_LINK_REMOTE=1 会泄漏到后续测试文件，
+    # 让所有接口测试被要求输访问口令（401）。
+    env_names = (
+        "WALLET_LINK_BIND_HOST",
+        "WALLET_LINK_REMOTE",
+        "WALLET_LINK_TRUST_PROXY",
+    )
+    saved = {name: os.environ.get(name) for name in env_names}
+    for name in env_names:
+        os.environ.pop(name, None)
 
-@pytest.fixture()
-def fake_popen(monkeypatch):
-    calls: list[tuple[list[str], dict]] = []
+    class NoopThread:
+        def __init__(self, *args, **kwargs):
+            pass
 
-    class FakePopen:
-        def __init__(self, command, **kwargs):
-            calls.append((command, kwargs))
+        def start(self):
+            pass
 
-    monkeypatch.setattr(remote_launch.subprocess, "Popen", FakePopen)
-    return calls
+    # 只替换 remote_launch 模块里看到的 threading 名字。直接改全局
+    # threading.Thread 会把 FastAPI TestClient 的内部线程也一起废掉，接口测试会挂住。
+    class ThreadingStub:
+        Lock = threading.Lock
+        Thread = NoopThread
+
+    monkeypatch.setattr(remote_launch, "threading", ThreadingStub)
+    yield state
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
 
 @pytest.fixture()
@@ -57,7 +81,7 @@ def _client(remote_host: bool = False):
     )
 
 
-# -- 启动器模块 ------------------------------------------------------------
+# -- 运行时切换 ------------------------------------------------------------
 
 
 def test_start_launch_rejects_unknown_mode(isolated_launch):
@@ -65,36 +89,57 @@ def test_start_launch_rejects_unknown_mode(isolated_launch):
         remote_launch.start_launch("anything")
 
 
-def test_start_launch_spawns_detached_launcher(isolated_launch, fake_popen):
-    result = remote_launch.start_launch("tunnel")
-    assert result == {
-        "ok": True,
-        "mode": "tunnel",
-        "message": "已触发，服务将短暂重启",
-    }
-    command, kwargs = fake_popen[0]
-    assert command[0] == "powershell.exe"
-    assert command[-2:] == ["-Mode", "tunnel"]
-    assert kwargs["close_fds"] is True
-    state = json.loads(isolated_launch.read_text(encoding="utf-8"))
-    assert state["state"] == "launching"
-    assert state["mode"] == "tunnel"
-    assert state["url"] == ""
+def test_start_launch_enables_remote_without_restart(isolated_launch, monkeypatch):
+    """0.8.48：只改环境变量，不 spawn 启动器、不重启服务。"""
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("按钮不该再 spawn 任何重启进程")
+
+    monkeypatch.setattr(remote_launch.subprocess, "Popen", forbidden)
+    result = remote_launch.start_launch("remote")
+    assert result["ok"] is True
+    assert result["mode"] == "remote"
+    assert os.environ.get("WALLET_LINK_REMOTE") == "1"
+    assert result["message"] == "远程访问已开启"
+    data = json.loads(isolated_launch.read_text(encoding="utf-8"))
+    assert data["state"] == "launching"
 
 
-def test_second_launch_while_busy_is_rejected(isolated_launch, fake_popen):
+def test_launch_on_loopback_bind_is_rejected(isolated_launch, monkeypatch):
+    """绑在 127.0.0.1 时开远程没有意义，必须给一次性明确指引。"""
+
+    monkeypatch.setenv("WALLET_LINK_BIND_HOST", "127.0.0.1")
+    with pytest.raises(RuntimeError, match="只监听本机"):
+        remote_launch.start_launch("remote")
+    assert os.environ.get("WALLET_LINK_REMOTE") != "1"
+    assert not isolated_launch.exists()
+
+
+def test_second_launch_while_busy_is_rejected(isolated_launch):
     remote_launch.start_launch("remote")
     with pytest.raises(RuntimeError, match="已有一次启动"):
         remote_launch.start_launch("tunnel")
-    assert len(fake_popen) == 1
 
 
-def test_missing_launcher_script_is_reported(isolated_launch, tmp_path, monkeypatch, fake_popen):
-    monkeypatch.setattr(remote_launch, "LAUNCH_SCRIPT", tmp_path / "nope.ps1")
-    with pytest.raises(RuntimeError, match="找不到启动器脚本"):
-        remote_launch.start_launch("remote")
-    assert remote_launch.read_state()["state"] == "idle"
-    assert fake_popen == []
+def test_finish_launch_remote_writes_ready(isolated_launch):
+    remote_launch.write_state(state="launching", mode="remote", started_at=remote_launch._now())
+    remote_launch._finish_launch("remote", 8766)
+    data = remote_launch.read_state()
+    assert data["state"] == "ready"
+    assert data["message"] == "远程访问已开启"
+
+
+def test_finish_launch_tunnel_sets_trust_proxy(isolated_launch, monkeypatch):
+    monkeypatch.setattr(remote_launch, "_start_tunnel", lambda port: "https://x.trycloudflare.com")
+    remote_launch.write_state(state="launching", mode="tunnel", started_at=remote_launch._now())
+    remote_launch._finish_launch("tunnel", 8766)
+    assert os.environ.get("WALLET_LINK_TRUST_PROXY") == "1"
+    data = remote_launch.read_state()
+    assert data["state"] == "ready"
+    assert data["url"] == "https://x.trycloudflare.com"
+
+
+# -- 状态机 ----------------------------------------------------------------
 
 
 def test_read_state_survives_corrupt_file(isolated_launch):
@@ -109,21 +154,16 @@ def test_write_state_merges_fields(isolated_launch):
     assert data["started_at"] == "T0"
     assert data["state"] == "ready"
     assert data["message"] == "ok"
-    assert data["updated_at"]
 
 
 def test_stale_launching_state_is_auto_resolved(isolated_launch):
-    """启动器被终止时状态会永远停在 launching，页面不能因此一直转圈。"""
-
-    from datetime import datetime, timedelta, timezone
-
     old = (datetime.now(timezone.utc) - timedelta(seconds=200)).isoformat(timespec="seconds")
     isolated_launch.write_text(
         json.dumps(
             {
                 "state": "launching",
-                "mode": "remote",
-                "message": "正在切换…",
+                "mode": "tunnel",
+                "message": "正在建立…",
                 "url": "",
                 "started_at": old,
                 "finished_at": "",
@@ -134,8 +174,7 @@ def test_stale_launching_state_is_auto_resolved(isolated_launch):
     )
     data = remote_launch.read_state()
     assert data["state"] == "error"
-    assert "没有回报" in data["message"]
-    assert data["finished_at"]
+    assert "没有完成" in data["message"]
 
 
 def test_fresh_launching_state_is_kept(isolated_launch):
@@ -145,51 +184,51 @@ def test_fresh_launching_state_is_kept(isolated_launch):
     assert remote_launch.read_state()["state"] == "launching"
 
 
-def test_access_status_reports_server_started_at(isolated_launch, licensed):
-    """前端靠这个字段判断服务确实重启过，不依赖启动器写回 ready。"""
-
-    with _client() as client:
-        payload = client.get("/api/access/status").json()
-    assert "server_started_at" in payload
-    assert payload["server_started_at"]
-
-
 # -- HTTP 接口 -------------------------------------------------------------
 
 
-def test_launch_endpoint_is_local_only(isolated_launch, fake_popen, licensed):
+def test_launch_endpoint_is_local_only(isolated_launch, licensed):
     with _client(remote_host=True) as client:
         response = client.post("/api/access/launch", json={"mode": "remote"})
     assert response.status_code == 403
-    assert fake_popen == []
 
 
-def test_launch_endpoint_rejects_unknown_mode(isolated_launch, fake_popen, licensed):
+def test_launch_endpoint_rejects_unknown_mode(isolated_launch, licensed):
     with _client() as client:
         response = client.post("/api/access/launch", json={"mode": "bogus"})
     assert response.status_code == 422
-    assert fake_popen == []
 
 
-def test_launch_endpoint_accepts_valid_mode(isolated_launch, fake_popen, licensed):
+def test_launch_endpoint_accepts_valid_mode(isolated_launch, licensed):
     with _client() as client:
-        response = client.post("/api/access/launch", json={"mode": "tunnel"})
+        response = client.post("/api/access/launch", json={"mode": "remote"})
     assert response.status_code == 200
     assert response.json()["ok"] is True
-    assert len(fake_popen) == 1
 
 
-def test_access_status_exposes_launch_state(isolated_launch, licensed):
-    remote_launch.write_state(
-        state="ready", mode="tunnel", message="公网隧道已就绪", url="https://x.trycloudflare.com"
-    )
+def test_access_status_exposes_launch_and_start_time(isolated_launch, licensed):
+    remote_launch.write_state(state="ready", mode="tunnel", message="ok", url="https://x.trycloudflare.com")
     with _client() as client:
         payload = client.get("/api/access/status").json()
     assert payload["launch"]["state"] == "ready"
     assert payload["launch"]["url"] == "https://x.trycloudflare.com"
+    assert payload["server_started_at"]
 
 
-# -- 前端与脚本契约 ---------------------------------------------------------
+# -- 静态契约 --------------------------------------------------------------
+
+
+def test_no_restart_launcher_contract():
+    """代码里不能再有「spawn 启动器 / 服务自杀」那套东西。"""
+
+    module = (ROOT / "app" / "remote_launch.py").read_text(encoding="utf-8")
+    main = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    run = (ROOT / "run.py").read_text(encoding="utf-8")
+    assert "LAUNCH_SCRIPT" not in module
+    assert "sys.executable" not in module
+    assert "_schedule_self_shutdown" not in main
+    assert "WALLET_LINK_BIND_HOST" in run
+    assert "WALLET_LINK_BIND_HOST" in module
 
 
 def test_remote_panel_has_both_launch_buttons():
@@ -199,8 +238,8 @@ def test_remote_panel_has_both_launch_buttons():
     assert 'id="launch-remote"' in html
     assert 'id="launch-tunnel"' in html
     assert "/api/access/launch" in js
-    assert "renderLaunchStatus" in js
     assert "server_started_at" in js
+    assert "服务不会重启" in js
     assert ".remote-actions" in css
 
 
@@ -212,17 +251,3 @@ def test_tunnel_script_writes_url_before_starting_service():
     start_at = text.index("正在启动服务（公网隧道模式）")
     assert write_at < start_at
     assert "Remove-Item -LiteralPath $UrlFile" in text
-
-
-def test_launch_mode_script_exists_and_has_bom():
-    raw = (ROOT / "launch_mode.ps1").read_bytes()
-    assert raw.startswith(b"\xef\xbb\xbf"), "PS 5.1 需要 UTF-8 BOM，否则中文乱码"
-    text = raw.decode("utf-8-sig")
-    assert "Set-LaunchState" in text
-    assert "Wait-TunnelUrl" in text
-    assert "Start-Sleep -Seconds 3" in text
-    # 0.8.45 复盘：Start-Process -Wait 会等「进程及其所有后代」，
-    # start.ps1 拉起的是常驻服务，启动器会永远卡住、状态写不回 ready。
-    assert "Write-LaunchLog" in text
-    assert "WaitForExit(" in text
-    assert "-NoNewWindow -Wait -PassThru" not in text

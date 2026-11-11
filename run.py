@@ -186,6 +186,10 @@ def main() -> int:
         os.environ["WALLET_LINK_REMOTE"] = "1"
         _print_remote_banner(args.port, tunnel=args.tunnel)
 
+    # 页面上的「启动远程访问 / 公网隧道」按钮要判断服务是不是只绑在回环上。
+    # uvicorn 的 host 在启动时定，这里把实际值交给 app 层运行时读取。
+    os.environ["WALLET_LINK_BIND_HOST"] = host
+
     import uvicorn
 
     uvicorn.run(

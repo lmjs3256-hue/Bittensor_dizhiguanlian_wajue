@@ -1,6 +1,6 @@
 # Bittensor 地址关联挖掘工具
 
-版本：**0.8.46**
+版本：**0.8.48**
 
 这是一个独立运行的 Bittensor 地址关联分析工具。输入公开地址后，工具可以调用 Taostats 历史转账索引，或查询本地 SQLite 索引，查找最多十级（默认三级）的普通 TAO 转账和子网 stake 转移关系。工具会把关联地址与人工维护的已知地址库匹配，并支持交易所、验证者和备注管理。
 
@@ -118,6 +118,10 @@
 77. **修 hotkey-swap 假关联 + 远程访问启动按钮（0.8.45）**：用户核查一条「一级强关联」后发现两地址在关联明细检索里根本没有直接往来，追问是不是漏洞。复核 Taostats 原始返回确认：子网 stake 事件里「同一个 coldkey 换 hotkey」也被标成 `is_transfer=true`，`transfer_address` 装的是 hotkey 而不是对手方 coldkey、金额为 0，旧逻辑把它当跨钱包转账，凭空造出 0 元直连边并把地址误判成 1 级。`app/crawl.py` 现在按 `hotkey-swap-` id、0 金额、对手方等于 hotkey 三道拦截跳过，配 3 条回归测试。同时修好公网隧道网址获取（`tunnel.ps1` 改成先建隧道拿网址落盘、再启服务，启动前清掉失效旧网址），并在主机首屏「远程访问」面板加「启动远程访问」「启动公网隧道」两个按钮：确认后由独立启动器重启服务，进度写 `logs/remote-launch.json`，前端轮询状态、成功自动刷新、失败给日志路径兜底。历史归档里已有的 0 元假边不自动改写，重查即可。
 
 78. **修远程访问按钮一直转圈（0.8.46）**：用户点「启动远程访问」后页面长期无反应。复盘发现服务其实已恢复，但启动器没能把 `ready` 写回状态文件，前端把状态文件当唯一判据就一直轮询、按钮一直禁用。现在 `GET /api/access/status` 返回 `server_started_at`，前端对比这个值判断服务是否真的重启过；`read_state()` 对超过 90 秒仍停在 `launching` 的状态自动判 `error`；启动器改用 `WaitForExit(超时)` 取代 `Start-Process -Wait`（后者会等待常驻服务在内的整个进程树而永远不返回），加 `CREATE_BREAKAWAY_FROM_JOB` 避免被连带终止，并新增 `logs/remote-launch.log` 逐步日志。
+
+79. **启动器改用 Python，彻底修好公网模式按钮（0.8.47）**：用户点「启动公网模式」仍无反应，日志显示 `launch_mode.ps1` 连第一行都没执行——服务用 `DETACHED_PROCESS` spawn 的 PowerShell 在无控制台环境下直接退出。启动器整体换成 `launch_mode.py`，由服务自己的 `sys.executable` 启动（`CREATE_NO_WINDOW + CREATE_BREAKAWAY_FROM_JOB`），`Popen.wait(timeout)` 只等脚本本身；`start_launch()` 在 spawn 后半秒检查进程存活，立即退出就马上报错而非等 90 秒。旧 `launch_mode.ps1` 删除，公网隧道建网址逻辑一并移植。
+
+80. **按钮不再重启服务（0.8.48）**：0.8.45–0.8.47 三次修复都卡在同一个死结——切换模式要重启服务，而启动器是服务 spawn 的子进程，服务一退出启动器就被连带清理。这一版取消重启：`remote_launch.start_launch()` 运行时改 `WALLET_LINK_REMOTE` / `WALLET_LINK_TRUST_PROXY` 打开口令与隧道判定，公网入口只是额外拉起一个 cloudflared 进程拿网址，服务全程不动、页面不断开。`run.py` 把实际绑定地址写进 `WALLET_LINK_BIND_HOST`，若服务只绑回环，按钮会明确提示先用「启动-远程访问.cmd」启动一次（一次性前提）。删掉 `launch_mode.py` / `launch_mode.ps1` 与服务自杀定时器；顺带修掉删日志文件被 safe-delete 钩子拦下的问题（改成写空）。测试重写为 17 条。
 
 ## 快速开始
 **普通用户（推荐，无需命令行）**

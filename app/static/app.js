@@ -779,9 +779,10 @@ async function pollLaunchResult(deadline, baseline) {
 
 async function launchAccessMode(mode) {
   const name = mode === "tunnel" ? "公网隧道" : "远程访问";
+  // 0.8.48 起按钮不再重启服务，只是运行时打开远程开关 / 拉起隧道进程。
   const tip = mode === "tunnel"
-    ? "将重启服务并重建公网隧道，页面会短暂断开约 10–60 秒，网址会重新分配。继续吗？"
-    : "将重启服务以开放局域网 / Tailscale 访问，页面会短暂断开约 10–30 秒。继续吗？";
+    ? "将开启远程访问并建立公网隧道，约 10–60 秒拿到新网址；服务不会重启、页面不会断开。继续吗？"
+    : "将开启远程访问（局域网 / Tailscale），服务不会重启、页面不会断开。继续吗？";
   if (!window.confirm(tip)) return;
   // 先记下当前服务的启动时间，重启后用它判断「服务确实换过了」。
   let baseline = null;
@@ -802,7 +803,10 @@ async function launchAccessMode(mode) {
   }
   toast(`正在启动${name}…`);
   renderLaunchStatus(
-    { state: "launching", message: "正在切换访问模式，页面会短暂断开…" },
+    {
+      state: "launching",
+      message: mode === "tunnel" ? "正在建立公网隧道…" : "正在开启远程访问…",
+    },
     null
   );
   if (launchPolling) clearTimeout(launchPolling);
