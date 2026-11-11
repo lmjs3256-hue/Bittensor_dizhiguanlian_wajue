@@ -21,6 +21,7 @@ from . import access as access_mod
 from . import diagnostics
 from . import license as license_mod
 from . import netinfo
+from . import remote_launch
 from . import settings_store
 from . import taostats
 from .config import ROOT_DIR, database_path, settings
@@ -637,6 +638,30 @@ class AccessLoginInput(BaseModel):
     token: str = Field(min_length=4, max_length=64)
 
 
+class AccessLaunchInput(BaseModel):
+    """主机本机切换访问模式；只允许 remote / tunnel 两种。"""
+
+    mode: str = Field(pattern="^(remote|tunnel)$")
+
+
+@app.post("/api/access/launch")
+def access_launch(payload: AccessLaunchInput, request: Request):
+    """远程访问组件上的两个按钮：触发一次模式重启。
+
+    只认主机本机发起的请求。真正的重启由独立进程完成，所以这里立刻返回，
+    前端改轮询 ``/api/access/status`` 里的 ``launch`` 字段看结果。
+    """
+
+    if not access_mod.is_local(request):
+        raise HTTPException(403, "只有主机本机可以切换访问模式")
+    try:
+        return remote_launch.start_launch(payload.mode)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @app.get("/api/access/status")
 def access_status(request: Request):
     """前端据此判断要不要弹口令框、要不要显示「远程访问」标识。
@@ -650,6 +675,9 @@ def access_status(request: Request):
     payload = access_mod.status(request)
     if payload.get("local"):
         payload["endpoints"] = _access_endpoints(_request_port(request))
+        # 启动按钮的最近一次结果（idle / launching / ready / error）。
+        # 服务重启期间接口短暂不可用，新服务起来后靠它把结果补回页面。
+        payload["launch"] = remote_launch.read_state()
     return payload
 
 

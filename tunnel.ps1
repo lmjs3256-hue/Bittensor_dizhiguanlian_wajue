@@ -62,29 +62,12 @@ if (-not (Test-Path -LiteralPath $Cloudflared)) {
 $cfVersion = (& $Cloudflared --version 2>&1 | Select-Object -First 1)
 Write-Host "隧道程序：$cfVersion"
 
-# -- 2. 启动服务（隧道模式） -------------------------------------------------
-Write-Host "正在启动服务（公网隧道模式）…"
-# 必须开子进程调用：start.ps1 里有多处 exit，直接 & 调用会把本窗口一起结束。
-$startScript = Join-Path $Root 'start.ps1'
-$launcher = Start-Process -FilePath 'powershell.exe' `
-    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $startScript, '-Port', $Port, '-Tunnel') `
-    -WorkingDirectory $Root -NoNewWindow -Wait -PassThru
-if ($launcher.ExitCode -ne 0) {
-    Write-Host "[!] 服务启动失败（退出码 $($launcher.ExitCode)），详见 $ErrLog" -ForegroundColor Red
-    Read-Host "按回车键关闭"
-    exit 1
-}
-
-try {
-    $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 5
-    if ($health.service -ne 'bittensor-wallet-link-intel') { throw '服务标识不匹配' }
-} catch {
-    Write-Host "[!] 服务没有就绪，详见 $ErrLog" -ForegroundColor Red
-    Read-Host "按回车键关闭"
-    exit 1
-}
-
-# -- 3. 建立隧道 -------------------------------------------------------------
+# -- 2. 建立隧道 -------------------------------------------------------------
+# 顺序不能反：run.py 启动时会读 logs/cloudflared.url 打印公网入口，
+# 先启服务、后建隧道的话，服务只能看到上一次留下的旧网址（或压根没有）。
+# 所以这里先清掉旧网址和旧隧道进程，拿到新网址并落盘，最后才启动服务。
+Remove-Item -LiteralPath $UrlFile -Force -ErrorAction SilentlyContinue
+Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 function Start-Tunnel {
     param([string[]]$Extra)
     $arguments = @('tunnel', '--url', "http://127.0.0.1:$Port", '--no-autoupdate') + $Extra
@@ -157,6 +140,29 @@ if (-not $url) {
 }
 
 Set-Content -LiteralPath $UrlFile -Value $url -Encoding ascii
+
+# -- 3. 启动服务（隧道模式） -------------------------------------------------
+# 网址已经落盘，run.py 启动时就能把公网入口写进 stderr 日志和启动面板。
+Write-Host "正在启动服务（公网隧道模式）…"
+# 必须开子进程调用：start.ps1 里有多处 exit，直接 & 调用会把本窗口一起结束。
+$startScript = Join-Path $Root 'start.ps1'
+$launcher = Start-Process -FilePath 'powershell.exe' `
+    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $startScript, '-Port', $Port, '-Tunnel') `
+    -WorkingDirectory $Root -NoNewWindow -Wait -PassThru
+if ($launcher.ExitCode -ne 0) {
+    Write-Host "[!] 服务启动失败（退出码 $($launcher.ExitCode)），详见 $ErrLog" -ForegroundColor Red
+    Read-Host "按回车键关闭"
+    exit 1
+}
+
+try {
+    $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 5
+    if ($health.service -ne 'bittensor-wallet-link-intel') { throw '服务标识不匹配' }
+} catch {
+    Write-Host "[!] 服务没有就绪，详见 $ErrLog" -ForegroundColor Red
+    Read-Host "按回车键关闭"
+    exit 1
+}
 
 # 口令从服务日志里回显，免得为了一个口令去翻文件。
 $token = ''

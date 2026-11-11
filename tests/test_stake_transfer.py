@@ -298,3 +298,123 @@ def test_taostats_stake_legs_join_the_relation_graph(monkeypatch):
             assert result["api_requests"] >= 1
         finally:
             database.engine.dispose()
+
+
+def _run_relations_with_stake_legs(monkeypatch, legs):
+    """用给定的 Taostats stake 腿跑一次 relations，省去三份重复的夹具。"""
+
+    monkeypatch.setattr(
+        service_module, "query_account_balances", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        service_module,
+        "get_transfer_page",
+        lambda address, page: TransferPage([], None),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "get_stake_transfer_page",
+        lambda address, page: TransferPage(legs if address == A else [], None),
+    )
+    with TemporaryDirectory() as directory:
+        database = Database(Path(directory) / "swap.db")
+        try:
+            database.initialize()
+            return LinkService(database, "wss://example.invalid").relations(
+                seed=A,
+                depth=3,
+                min_edge_tao="1",
+                min_total_tao="1",
+                data_source="taostats",
+            )
+        finally:
+            database.engine.dispose()
+
+
+def test_hotkey_swap_legs_never_create_a_relation(monkeypatch):
+    """0.8.45：Taostats 把「同一 coldkey 下两个 hotkey 互换」也标成 is_transfer。
+
+    两条腿的 transfer_address / hotkey 互为对方、amount 都是 0，本质是 A 自己
+    换验证密钥，不是 A 与 B 之间的资金往来。以前会把 B 误判成一级关联，
+    现在必须一条边都不进关联图。
+    """
+
+    legs = [
+        {
+            "id": f"hotkey-swap-8181682-44-{B}-{HOTKEY}-{A}-in",
+            "coldkey": A,
+            "action": "stake",
+            "amount": "0",
+            "block_number": 8181682,
+            "is_transfer": True,
+            "netuid": 44,
+            "transfer_address": {"ss58": B},
+            "extrinsic_id": "8181682-0015",
+            "hotkey": HOTKEY,
+            "timestamp": "2026-05-14T11:33:12Z",
+        },
+        {
+            "id": f"hotkey-swap-8181682-44-{B}-{HOTKEY}-{A}-out",
+            "coldkey": A,
+            "action": "unstake",
+            "amount": "0",
+            "block_number": 8181682,
+            "is_transfer": True,
+            "netuid": 44,
+            "transfer_address": {"ss58": HOTKEY},
+            "extrinsic_id": "8181682-0015",
+            "hotkey": B,
+            "timestamp": "2026-05-14T11:33:12Z",
+        },
+    ]
+    result = _run_relations_with_stake_legs(monkeypatch, legs)
+    assert result["stake_transfer_count"] == 0
+    assert all(edge["edge_type"] != "stake_transfer" for edge in result["edges"])
+    assert all(row["address"] != B for row in result["related"])
+    assert all(row["address"] != HOTKEY for row in result["related"])
+
+
+def test_zero_amount_stake_leg_is_dropped_without_swap_id(monkeypatch):
+    """兜底：即使服务端换了 id 命名，0 金额事件也不该变成 0 元直连边。"""
+
+    legs = [
+        {
+            "id": "some-other-id",
+            "coldkey": A,
+            "action": "unstake",
+            "amount": "0",
+            "block_number": 8181682,
+            "is_transfer": True,
+            "netuid": 44,
+            "transfer_address": {"ss58": B},
+            "extrinsic_id": "8181682-0015",
+            "hotkey": HOTKEY,
+            "timestamp": "2026-05-14T11:33:12Z",
+        }
+    ]
+    result = _run_relations_with_stake_legs(monkeypatch, legs)
+    assert result["stake_transfer_count"] == 0
+    assert all(row["address"] != B for row in result["related"])
+
+
+def test_stake_leg_with_hotkey_as_counterparty_is_dropped(monkeypatch):
+    """兜底：transfer_address 与 hotkey 相同说明装的是验证密钥，不是 coldkey。"""
+
+    legs = [
+        {
+            "id": "leg-1",
+            "coldkey": A,
+            "action": "unstake",
+            "amount": "3000000000",
+            "block_number": 8181682,
+            "is_transfer": True,
+            "netuid": 44,
+            "transfer_address": {"ss58": HOTKEY},
+            "extrinsic_id": "8181682-0016",
+            "hotkey": HOTKEY,
+            "timestamp": "2026-05-14T11:33:12Z",
+        }
+    ]
+    result = _run_relations_with_stake_legs(monkeypatch, legs)
+    assert result["stake_transfer_count"] == 0
+    assert all(row["address"] != HOTKEY for row in result["related"])

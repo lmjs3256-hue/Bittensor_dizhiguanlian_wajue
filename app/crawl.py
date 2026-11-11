@@ -369,6 +369,14 @@ class TaostatsCrawl:
             for item in stake_page.rows:
                 if str(item.get("is_transfer") or "").lower() not in {"true", "1"}:
                     continue
+                # Taostats 把「同一个 coldkey 下两个 hotkey 互换」也标成
+                # is_transfer=true，id 形如
+                # hotkey-swap-<block>-<netuid>-<old>-<new>-<coldkey>-in/out。
+                # 它的 transfer_address 是 hotkey 而不是对手方 coldkey，amount 为 0，
+                # 两条腿的 transfer_address / hotkey 恰好互为对方。当成跨钱包转账
+                # 会在关联图里凭空造出一条 0 元直连边，把地址误判成一级关联。
+                if str(item.get("id") or "").startswith("hotkey-swap-"):
+                    continue
                 try:
                     coldkey = str(item["coldkey"]).strip()
                     block_number = int(item["block_number"])
@@ -381,7 +389,16 @@ class TaostatsCrawl:
                 except (KeyError, TypeError, ValueError, InvalidOperation):
                     skipped_stake_rows += 1
                     continue
+                # 0 金额事件没有任何资金往来，不能成为关联边；也不能靠
+                # 「第 1 跳不设金额门槛」这条规则漏进关联图。
+                if amount_rao <= 0:
+                    continue
                 counterparty = stake_counterparty(item)
+                hotkey = str(item.get("hotkey") or "").strip()
+                # 对手方就是验证密钥本身时，同样说明 transfer_address 装的是
+                # hotkey 而非另一个 coldkey，这条腿必须丢弃。
+                if counterparty and hotkey and counterparty == hotkey:
+                    continue
                 action = str(item.get("action") or "").lower()
                 if not coldkey or not counterparty or action not in {"stake", "unstake"}:
                     skipped_stake_rows += 1
@@ -408,7 +425,7 @@ class TaostatsCrawl:
                     timestamp=str(item.get("timestamp") or ""),
                     edge_type="stake_transfer",
                     netuid=netuid,
-                    hotkey=str(item.get("hotkey") or ""),
+                    hotkey=hotkey,
                 )
                 if current_depth > 0 and amount_tao < state.policy.min_edge_tao:
                     continue

@@ -1005,6 +1005,15 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 .access-row-token .access-value { color:var(--warn); border-color:var(--warn); font-weight:700; letter-spacing:.04em; }
 .access-note { margin:12px 0 0; font-size:11.5px; color:var(--muted); line-height:1.6; max-width:640px; }
 
+/* 0.8.45：远程访问组件的两个启动按钮。整块 hero 只在本机显示，
+   按钮与状态同行，窄屏自动换行；切换中禁用，避免重复触发重启。 */
+.remote-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px; }
+.remote-actions .secondary { font-size:12px; padding:7px 14px; white-space:nowrap; }
+.remote-actions .secondary:disabled { opacity:.55; cursor:not-allowed; }
+.launch-status { flex:1 1 220px; font-size:11.5px; color:var(--muted); line-height:1.6; }
+.launch-status.is-ready { color:var(--accent); }
+.launch-status.is-error { color:var(--danger); }
+
 @media (max-width:950px) {
   /* 窄屏：hero 变成纵向，远程面板占满整宽 */
   .hero-remote { width:100%; }

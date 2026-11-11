@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.44">
+  <link rel="stylesheet" href="/static/styles.css?v=0.8.45">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -105,6 +105,11 @@
               <div class="access-row"><span class="access-kind">本机</span><code class="access-value" id="access-local">http://127.0.0.1:8766</code><button class="access-copy" type="button" data-copy-target="access-local" title="复制本机地址">复制</button></div>
             </div>
             <p class="access-note" id="access-note">远程地址、公网隧道和访问口令会显示在这里（仅主机可见）。</p>
+            <div class="remote-actions" id="remote-actions">
+              <button class="secondary" type="button" id="launch-remote">启动远程访问</button>
+              <button class="secondary" type="button" id="launch-tunnel">启动公网隧道</button>
+              <span class="launch-status" id="launch-status" aria-live="polite"></span>
+            </div>
           </div>
         </div>
       </section>
@@ -312,6 +317,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.44"></script>
+  <script src="/static/app.js?v=0.8.45"></script>
 </body>
 </html>

@@ -1,5 +1,16 @@
 # 变更记录
 
+## 0.8.45 · 修 hotkey-swap 假关联 + 远程访问启动按钮 · 2026-11-11
+
+用户核查一条「一级强关联」时发现两地址在关联明细检索里根本没有直接往来，追问挖掘逻辑是否漏了。复核后确认**是的，这是 bug，不是用户理解错**。
+
+- **根因（已向 Taostats 原始返回核实）**：`/v1/subnets/stake-events` 会把**同一个 coldkey 下两个 hotkey 互换**也标成 `is_transfer=true`，`id` 形如 `hotkey-swap-<block>-<netuid>-<old>-<new>-<coldkey>-in/out`。这类事件两条腿的 `transfer_address` 与 `hotkey` 互为对方、`amount` 为 `0`，本质是自己换验证密钥，不是两个钱包之间的转账。`app/crawl.py` 原来只判 `is_transfer`，再用 `stake_counterparty()` 把 `transfer_address`（合法 SS58 就放行，hotkey 也合法）当成对手方 coldkey，方向还靠 `action` 推断，于是凭空造出两条 0 元直连边，把地址钉成 1 级关联、避开「2 跳降一档」，进而算出「强关联」。
+- **修复**：stake 归一化加三道拦截——`id` 以 `hotkey-swap-` 开头直接跳过、`amount_rao <= 0` 跳过、`transfer_address == hotkey` 跳过。真实跨 coldkey 的 stake 转移不受影响。新增 3 条回归测试（原始双腿形态、无 swap id 的 0 金额兜底、对手方是 hotkey 的兜底）。
+- 影响面：本机 8 个历史归档共 30 条 0 金额 stake 假边、涉及 29 个地址。**历史归档不自动改写**，重查即可拿到干净结果。
+- **公网隧道拿不到网址**：`tunnel.ps1` 原来先启服务、后建隧道，而 `run.py` 启动时只等 6 秒读 `logs/cloudflared.url`，那时网址还没生成，启动面板只能显示「尚未取得」。现在改成先清旧网址与旧 cloudflared 进程、先建隧道拿到网址并落盘、最后启动服务。启动前删旧网址也避免了隧道已停却还显示失效地址。
+- **远程访问组件加两个按钮**：「启动远程访问」「启动公网隧道」集成在主机首屏面板，点击后有确认弹窗（会重启服务、页面短暂断开），后端 `POST /api/access/launch` 只认本机请求，spawn 独立 `launch_mode.ps1` 完成停旧服务 → 建隧道 → 按新模式启动，进度写入 `logs/remote-launch.json`，前端轮询 `/api/access/status` 的 `launch` 字段，成功自动刷新、失败给出日志路径与双击脚本兜底。
+- 新增 `app/remote_launch.py`、`launch_mode.ps1`、`tests/test_remote_launch.py`（13 条测试：模式校验、防重复触发、坏状态文件容错、接口 403/422/200、状态字段、前端与脚本顺序契约）。
+
 ## 0.8.44 · 本地索引流水线加开关 + 独立实时面板 · 2026-11-11
 
 用户要：「本地索引巡检增加个开关，和动态展示，表明本地索引正在跑，有开关随时可以开启关闭。」

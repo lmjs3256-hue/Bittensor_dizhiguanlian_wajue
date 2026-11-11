@@ -1,5 +1,30 @@
 # 验证交付记录
 
+## 0.8.45 验证记录（2026-11-11）
+
+**改动**：修 hotkey-swap 假关联；修公网隧道网址获取；远程访问面板加两个启动按钮。
+
+**问题复现与定性（本机归档 #154 + Taostats 原始返回）**
+
+- 归档 #154：起始地址 `5DiBbT6U9…`、`depth=3`、5 轮、148 请求、73 个关联；`5CVS9d1Nc…` 被列为 1 级「强」关联（86 分），但路径明细只有 1 条 0 TAO 的 stake 转移。
+- 直接调 `/v1/subnets/stake-events?coldkey=<起始地址>&is_transfer=true` 拿到 2 行，`id` 均为 `hotkey-swap-8181682-44-…-in/out`；两行 `coldkey` 都是起始地址，`transfer_address` 与 `hotkey` 互为对方，`amount='0'`。其中一个是地址库里标注为「预置验证者 / VALIDATOR」的 hotkey。→ 同一 coldkey 换 hotkey，不是跨钱包转账。
+- 本地 `transfers` 表覆盖区块 9,430,401–9,478,439，事件在 8,181,682，**早于本地索引起点约 125 万块**；本地查不到属覆盖缺口，不能当作事件不存在的证据。
+- 关联明细检索 `app/interlink.py` 只查普通转账分页与本地表，不读 stake-events，因此它给出「无直接关联」是正确结论。
+
+**修复与验证**
+
+| 项 | 结果 |
+| --- | --- |
+| `tests/test_stake_transfer.py` | 11 passed（新增 3 条：hotkey-swap 双腿、0 金额兜底、对手方等于 hotkey 兜底） |
+| `tests/test_remote_launch.py` | 13 passed（模式校验、防重复、坏状态文件、接口 403/422/200、状态字段、前端与脚本顺序契约） |
+| `tests/test_access_control.py` + `test_tunnel_access.py` | 45 passed，无回归 |
+| 全量 | 见本文件末尾提交记录 |
+| `node --check app/static/app.js` | 通过 |
+
+**污染面统计**：8 个历史归档（60/73/76/131/138/146/151/154）共 30 条 0 金额 stake 假边、涉及 29 个地址；每个 `extrinsic_id` 固定生成 2 条假边。历史归档不自动改写，重查即可。
+
+**网址顺序**：`tunnel.ps1` 现在先 `Remove-Item` 旧 `cloudflared.url`、停旧 cloudflared、`Wait-TunnelUrl` 拿新网址并 `Set-Content`，最后才 `start.ps1 -Tunnel`。测试 `test_tunnel_script_writes_url_before_starting_service` 锁住「写网址在启服务之前」。
+
 ## 0.8.5 验证记录（2026-11-07）
 
 **改动**：路径明细里的地址从「头6尾6」改成「头4尾4」，与关联结果主表、查询记录统一一套截断规则。

@@ -688,8 +688,106 @@ function renderAccessEndpoints(status) {
   if (note) {
     note.textContent = endpoints.remote
       ? "上面任意一条都能打开。Tailscale 地址固定、只在自己的私有网络内可达，日常优先用它。"
-      : "当前只监听本机，外部设备连不上。要开放远程：双击「启动-远程访问.cmd」。";
+      : "当前只监听本机，外部设备连不上。要开放远程，点下面的「启动远程访问」。";
   }
+  renderLaunchStatus(status && status.launch, endpoints);
+}
+
+/* 远程访问组件上的两个启动按钮（0.8.45）。
+   切换模式必须重启服务，后端 spawn 独立启动器并把进度写进
+   logs/remote-launch.json；页面轮询 /api/access/status 直到不再是 launching。 */
+let launchPolling = null;
+
+function setLaunchButtonsDisabled(disabled) {
+  ["#launch-remote", "#launch-tunnel"].forEach((selector) => {
+    const button = $(selector);
+    if (button) button.disabled = disabled;
+  });
+}
+
+function renderLaunchStatus(launch, endpoints) {
+  const label = $("#launch-status");
+  if (!label) return;
+  const busy = !!(launch && launch.state === "launching");
+  setLaunchButtonsDisabled(busy);
+  label.classList.remove("is-error", "is-ready");
+  if (busy) {
+    label.textContent = launch.message || "正在切换访问模式…";
+    return;
+  }
+  if (launch && launch.state === "error") {
+    label.textContent = launch.message || "启动失败";
+    label.classList.add("is-error");
+    return;
+  }
+  if (launch && launch.state === "ready") {
+    label.textContent = `上次启动：${launch.message || "已就绪"}`;
+    label.classList.add("is-ready");
+    return;
+  }
+  const hasTunnel = ((endpoints && endpoints.items) || []).some(
+    (item) => item.kind === "公网隧道"
+  );
+  label.textContent = hasTunnel
+    ? "公网隧道已就绪；网址每次重启都会换。"
+    : endpoints && endpoints.remote
+      ? "当前已开放远程访问；要开公网入口点「启动公网隧道」。"
+      : "当前仅本机可访问；点上面的按钮切换。";
+}
+
+async function pollLaunchResult(deadline) {
+  if (Date.now() > deadline) {
+    const label = $("#launch-status");
+    if (label) {
+      label.textContent = "等待超时：请查看 logs/wallet-link.stderr.log，或双击对应的启动脚本。";
+      label.classList.remove("is-ready");
+      label.classList.add("is-error");
+    }
+    setLaunchButtonsDisabled(false);
+    return;
+  }
+  try {
+    const status = await api("/api/access/status");
+    const launch = status && status.launch;
+    renderLaunchStatus(launch, status && status.endpoints);
+    if (launch && launch.state !== "launching") {
+      setLaunchButtonsDisabled(false);
+      if (launch.state === "ready") {
+        toast("模式已切换，页面即将刷新");
+        setTimeout(() => location.reload(), 1200);
+      } else if (launch.state === "error") {
+        toast("启动失败，请看面板里的提示", true);
+      }
+      return;
+    }
+  } catch (_) {
+    // 服务重启期间接口会短暂不可用，忽略这次，继续等下一轮。
+  }
+  launchPolling = setTimeout(() => pollLaunchResult(deadline), 2000);
+}
+
+async function launchAccessMode(mode) {
+  const name = mode === "tunnel" ? "公网隧道" : "远程访问";
+  const tip = mode === "tunnel"
+    ? "将重启服务并重建公网隧道，页面会短暂断开约 10–60 秒，网址会重新分配。继续吗？"
+    : "将重启服务以开放局域网 / Tailscale 访问，页面会短暂断开约 10–30 秒。继续吗？";
+  if (!window.confirm(tip)) return;
+  try {
+    await api("/api/access/launch", {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    });
+  } catch (error) {
+    toast(`启动失败：${error.message}`, true);
+    return;
+  }
+  toast(`正在启动${name}…`);
+  renderLaunchStatus(
+    { state: "launching", message: "正在切换访问模式，页面会短暂断开…" },
+    null
+  );
+  if (launchPolling) clearTimeout(launchPolling);
+  pollLaunchResult(Date.now() + 120000);
 }
 
 async function submitAccessToken() {
@@ -5945,6 +6043,14 @@ $("#seed").addEventListener("keydown", (event) => { if (event.key === "Enter") r
 $("#license-activate").addEventListener("click", activateLicense);
 const accessLoginButton = $("#access-login");
 if (accessLoginButton) accessLoginButton.addEventListener("click", submitAccessToken);
+const launchRemoteButton = $("#launch-remote");
+if (launchRemoteButton) {
+  launchRemoteButton.addEventListener("click", () => launchAccessMode("remote"));
+}
+const launchTunnelButton = $("#launch-tunnel");
+if (launchTunnelButton) {
+  launchTunnelButton.addEventListener("click", () => launchAccessMode("tunnel"));
+}
 const accessTokenInput = $("#access-token");
 if (accessTokenInput) {
   accessTokenInput.addEventListener("keydown", (event) => {

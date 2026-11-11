@@ -1033,3 +1033,57 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u al
 ```
 
 **pytest 退出码 1 常常是 safe-delete 钩子拦截临时目录，不是测试失败**——以 JUnit 里 `failures=0` 为准。
+
+## 62. 2026-11-11 0.8.45 交接：hotkey-swap 假关联、隧道网址顺序、远程访问按钮
+
+### 一、假关联是怎么来的（**改 stake 事件解析前必读**）
+
+- 用户发现归档 #154 里 `5CVS9d1Nc…` 被判成起始地址的 1 级「强」关联，但关联明细检索说两地址没有直接往来。**用户是对的**。
+- 直接调 Taostats `/v1/subnets/stake-events?coldkey=…&is_transfer=true` 拿到原始 2 行，`id` 为
+  `hotkey-swap-<block>-<netuid>-<old>-<new>-<coldkey>-in/out`：两行 `coldkey` 都是查询地址，
+  `transfer_address` 与 `hotkey` 互为对方、`amount='0'`。这是**同一 coldkey 下两个 hotkey 互换**，
+  `transfer_address` 装的是 hotkey 不是对手方 coldkey，没有 TAO 转账。
+- `app/crawl.py` 旧逻辑只判 `is_transfer`，`stake_counterparty()` 对 `transfer_address` 只校验
+  `is_valid_ss58`（hotkey 也合法），方向按 `action` 推断（代码注释自己承认「不是已验证契约」），
+  于是造出两条 0 元直连边。第 1 跳不设金额门槛 → 假边保留 → depth=1 → 避开「≥2 跳降一档」→ 强关联。
+- **三道拦截**：`id` 前缀 `hotkey-swap-` / `amount_rao <= 0` / `transfer_address == hotkey`。
+  三道都要留：只认 id 前缀，服务端换命名就漏；只认 0 金额，非零的 hotkey 腿还会混进来。
+- **别用「本地索引里没有这个区块」否定事件**：本地 `transfers` 只覆盖 9,430,401 起，
+  8,181,682 这类老区块本来就不在覆盖范围。这是上一轮误判的来源。
+- **两套功能的口径差异**：`app/interlink.py`（关联明细检索）只查普通 transfers 分页 + 本地表，
+  根本不读 stake-events，所以它的结论才是「按资金往来」的正确口径。以后两边结论打架，
+  先查各自的数据源，别急着说用户看错。
+- `8181682-0015` 是 Taostats 的 `extrinsic_id`，不是交易哈希，也不是程序合成键。
+- 历史污染：8 个归档 30 条 0 金额假边、29 个地址；**不自动改写已归档 payload**，重查即干净。
+
+### 二、公网隧道网址为什么「尚未取得」
+
+- `tunnel.ps1` 旧顺序：先 `start.ps1 -Tunnel` 启服务 → 再建 cloudflared 隧道 → 最后写 `logs/cloudflared.url`。
+  但 `run.py` 启动时只读一次 url 文件（等 6 秒），那时文件还没有新网址，启动面板只能印「尚未取得」。
+- 新顺序：**删旧 url 文件 + 停旧 cloudflared → 建隧道 `Wait-TunnelUrl` → 落盘 → 最后启服务**。
+  删旧网址同样重要：`netinfo.read_tunnel_url()` 虽会检查 cloudflared 进程，但隧道崩了以后残留文件仍会误导。
+- 测试 `test_tunnel_script_writes_url_before_starting_service` 用文本顺序锁住这条，别再调换回去。
+
+### 三、按钮与启动器（**改远程访问前必读**）
+
+- uvicorn 的 host 在启动时定，服务**不能运行时改监听地址**，所以「切换模式」必然要重启服务。
+  按钮不是摆设：点了会重启，页面短暂断开，必须先 `window.confirm`。
+- 链路：`POST /api/access/launch`（只认 `access_mod.is_local()`，远程 403）→ `app/remote_launch.start_launch()`
+  用 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` spawn `launch_mode.ps1` → 立刻返回；
+  启动器先 `Start-Sleep 3` 等 HTTP 响应发完 → `stop.ps1` → （tunnel 时建隧道）→ `start.ps1 -Remote/-Tunnel`
+  → 把结果写 `logs/remote-launch.json`；前端每 2 秒轮询 `/api/access/status` 的 `launch` 字段，
+  `ready` 自动刷新、`error` 给日志路径、120 秒超时给双击脚本兜底。
+- `launch_mode.ps1` 必须 **UTF-8 BOM**（中文 + PS 5.1）；写状态文件必须**无 BOM**
+  （用 `[System.IO.File]::WriteAllText` + `UTF8Encoding($false)`），否则 Python `json.loads` 会被 `\ufeff` 卡住。
+- `start.ps1` / `stop.ps1` 内部有 `exit`，**必须用子进程 `Start-Process -Wait` 调用**，直接 `&` 会把启动器自己结束掉。
+- 按钮只在主机本机出现（整块 `#hero-panel` 已由 `applyLocalOnlyVisibility()` 控制），后端也有 403 兜底。
+- 工具会话里起的服务不持久（多次验证），让按钮 spawn 的启动器去跑才是正路；别再试图由 agent 后台拉长期服务。
+
+### 四、本次交付
+
+- 新增 `app/remote_launch.py`、`launch_mode.ps1`、`tests/test_remote_launch.py`（13 条）；
+  `app/crawl.py` 三道拦截 + `tests/test_stake_transfer.py` 3 条；`tunnel.ps1` 顺序；
+  `app/main.py` 接口与 status 字段；`app/static/app.js` 按钮/轮询；`app/templates/index.html` 按钮；
+  `app/static/styles.css` 样式。
+- 版本 0.8.45，两处 `?v=` 同步；CHANGELOG / README 第 77 条 / 使用说明 md+html /
+  VERIFICATION 0.8.45 节 / 本条均已更新。
