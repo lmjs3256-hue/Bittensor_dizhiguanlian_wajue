@@ -1198,3 +1198,29 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u al
 - 测试坑：`test_watch.py` 的用例全靠「先 sweep 一次定游标、再塞 transfers、再
   sweep」这个节奏；首轮 sweep 会把游标定在 `max(block_number)`，先塞数据再
   sweep 等于跳过全部数据（`test_first_sweep_only_sets_cursor` 说明这一点）。
+
+## 68. 2026-11-11 0.9.1 交接：历史结果的库归属要跟着库刷新（**改剪枝/校正前必读**）
+
+- **问题不是移库，是快照**。`decide_public_address()`（以及交易所、验证者）早就会
+  `move_out_of_book()` + `prune_empty_book()`，库里 `book=''`、`label='公共地址'`、
+  `categories=["大V","PUBLIC"]`。用户看到的「还在 const」来自 `relation_archives.payload`
+  ——剪枝 `prune_archive_payload()` 只删终点下游，**保留的条目原封不动带着生成当时的
+  `library_label / library_categories / address_role`**。而前端 `publicDecisionControl()`
+  判断「是不是公共地址」看的是 `library_categories` 里有没有 `PUBLIC`，所以它还显示
+  「标为公共地址」按钮。
+- **修法**：`refresh_archive_library_fields(payload, entries)`，在 `reconcile_history()`
+  剪枝之后调用，按当前库重写 `match / library_label / library_category / library_note /
+  library_source / library_categories / exchange_confirmed / exchange_rejected`。
+  身份文案只在库能给出结论时覆盖（复用 `relation._role_for_address`），**不要**无条件
+  覆盖 `address_role`——那会把「疑似中转钱包（交易所关联）」这类转账事实判断抹掉。
+- **落库条件放宽了**：原来是 `if not stats["related_removed"]: continue`，现在
+  `if not stats["related_removed"] and not refreshed: continue`。只刷不删的记录也必须写回，
+  否则用户的场景（标公共地址但没有可剪下游）永远不会生效。
+- 统计字段：`archives.library_refreshed`、`details[].refreshed`。改口径时记得同步
+  `tests/test_archive_library_refresh.py`。
+- **`LibraryEntry.exchange_confirmed` 默认是 `True`**（注释写着「直接构造的条目代表
+  已整理好的库行」）。`_library_entries()` 是显式传 `bool(row.exchange_confirmed)` 的，
+  但手写 `LibraryEntry(...)` 做测试/工具时必须自己传 False，否则会把普通地址刷成
+  「已确认交易所」。
+- 真实库校正过一次（157 归档 / 82 条变 / 1859 条刷新），备份在
+  `data/wallet_link.before-0.9.1-20261111-2242.db`（215MB，确认无用后可删）。

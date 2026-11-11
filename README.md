@@ -1,6 +1,6 @@
 # Bittensor 地址关联挖掘工具
 
-版本：**0.9.0**
+版本：**0.9.1**
 
 这是一个独立运行的 Bittensor 地址关联分析工具。输入公开地址后，工具可以调用 Taostats 历史转账索引，或查询本地 SQLite 索引，查找最多十级（默认三级）的普通 TAO 转账和子网 stake 转移关系。工具会把关联地址与人工维护的已知地址库匹配，并支持交易所、验证者和备注管理。
 
@@ -126,6 +126,8 @@
 81. **本地索引流水线看得见在动（0.8.49）**：用户反馈地址库页的流水线面板完全静止，没法判断有没有在工作。原因是流水线 30 秒一轮、单轮常常不到 1 秒，而前端 5 秒才轮询一次，`running` 几乎抓不到；追上进度后累计数字也不再涨，整块面板就死住。现在每次 tick 都记心跳（`last_tick_at` / `tick_count` / `last_duration_ms` / `last_scanned` / `heartbeat_seconds_ago` / `next_tick_in_seconds` / `tick_seconds`），前端轮询改 3 秒，面板加「距下一轮 Ns」本地倒计时（每秒推进，不等接口）、本轮进度条、心跳行「已跑 N 轮 · 最近一轮 X 秒前 · 本轮扫描 M 笔 / D ms」；抓到 `running` 后至少显示 2.5 秒，空闲时轨道仍有流动感。关掉或切走页面时本地定时器会停。
 
 82. **删掉逐地址 API 巡检，自动入库全走本地索引（0.9.0）**：用户要求「巡检的 API 调用模块可以取消，地址巡检全部有本地索引」「不用预留 30 次额度给巡检，全额给扫描」。`WatchService` 里 `run/tick/_check_address/next_targets/coverage/local_window/set_pause` 等整条链路、`jobs.py` 的让路逻辑（`manual_busy`）、`POST /api/watch/run`、前端 9 个旧控件与进度窗口全部删除，配置从 10 项降到 3 项（`threshold_tao` / `auto_import` / `sweep_enabled`）。`taostats_request_budget()` 去掉 `min(..., 30)` 上限，每分钟额度全给主动扫描。顺带补回一个被连带删掉的写入：库对往来统计 `BookPairStat` 原来只有 API 巡检会写，现在由流水线在处理「两边都在库」的转账时自己记，关联排序的同档加分不会失效。全量 623 passed。
+
+83. **历史结果跟着库走，标了公共地址就不再显示旧库名（0.9.1）**：用户反馈「地址已经入库到 const，查询另一个地址发现关联的就是这些公共地址，标记为公共地址时应该同时把 const 库移除」「标记公共地址，自动添加进公共地址库，移除其他所有库，剪除所有下游关联」。地址库侧其实早就移了（`book` 清空、`label` 改成「公共地址」），问题在**历史结果快照不跟着变**：剪枝 `prune_archive_payload()` 只删终点下游，留下来的条目原封不动带着生成当时的 `library_label` / `library_categories` / `address_role`，于是结果页上那一行仍显示「const」、仍挂着「标为公共地址」按钮。现在 `reconcile_history()` 剪完再跑一遍 `refresh_archive_library_fields()`，按当前库重写 `match / library_label / library_category / library_note / library_source / library_categories / exchange_confirmed / exchange_rejected`，并在库能给出结论时刷新身份文案（普通地址的「疑似中转钱包」这类转账事实判断不被覆盖）；地址已不在库里的，旧库名清空、`match` 置假。**只有库归属变了、没有可剪下游时也会落库**（原来的落库条件是「必须删过条目」）。新增 `tests/test_archive_library_refresh.py` 5 条，全量 628 passed。
 
 ## 快速开始
 **普通用户（推荐，无需命令行）**

@@ -46,6 +46,9 @@ from . import settings_store
 from .builtin_addresses import BUILTIN_SOURCE_PREFIX, builtin_entries, is_builtin_source
 from .inputs import InputError, parse_plain_addresses, read_addresses
 from .relation import (
+    # 私有函数：历史结果刷新库字段时要和实时查询走同一套身份判定，
+    # 另抄一份必然漂移。
+    _role_for_address,
     discover,
     exchange_balance_candidates,
     terminal_addresses,
@@ -818,6 +821,95 @@ def prune_archive_payload(
         },
         "removed_addresses": removed_addresses,
     }
+
+
+ARCHIVE_LIBRARY_FIELDS = (
+    "match",
+    "library_label",
+    "library_category",
+    "library_note",
+    "library_source",
+    "library_categories",
+    "exchange_confirmed",
+    "exchange_rejected",
+)
+
+
+def refresh_archive_library_fields(
+    payload: dict[str, Any],
+    entries: dict[str, LibraryEntry],
+) -> tuple[dict[str, Any], int]:
+    """把历史快照里每条关联地址的「库归属 / 身份」刷成当前地址库的事实。
+
+    ``prune_archive_payload`` 只负责剪掉终点下游的噪音，**它保留的条目原封不动
+    带着生成当时的快照**：``library_label`` 是当时的库名（例如 ``const``），
+    ``library_categories`` 里也没有后来才补上的 ``PUBLIC``。
+
+    于是用户把一个本来在 ``const`` 库里的地址标成公共地址后，库里 ``book`` 已经
+    清空、``label`` 已经变成「公共地址」，可历史结果页上它仍显示「const」、仍挂着
+    「标为公共地址」按钮——看起来就像"标记动作没把它从 const 移出去"。
+
+    这里按当前库重写这些字段（条目是留是删仍由剪枝决定，本函数不动 related 集合），
+    让历史结果与库保持一致。地址已被移出库的，``library_*`` 清空、``match`` 置假，
+    不能留着一个已经不存在的库名。
+
+    返回 (新快照, 被刷新的条目数)。
+    """
+
+    related = payload.get("related")
+    if not isinstance(related, list) or not related:
+        return payload, 0
+    refreshed = 0
+    updated: list[Any] = []
+    for item in related:
+        if not isinstance(item, dict):
+            updated.append(item)
+            continue
+        address = str(item.get("address") or "")
+        entry = entries.get(address)
+        desired: dict[str, Any] = {
+            "match": entry is not None,
+            "library_label": entry.label if entry else "",
+            "library_category": entry.category if entry else "",
+            "library_note": entry.note if entry else "",
+            "library_source": entry.source if entry else "",
+            "library_categories": list(entry.categories) if entry else [],
+            "exchange_confirmed": bool(entry.exchange_confirmed) if entry else False,
+            "exchange_rejected": bool(entry.exchange_rejected) if entry else False,
+        }
+        current = {
+            "match": bool(item.get("match")),
+            "library_label": str(item.get("library_label") or ""),
+            "library_category": str(item.get("library_category") or ""),
+            "library_note": str(item.get("library_note") or ""),
+            "library_source": str(item.get("library_source") or ""),
+            "library_categories": [str(value) for value in (item.get("library_categories") or ())],
+            "exchange_confirmed": bool(item.get("exchange_confirmed")),
+            "exchange_rejected": bool(item.get("exchange_rejected")),
+        }
+        changed = any(current[name] != desired[name] for name in ARCHIVE_LIBRARY_FIELDS)
+        # 身份文案只在库能给出结论时才覆盖：普通地址这里算出来是空串，
+        # 覆盖会把「疑似中转钱包」这类基于转账事实的判断抹掉。
+        new_role = ""
+        new_reason = ""
+        if entry is not None:
+            new_role, new_reason = _role_for_address(address, entry, [], None, False)
+        role_changed = bool(new_role) and (
+            new_role != str(item.get("address_role") or "")
+            or new_reason != str(item.get("role_reason") or "")
+        )
+        if not changed and not role_changed:
+            updated.append(item)
+            continue
+        merged = {**item, **desired}
+        if role_changed:
+            merged["address_role"] = new_role
+            merged["role_reason"] = new_reason
+        updated.append(merged)
+        refreshed += 1
+    if not refreshed:
+        return payload, 0
+    return {**payload, "related": updated}, refreshed
 
 
 def select_exportable_addresses(
@@ -3611,6 +3703,8 @@ class LinkService:
                 "changed": 0,
                 "related_changed": 0,
                 "related_removed": 0,
+                # 库归属/身份被刷新的条目数（地址被移出旧库、改判公共地址等）。
+                "library_refreshed": 0,
                 # 缺少逐跳路径、无法确认是不是终点下游的条数（建议重查）。
                 "unverified": 0,
             },
@@ -3627,6 +3721,8 @@ class LinkService:
         needles = [value.strip() for value in (addresses or ()) if value.strip()]
 
         with self.database.session() as db:
+            # 当前库的完整快照：刷新历史结果里的库归属要用它，逐条查库太慢。
+            library_map = {entry.address: entry for entry in self._library_entries(db)}
             stmt = select(RelationArchive).order_by(RelationArchive.id.desc())
             if wanted_ids:
                 stmt = stmt.where(RelationArchive.id.in_(wanted_ids))
@@ -3647,7 +3743,12 @@ class LinkService:
                     continue
                 pruned, stats = prune_archive_payload(payload, terminal)
                 summary["archives"]["unverified"] += int(stats.get("unverified") or 0)
-                if not stats["related_removed"]:
+                # 剪枝只删下游，留下的条目还带着当时的库名（const 之类）。
+                # 地址刚被标成公共地址时，这里把库归属刷成当前事实，
+                # 否则结果页上它仍显示原库、仍挂着「标为公共地址」按钮。
+                pruned, refreshed = refresh_archive_library_fields(pruned, library_map)
+                summary["archives"]["library_refreshed"] += refreshed
+                if not stats["related_removed"] and not refreshed:
                     continue
                 summary["archives"]["changed"] += 1
                 if stats["related_removed"]:
@@ -3661,6 +3762,7 @@ class LinkService:
                             "related_before": stats["related_before"],
                             "related_after": stats["related_after"],
                             "removed": stats["related_removed"],
+                            "refreshed": refreshed,
                             "by_role": stats["blocking"],
                         }
                     )

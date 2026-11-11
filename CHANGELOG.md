@@ -1,5 +1,39 @@
 # 变更记录
 
+## 0.9.1 · 历史结果跟着库走，标了公共地址就不再显示旧库名 · 2026-11-11
+
+用户原话：「这个地址已经被入库到 const 地址库，现在查询另一个地址发现它们的关联地址是各公共地址，标记为公共地址时，应该同时把已经入库到 const 的地址库移除」「即标记公共地址，自动添加进公共地址库，移除其他所有库，剪除所有下游关联」。
+
+### 问题不在移库，在历史快照
+
+地址库侧其实早就做对了：`decide_public_address()` 会 `move_out_of_book()`，`book` 清空、库名复制品的 `label` 改成「公共地址」，`prune_empty_book()` 顺手清掉空库台账，`reconcile_history()` 再把该地址下游剪掉。库里查这两条记录确实是 `book=''` / `label='公共地址'` / `categories=["大V","PUBLIC"]`。
+
+但**结果页读的是历史快照**。`prune_archive_payload()` 只负责删「只能经过终点才到达」的下游，保留下来的条目原封不动带着生成当时的字段：
+
+```
+library_label: "const"          ← 当时的库名
+library_categories: ["大V"]      ← 还没有后来补的 PUBLIC
+address_role: "疑似中转钱包（交易所关联）"
+```
+
+于是用户看到的是：结果页那一行仍显示「const」，且因为 `library_categories` 里没有 `PUBLIC`，前端 `publicDecisionControl()` 判断它「还不是公共地址」，继续显示「标为公共地址」按钮。看上去就是"标记根本没生效"。
+
+### 修法：剪枝之后刷新库字段
+
+新增 `refresh_archive_library_fields(payload, entries)`（`app/service.py`），按当前地址库重写每条保留条目的：
+
+- `match`、`library_label`、`library_category`、`library_note`、`library_source`、`library_categories`；
+- `exchange_confirmed` / `exchange_rejected`；
+- `address_role` / `role_reason`——只在库能给出结论时覆盖（复用 `relation._role_for_address`，和实时查询同一套口径），普通地址靠转账事实得出的「疑似中转钱包」不会被抹掉。
+
+地址已经不在库里的，`library_*` 清空、`match` 置假，不留一个已经不存在的库名。
+
+`reconcile_history()` 在剪枝后调用它，`archives` 统计新增 `library_refreshed`，`details[]` 新增 `refreshed`。**落库条件从「删过条目」放宽为「删过条目或刷新过字段」**——只改了库归属、没有可剪下游的历史记录，以前会被直接跳过，现在也会写回。
+
+### 测试
+
+新增 `tests/test_archive_library_refresh.py` 5 条：标成公共地址后历史里不能再出现 const、只有刷新没有删除也要落库、重复校正幂等、地址已不在库时清空旧字段、普通地址的身份文案不被覆盖。全量 **628 passed**。
+
 ## 0.9.0 · 删掉逐地址 API 巡检，自动入库全走本地索引 · 2026-11-11
 
 用户两句话定了方向：「扫描地址的 API 调用次数，不用预留 30 次额度给地址巡检了，全额给到扫描地址」「巡检地址的 API 调用模块可以取消，地址巡检全部有本地索引」。

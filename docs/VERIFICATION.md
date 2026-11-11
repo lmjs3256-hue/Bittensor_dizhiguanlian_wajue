@@ -996,3 +996,48 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 **顺手补回的一个写入**：`BookPairStat` 原来只有被删掉的 API 巡检会写，
 删完会永久停在旧数据、关联排序的「同档加分」形同失效。现在流水线在处理
 「转账两侧都在地址库且分属不同库」时自己累加，`test_library_to_library_transfer_is_not_imported_but_bumps_pair_stat` 盯着。
+
+## 0.9.1 验证记录（2026-11-11 22:50）
+
+**结论**：标记公共地址后，历史查询结果里的库名 / 分类 / 身份跟着地址库更新，
+不再显示被移出的旧库（const）。
+
+| 项 | 结果 |
+| --- | --- |
+| 新增 `tests/test_archive_library_refresh.py` | 5 passed（不再出现 const / 只刷新也落库 / 幂等 / 字段清空 / 身份文案不被误覆盖）|
+| `tests/test_reconcile_history.py` + `test_public_address.py` | 30 passed |
+| 全量 `pytest` | **628 passed**（0.9.0 为 623）|
+| `py_compile app/*.py` | 通过 |
+| 静态资源戳 | `styles.css?v=0.9.1` / `app.js?v=0.9.1` |
+
+**真实库实际校正（0.9.1，PID 7100，先备份 `data/wallet_link.before-0.9.1-20261111-2242.db`）**
+
+`POST /api/library/reconcile` 预演与实际各跑一次，两次数字一致：
+
+| 字段 | 值 |
+| --- | --- |
+| `archives.scanned` | 157 |
+| `archives.changed` | 82 |
+| `archives.related_removed` | 0（这批只剩库归属要刷，没有可剪下游）|
+| `archives.library_refreshed` | **1859** |
+| `watch.candidates_removed` | 62（由已判定终点触发的历史候选）|
+| `watch.auto_imports_revoked` | 1 |
+
+归档 157（seed `5Eiiv3qk…hugsf`）刷新 3 条，其中用户点名的两条：
+
+| 地址 | library_label | library_categories | address_role |
+| --- | --- | --- | --- |
+| `5Ggf…dpp3` | `const` → **公共地址** | `["大V"]` → **`["大V","PUBLIC"]`** | 疑似中转钱包 → **公共地址** |
+| `5GsQ…hCbf` | `const` → **公共地址** | `["大V"]` → **`["大V","PUBLIC"]`** | 疑似中转钱包 → **公共地址** |
+
+**浏览器探针（`.probe/chk_archive_refresh_091.py`，headless Chrome 1600×1100）**
+
+| 检查项 | 结果 |
+| --- | --- |
+| 打开历史 157 → 结果页 | 正常，行数 427 |
+| `5Ggf…dpp3` 行文本 | 「…公共地址 未获取 2 路径明细 强 25,593.95 … 公共地址地址库 标为交易所 **公共地址 取消公共标记** 标为验证者」|
+| `5GsQ…hCbf` 行文本 | 同上（50,971.90 / 23,644.98 / 74,616.88）|
+| 两行是否含 `const` | **否** |
+| 「标为公共地址」按钮 | 两行都**不存在**，改显示「取消公共标记」|
+| 页面横向溢出 | 无 |
+| 资源戳 | 两处均 0.9.1 |
