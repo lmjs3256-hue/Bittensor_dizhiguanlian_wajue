@@ -855,4 +855,8 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 | `node --check app/static/app.js` | 通过 |
 | `launch_mode.ps1` BOM | 保留 |
 
-**端到端**：本轮用修好的启动器实测一次重启，以 `logs/remote-launch.log` 为准。
+**端到端实测**：用修好的 `launch_mode.ps1 -Mode remote` 真跑了一次，`logs/remote-launch.log`
+完整记录「09:30:26 开始 → 09:30:30 停服务 exit=0 → 09:30:35 启服务 exit=0 → 状态 ready」，
+全程 9 秒。旧版卡在 `start.ps1` 的 `-Wait` 上永不返回，改 `WaitForExit` 后正常结束。
+注意：由工具会话拉起的服务进程会在会话结束时被清理，因此实测后另用后台进程恢复了服务；
+用户从桌面双击启动的服务不受此影响。
