@@ -78,25 +78,30 @@ MAX_MANUAL_SCAN_BLOCKS = 16
 # 为了让 HTTP 请求快速返回；后台自动扫描没有这个约束，必须能扫够一整个
 # 调度周期新增的块，否则索引永远追不上链。
 MAX_AUTO_SCAN_BLOCKS = 2000
-# 单轮查询最多发几个 Taostats 请求。默认 5（免费档一分钟的额度），实际取值
-# 跟随「每分钟额度」配置：额度提到 60，单轮也该能一次用满，否则每轮仍只发
-# 5 个请求、一分钟剩余 55 次额度全浪费。
+# 单轮查询默认发几个 Taostats 请求（读不到每分钟额度时的兜底）。
 MAX_TAOSTATS_REQUESTS_PER_QUERY = 5
 
 
 def taostats_request_budget() -> int:
-    """本轮单次查询可用的 Taostats 请求数。
+    """本轮单次查询可用的 Taostats 请求数：直接把每分钟额度全给它。
 
-    与每分钟额度挂钩但有上限：一轮吃满一整分钟的额度容易在别的调用（巡检、
-    余额查询）同时发生时撞 429，所以取额度本身、最多 30——留出一半余量给
-    并行的小请求。
+    以前这里夹了 ``min(per_minute, 30)``，留一半余量给「逐地址巡检」和余额
+    查询这类并行的小请求。0.9.0 起逐地址巡检整条移除，后台不再有任何常驻
+    的 Taostats 调用，额度全部归用户主动发起的关联扫描——再夹 30 次等于
+    让额度 60/分钟的用户每轮白白浪费一半。
+
+    唯一还并行的是「结果合成阶段查余额」这类小请求，它们走的是同一套
+    进程级限速器（``taostats._reserve_request``），超出会安静排队，不会
+    撞 429。
     """
 
     try:
         per_minute = int(requests_per_minute())
     except Exception:
         per_minute = MAX_TAOSTATS_REQUESTS_PER_QUERY
-    return max(1, min(per_minute, 30))
+    return max(1, per_minute)
+
+
 MAX_EXCHANGE_BALANCE_CHECKS_PER_QUERY = 5
 # 结果合成阶段最多查这么多个地址的当前余额（起始地址优先，再按层级/金额）。
 # 分轮续查跑十几轮后关联地址可能上百个，逐个走 RPC 会让结果迟迟出不来。

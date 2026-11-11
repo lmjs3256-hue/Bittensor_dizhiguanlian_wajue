@@ -55,8 +55,8 @@ AUTO_EXCHANGE_SYNC_ENABLED = True
 BUILTIN_ADDRESSES_ENABLED = True
 # 本次启动内置名单的写入结果，供 /api/diagnose 显示「新版本真的跑起来了吗」。
 BUILTIN_STARTUP_RESULT: dict[str, Any] | None = None
-# 地址库巡检：调度器每 30 秒推进一批地址（每地址 1~2 次请求，批量大小
-# 跟随每分钟额度；见 WatchService.addresses_per_tick）。
+# 地址库自动入库的调度间隔：每 30 秒拿本地索引的新块撞一次地址库。
+# 不消耗任何 Taostats 额度（数据来自 RPC 直采的 transfers 表）。
 # 与 watch.py 的 SWEEP_TICK_SECONDS 同源：前端「距下一轮」倒计时依赖这个值，
 # 两处写死同一个数字迟早会漂移。
 WATCH_TICK_SECONDS = SWEEP_TICK_SECONDS
@@ -181,8 +181,6 @@ app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 SERVICE = LinkService(DATABASE, CONFIG.rpc_url)
 JOBS = RelationJobManager()
 WATCH = WatchService(DATABASE)
-# 手动「立即巡检」的并发保护：同一时刻只允许跑一轮。
-WATCH_LOCK = asyncio.Lock()
 # 定期本地索引扫描的并发保护（真正的互斥在数据库扫描锁里）。
 LOCAL_SCAN_LOCK = asyncio.Lock()
 
@@ -303,59 +301,24 @@ async def _job_scheduler() -> None:
 
 
 async def _watch_scheduler() -> None:
-    """地址库巡检：每 30 秒推进若干个地址（数量跟随每分钟额度）。
+    """地址库自动入库：每 30 秒把本地索引里的新块拿去撞一次地址库。
 
-    一个地址要 1 次 TAO 转账 + 1 次代币转移请求。整轮可能跨几小时，
-    进度每个地址落一次库（``watch_runs`` + ``watch_state`` 游标），
-    所以关掉服务、重启、撞上限速都不会丢进度，下次从断点继续。
+    0.9.0 起这里只有本地索引流水线这一条路：它不发任何 Taostats 请求，
+    所以不需要「给手动查询让路」、不需要每日预算、也不会和用户抢额度。
+    逐地址问 API 的巡检已整条移除——用户的额度全部留给主动发起的关联扫描。
+
+    一次 tick 处理多少行由 ``SWEEP_MAX_ROWS`` 夹住（4 千行），宁可小步快跑，
+    也不让一次扫描把 SQLite 锁住几十秒。
     """
 
     while True:
         await asyncio.sleep(WATCH_TICK_SECONDS)
         try:
-            if WATCH_LOCK.locked():
-                continue
-            async with WATCH_LOCK:
-                # 手动查询优先：任务未收尾（含轮间 62 秒等待）或刚结束还没
-                # 静默够，就跳过本次 tick。巡检晚 30 秒推进没有损失，抢走
-                # 配额却会让用户那一轮查询撞限速、白等一分钟。
-                pause = JOBS.manual_busy()
-                WATCH.set_pause(pause)
-                if pause["paused"]:
-                    # 让路期间也要打心跳：进度窗口据此区分「在排队等查询」
-                    # 和「整个巡检停了」。
-                    WATCH.mark_tick(paused=True)
-                    # 但本地流水线不需要让路：它不发任何 Taostats 请求，
-                    # 和用户的查询不抢额度。让路时停掉它等于白白少采一段链。
-                    try:
-                        await asyncio.to_thread(WATCH.sweep_local_index)
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"[watch] 本地索引流水线异常：{exc}", file=sys.stderr)
-                    continue
-                # 先跑「本地索引流水线」：拿本地索引里的新块去撞地址库，
-                # 命中就入库。这条路径**完全不消耗 Taostats 额度**，所以不受
-                # 每日上限、每分钟限速、手动查询让路的任何约束——有就让路，
-                # 但本地流水线照跑。
-                #
-                # 它才是用户要的「库里地址一有新往来就立马入库」：链上转账
-                # 已经被 RPC 采进 transfers 表，没必要再为了这批数据去问
-                # 一次 API。逐地址巡检（下面那段）继续保留，用来补本地索引
-                # 覆盖不到的更早历史。
-                try:
-                    await asyncio.to_thread(WATCH.sweep_local_index)
-                except Exception as exc:  # noqa: BLE001 - 流水线失败不能拖垮巡检
-                    print(f"[watch] 本地索引流水线异常：{exc}", file=sys.stderr)
-
-                # 一次推进几个地址跟随「每分钟额度」：以前写死 1 个，升级到
-                # 60 次/分钟也只会 30 秒推 1 个（≈4 次/分钟），额度全浪费。
-                # 用户在巡检配置里填了固定值就用固定值。
-                per_tick = await asyncio.to_thread(WATCH.addresses_per_tick)
-                await asyncio.to_thread(WATCH.tick, per_tick)
-                WATCH.mark_tick()
+            await asyncio.to_thread(WATCH.sweep_local_index)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - 巡检失败不能拖垮服务
-            print(f"[watch] 巡检异常：{exc}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 - 流水线失败不能拖垮服务
+            print(f"[watch] 本地索引流水线异常：{exc}", file=sys.stderr)
 
 
 async def _local_scan_scheduler() -> None:
@@ -489,22 +452,15 @@ class ScanThresholdInput(BaseModel):
 
 
 class WatchConfigInput(BaseModel):
-    """地址库巡检设置：开关、间隔、阈值、是否含代币转移、每日预算。"""
+    """地址库自动入库设置：阈值、自动入库开关、本地索引流水线开关。
 
-    enabled: bool | None = None
-    interval_minutes: int | None = Field(default=None, ge=15, le=10080)
+    0.9.0 起逐地址问 API 的巡检已移除，所以这里不再有开关/间隔/每日预算/
+    每轮推进量/是否含代币转移——那些都只对「问 API」有意义。
+    """
+
     threshold_tao: float | None = Field(default=None, ge=0, le=1_000_000)
-    include_stake: bool | None = None
-    daily_budget: int | None = Field(default=None, ge=0, le=100_000)
-    # 一次巡检推进几个地址；0 = 跟随每分钟额度自动算。
-    addresses_per_tick: int | None = Field(default=None, ge=0, le=50)
     auto_import: bool | None = None
-    follow_auto_imported: bool | None = None
-    # 逐地址巡检时先查本地索引（本地覆盖到就不发 API）。
-    # 以前漏了这个字段：前端一直在传，Pydantic 默默丢掉，
-    # 于是「本地索引优先」这个勾选框其实从来没生效过。
-    prefer_local_index: bool | None = None
-    # 本地索引流水线开关（独立的一条零 API 采集链路）。
+    # 本地索引流水线开关（零 API 的那条采集链路）。
     sweep_enabled: bool | None = None
 
 
@@ -1583,61 +1539,22 @@ def exchange_sync_ack(svc: Annotated[LinkService, Depends(service)]):
     return svc.acknowledge_exchange_notice()
 
 
-# -- 地址库巡检 / 自动入库 ---------------------------------------------------
+# -- 地址库自动入库（本地索引流水线） ---------------------------------------
 @app.get("/api/watch/status")
 def watch_status():
-    """巡检进度、今日请求数、最近几轮结果、金额最高的待入库候选。"""
+    """自动入库统计、待入库候选、本地索引流水线的实时状态。"""
 
-    data = WATCH.status()
-    # 让路判定按此刻实时算：调度器 30 秒才 tick 一次，读缓存快照会让
-    # 「冷却 N 秒」长时间停在同一个数字，看着像卡住了。
-    data["pause"] = WATCH.pause_payload(JOBS.manual_busy())
-    return data
+    return WATCH.status()
 
 
 @app.post("/api/watch/config")
 def watch_config(payload: WatchConfigInput):
-    """保存巡检设置：开关、间隔、阈值（默认 30 TAO）、是否含代币转移。"""
+    """保存自动入库设置：阈值（默认 30 TAO）、自动入库、流水线开关。"""
 
     values = payload.model_dump(exclude_none=True)
     if not values:
         return WATCH.config()
     return WATCH.update_config(values)
-
-
-@app.post("/api/watch/run")
-async def watch_run():
-    """手动立即巡检一轮：先推进一分钟的额度，剩下的交给调度器接着跑。
-
-    以前这里传 ``max_addresses=None``，等于无视每日上限把整轮跑完——758 个
-    地址就是约 1500 次请求，能连着占住巡检锁好几个小时，期间调度器完全插不
-    进去；中途撞限速还会半途收尾，用户看到「失败」以为坏了。
-
-    现在点一次只推进「一分钟额度能覆盖的地址数」，剩下的进度调度器每 30 秒
-    自己接着推。用户想要的是「马上动起来」，不是「一口气跑完」。
-    """
-
-    if not taostats_is_configured():
-        raise HTTPException(400, TAOSTATS_KEY_MISSING)
-    if WATCH_LOCK.locked():
-        return {"started": False, "reason": "already_running"}
-    asyncio.create_task(_watch_manual_run())
-    return {"started": True}
-
-
-async def _watch_manual_run() -> None:
-    async with WATCH_LOCK:
-        try:
-            # 手动触发只跑一小段：一分钟额度能覆盖的地址数，避免占锁几小时。
-            # 断点由 watch_state 游标记住，调度器下一个 tick 会从停下处继续。
-            limit = max(await asyncio.to_thread(WATCH.addresses_per_tick) * 2, 2)
-            # run() 是 keyword-only，不能按位置传参（传了会抛 TypeError，
-            # 表面上只看到「手动巡检失败」）。
-            await asyncio.to_thread(
-                WATCH.run, manual=True, max_addresses=limit, config=None
-            )
-        except Exception as exc:  # noqa: BLE001 - 手动触发失败只记日志
-            print(f"[watch] 手动巡检失败：{exc}", file=sys.stderr)
 
 
 @app.get("/api/library/auto-import-log")

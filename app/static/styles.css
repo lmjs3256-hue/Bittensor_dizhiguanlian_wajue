@@ -551,20 +551,8 @@ body.access-locked .shell { filter:blur(2px); pointer-events:none; user-select:n
 .watch-check { display:flex; align-items:center; gap:7px; color:var(--ink); font-size:12.5px; white-space:nowrap; padding-bottom:10px; }
 .watch-check input { width:16px; height:16px; padding:0; accent-color:var(--accent); }
 .watch-panel .library-hint { display:block; margin-top:10px; color:var(--muted); font-size:11.5px; line-height:1.6; }
-/* 巡检进度窗口：必须有分母和心跳，否则用户无法判断是在跑还是卡住。 */
-.watch-progress { margin-top:12px; border:1px solid var(--line); border-radius:11px; background:var(--bg); padding:11px 13px; display:grid; gap:8px; }
-.watch-progress-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-.watch-progress-head strong { font-size:12.5px; }
-.watch-progress-percent { font-family:var(--mono); font-size:13px; font-weight:600; color:var(--accent); }
-.watch-progress-track { height:7px; border-radius:999px; background:var(--line); overflow:hidden; }
-.watch-progress-bar { height:100%; width:0; border-radius:999px; background:var(--accent); transition:width .45s ease; }
-.watch-progress-bar.breathing { animation:watch-breath 1.8s ease-in-out infinite; }
-@keyframes watch-breath { 0%,100%{opacity:1} 50%{opacity:.55} }
-.watch-progress-meta { display:flex; gap:6px 14px; flex-wrap:wrap; color:var(--ink); font-size:11.5px; }
-.watch-progress-meta span { white-space:nowrap; }
-.watch-progress-meta b { font-family:var(--mono); font-weight:600; }
-/* 本地索引流水线：独立一块，和"逐地址巡检"的进度条分开。
-   它是另一条链路（零 API），混在一起会让人以为额度用完就全停了。 */
+/* 逐地址 API 巡检的进度窗口已在 0.9.0 删除，样式一并清掉。 */
+/* 本地索引流水线：地址库唯一的自动入库链路（零 API）。 */
 .sweep-panel { margin-top:10px; padding:12px 14px; border:1px solid var(--line); border-radius:11px; background:var(--bg); display:grid; gap:7px; }
 .sweep-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .sweep-head strong { font-size:12.5px; }

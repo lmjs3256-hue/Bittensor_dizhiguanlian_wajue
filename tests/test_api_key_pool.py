@@ -407,8 +407,13 @@ class TestRateLimitConfig:
             taostats.reset_key_pool_for_tests()
             taostats.set_requests_per_minute(5)
 
-    def test_request_budget_follows_limit_with_cap(self):
-        """单轮预算跟随额度，但封顶 30，避免一轮吃光整分钟。"""
+    def test_request_budget_uses_full_limit_without_reservation(self):
+        """0.9.0：不再给巡检预留 30 次，整分钟额度全给主动扫描。
+
+        以前这里封顶 30，理由是「留一半余量给巡检」。巡检已经改成零 API 的
+        本地索引流水线，这个预留就没有意义了——额度提到 60，单轮就该能发
+        60 个请求，否则每轮白剩一半。
+        """
 
         from app.service import taostats_request_budget
 
@@ -417,8 +422,10 @@ class TestRateLimitConfig:
             assert taostats_request_budget() == 5
             taostats.set_requests_per_minute(20)
             assert taostats_request_budget() == 20
+            taostats.set_requests_per_minute(60)
+            assert taostats_request_budget() == 60
             taostats.set_requests_per_minute(200)
-            assert taostats_request_budget() == 30
+            assert taostats_request_budget() == 200
         finally:
             taostats.set_requests_per_minute(5)
 
@@ -430,43 +437,49 @@ class TestRateLimitConfig:
         assert settings_store.load_requests_per_minute() == 60
 
 
-class TestWatchTickFollowsRate:
-    """巡检推进量要跟随额度，不能永远 30 秒 1 个地址。"""
+class TestNoPerAddressWatchReservation:
+    """0.9.0 移除了逐地址 API 巡检，额度不该再为它预留。
 
-    def _watch(self, tmp_path):
-        from app.db import Database
+    这类回归用静态契约守住：只要有人把 `addresses_per_tick` / `每日上限`
+    那套东西加回去，额度又会被悄悄切走一半，测试会立刻失败。
+    """
+
+    def test_watch_service_has_no_api_quota_logic(self):
         from app.watch import WatchService
 
-        return WatchService(Database(tmp_path / "w.db"))
+        for name in (
+            "addresses_per_tick",
+            "run",
+            "tick",
+            "next_targets",
+            "_check_address",
+            "coverage",
+            "local_window",
+        ):
+            assert not hasattr(WatchService, name), (
+                f"WatchService.{name} 属于已删除的逐地址 API 巡检，不该再出现"
+            )
 
-    def test_auto_scales_with_rate(self, tmp_path):
-        w = self._watch(tmp_path)
-        try:
-            taostats.set_requests_per_minute(5)
-            assert w.addresses_per_tick({"addresses_per_tick": 0}) == 1
-            taostats.set_requests_per_minute(20)
-            assert w.addresses_per_tick({"addresses_per_tick": 0}) == 5
-            taostats.set_requests_per_minute(60)
-            # 封顶 10：巡检必须给手动查询让路，不能一次 tick 吃光额度
-            assert w.addresses_per_tick({"addresses_per_tick": 0}) == 10
-        finally:
-            taostats.set_requests_per_minute(5)
+    def test_watch_api_only_exposes_config_and_logs(self):
+        import app.main as main_module
 
-    def test_manual_value_wins(self, tmp_path):
-        w = self._watch(tmp_path)
-        try:
-            taostats.set_requests_per_minute(60)
-            assert w.addresses_per_tick({"addresses_per_tick": 3}) == 3
-            assert w.addresses_per_tick({"addresses_per_tick": 99}) == 50
-        finally:
-            taostats.set_requests_per_minute(5)
+        paths = {route.path for route in main_module.app.routes}
+        assert "/api/watch/status" in paths
+        assert "/api/watch/config" in paths
+        assert "/api/watch/run" not in paths, "「立即巡检一轮」的接口应已删除"
 
-    def test_zero_means_auto_not_zero(self, tmp_path):
-        """填 0 是"自动"，绝不能真的推进 0 个（否则巡检永久停滞）。"""
+    def test_sweep_never_touches_taostats(self):
+        """流水线是零 API 的：源码里不许出现任何 taostats 请求调用。"""
 
-        w = self._watch(tmp_path)
-        try:
-            taostats.set_requests_per_minute(5)
-            assert w.addresses_per_tick({"addresses_per_tick": 0}) >= 1
-        finally:
-            taostats.set_requests_per_minute(5)
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[1] / "app" / "watch.py"
+        ).read_text(encoding="utf-8")
+        for banned in (
+            "get_transfer_page_query",
+            "get_stake_transfer_page",
+            "requests_per_minute",
+            "_reserve_request",
+        ):
+            assert banned not in source, f"watch.py 里不该再出现 {banned}"

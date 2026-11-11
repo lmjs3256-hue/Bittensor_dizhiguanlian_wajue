@@ -954,3 +954,45 @@ Taostats. “Taostats Pro.” *Taostats*, https://taostats.io/zh/pro. Accessed 3
 截取函数体，面板加内容后截断导致假失败；已改为按 `function stopWatchPolling(` 边界截取。
 同时清掉 `tests/test_watch_sweep.py` 里重复追加的同名测试块（同名函数后定义会静默覆盖前者，
 等于有一份测试从未真正跑过）。
+
+## 0.9.0 验证记录（2026-11-11 19:40）
+
+**结论**：逐地址 API 巡检整条移除，地址库自动入库只剩本地索引（零 API）。
+额度预留 30 次的上限同时去掉，每分钟额度全给主动扫描。
+
+| 项 | 结果 |
+| --- | --- |
+| `tests/test_watch.py` | 19 passed（重写：阈值 / 累计 / 归属库 / 撤回 / 系统角色不触发 / 库对统计 / 状态字段） |
+| `tests/test_watch_sweep.py` + `test_sweep_live_panel.py` | 37 passed |
+| `tests/test_revoke_and_mark.py` | 6 passed（夹具改用 transfers 造入库记录） |
+| `tests/test_api_key_pool.py` | 33 passed（新增额度不封顶 + 三条静态契约） |
+| 全量 `pytest` | **623 passed**（0.8.49 为 656，差额是被删功能自己的用例） |
+| `node --check app/static/app.js` | 通过 |
+| `py_compile app/*.py` | 通过 |
+| 静态资源戳 | `styles.css?v=0.9.0` / `app.js?v=0.9.0` |
+
+**真实接口实测（0.9.0，PID 21432）**
+
+| 检查 | 结果 |
+| --- | --- |
+| `/api/health` | version 0.9.0 |
+| `/api/watch/status` 顶层 keys | `config / imported / pending_candidates / revoked / sweep / top_candidates` |
+| `config` | `{'threshold_tao': 35.0, 'auto_import': True, 'sweep_enabled': True}`（保存后落盘） |
+| `POST /api/watch/run` | **404**（接口已删除） |
+| 调度三轮后 | `tick 3 / lag 0 / last_block 9482283 = index_block / heartbeat 4.8s / next_in 25s` |
+
+**浏览器探针（`.probe/chk_watch_090.py`，headless Chrome 1440×1100）**
+
+| 检查项 | 结果 |
+| --- | --- |
+| 保留控件 | 阈值 / 自动入库 / 流水线 / 保存 / 入库日志 全部存在 |
+| 状态文案 | `自动入库：流水线运行中 · 累计自动入库 29 个 · 待达标候选 335 个 · 已跑 4 轮 · 全部由本地索引产生，不消耗查询额度` |
+| 旧控件 | `watch-enabled / interval / budget / per-tick / stake / local-first / follow / run / progress` **9 项全部不存在** |
+| 面板 | 可见、`is-alive`、倒计时 23s→21s、进度条宽度在变 |
+| 心跳行 | `已跑 4 轮 · 最近一轮 5 秒前 · 本轮扫描 0 笔 / 1 ms` |
+| 页面横向溢出 | 无 |
+| 资源戳 | 两处均 0.9.0 |
+
+**顺手补回的一个写入**：`BookPairStat` 原来只有被删掉的 API 巡检会写，
+删完会永久停在旧数据、关联排序的「同档加分」形同失效。现在流水线在处理
+「转账两侧都在地址库且分属不同库」时自己累加，`test_library_to_library_transfer_is_not_imported_but_bumps_pair_stat` 盯着。

@@ -120,12 +120,14 @@ def test_new_transfer_from_library_address_imports_partner(
     _cursor(database, 1000)
     service.sweep_local_index(config)  # 初始化
 
-    # 任何 API 调用都应该让测试失败
+    # 任何 API 调用都应该让测试失败。watch.py 已经不 import taostats，
+    # 所以盯住限速器这个唯一入口：只要有人偷偷发请求，就会先撞上它。
     def _boom(*args, **kwargs):
         raise AssertionError("本地流水线不该发起任何 API 请求")
 
-    monkeypatch.setattr(watch_module, "get_transfer_page_query", _boom)
-    monkeypatch.setattr(watch_module, "get_stake_transfer_page", _boom)
+    import app.taostats as taostats_module
+
+    monkeypatch.setattr(taostats_module, "_reserve_request", _boom)
 
     _transfer(database, 1, OWNER, PARTNER, "45", 1001)
     result = service.sweep_local_index(config)
@@ -378,20 +380,25 @@ def test_status_lag_tracks_new_blocks(database, service, config):
 
 
 # -- 配置与调度接线 ---------------------------------------------------------
-def test_scheduler_runs_sweep_even_when_api_paused():
-    """手动查询让路时也要跑流水线：它不抢额度，没有一起停的理由。"""
+def test_scheduler_only_runs_the_local_sweep():
+    """调度器只剩流水线一条路：没有让路判定，也没有逐地址 tick。
+
+    0.9.0 把逐地址 API 巡检整条删掉了，所以这里反过来守：调度器里只许有
+    `sweep_local_index`，不许再出现 `WATCH.tick` / 让路 / 每日预算那套。
+    """
 
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(
         encoding="utf-8"
     )
-    # 让路分支里必须调用 sweep
-    paused = source.index('if pause["paused"]:')
-    body = source[paused : paused + 900]
-    assert "sweep_local_index" in body, "让路分支漏了流水线"
-    # 正常分支也要有
-    assert source.count("sweep_local_index") >= 2
+    start = source.index("async def _watch_scheduler()")
+    end = source.index("async def _local_scan_scheduler()", start)
+    body = source[start:end]
+
+    assert body.count("sweep_local_index") == 1, "调度器应只调用一次流水线"
+    for banned in ("WATCH.tick", "manual_busy", "set_pause", "mark_tick", "addresses_per_tick"):
+        assert banned not in body, f"调度器里不该再出现 {banned}"
 
 
 def test_local_scan_interval_is_faster_than_five_minutes():
@@ -528,34 +535,36 @@ def test_frontend_renders_dedicated_sweep_panel():
 
 
 def test_progress_box_no_longer_duplicates_sweep():
-    """两条链路不能混在同一行显示，否则会误以为额度用完就全停了。"""
+    """两条链路不能混在同一行显示，否则会误以为额度用完就全停了。
+
+    0.9.0 已把逐地址巡检的进度窗口整个删掉，现在只允许流水线面板存在。
+    """
 
     js = _js()
-    start = js.index("function renderWatchProgress(")
-    end = js.index("function renderSweepPanel(")
-    assert "本地流水线已处理" not in js[start:end]
+    assert "renderWatchProgress" not in js
+    assert "#watch-progress" not in js
+    assert "function renderSweepPanel(" in js
 
 
 # -- 入参模型不能吞字段（真实踩过）-----------------------------------------
 def test_config_input_model_accepts_sweep_enabled():
-    """`/api/watch/config` 的 Pydantic 模型必须声明这两个字段。
+    """`/api/watch/config` 的 Pydantic 模型必须声明还在生效的字段。
 
-    真实踩到的坑：前端一直在传 `sweep_enabled` / `prefer_local_index`，
-    但 `WatchConfigInput` 没声明它们，Pydantic 默认忽略未知字段——于是
-    接口返回 200、前端以为存上了，实际设置被默默丢掉。「本地索引优先」
-    这个勾选框因此从上线起就没生效过。
+    真实踩到的坑：前端一直在传 `sweep_enabled`，但 `WatchConfigInput` 没
+    声明它，Pydantic 默认忽略未知字段——接口返回 200、前端以为存上了，
+    实际设置被默默丢掉。0.9.0 之后只剩三个字段，一个都不能漏。
     """
 
     from app.main import WatchConfigInput
 
     fields = set(WatchConfigInput.model_fields)
-    assert "sweep_enabled" in fields, "入参模型缺 sweep_enabled，设置会被丢弃"
-    assert "prefer_local_index" in fields, "入参模型缺 prefer_local_index"
+    for name in ("threshold_tao", "auto_import", "sweep_enabled"):
+        assert name in fields, f"入参模型缺 {name}，设置会被丢弃"
 
     # 且要能真正解析出来（不是声明了却永远 None）
-    parsed = WatchConfigInput(**{"sweep_enabled": False, "prefer_local_index": False})
+    parsed = WatchConfigInput(**{"sweep_enabled": False, "auto_import": False})
     assert parsed.sweep_enabled is False
-    assert parsed.prefer_local_index is False
+    assert parsed.auto_import is False
 
 
 def test_saved_config_reaches_disk(tmp_path, monkeypatch):

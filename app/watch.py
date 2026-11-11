@@ -1,79 +1,64 @@
-"""地址库巡检：定期检查库内地址的新转账，把新出现的对手方自动入库。
+"""地址库自动入库：本地索引流水线把库里地址的新往来撞出来。
 
-设计要点（对应 0.7.0 的需求）：
+设计要点：
 
-1. **只认「新发生」**：第一次巡检某个地址时只记基线块高（``last_block``），
-   不把它的历史对手方一次性灌进地址库；之后每轮只取基线之后的转账。
-2. **阈值双口径**：单笔 ≥ 阈值，或该「对手方 × 归属库」累计 ≥ 阈值，任一
+1. **零 API**：地址的往来数据全部来自本地索引（链上 RPC 直采进 ``transfers``
+   表），这条链路不消耗任何 Taostats 额度。0.9.0 起逐地址问 API 的巡检已
+   整条移除——用户的额度全部留给主动发起的关联扫描。
+2. **只认「新发生」**：首次启用时从当前水位往后看，不回扫历史；之后只处理
+   游标之后的新块。
+3. **阈值双口径**：单笔 ≥ 阈值，或该「对手方 × 归属库」累计 ≥ 阈值，任一
    满足就入库。未达阈值的也先记账，否则小额多次永远攒不到门槛。
-3. **归属库按累计金额取胜**：同一个新地址被多个库触发时，取累计金额最大
+4. **归属库按累计金额取胜**：同一个新地址被多个库触发时，取累计金额最大
    的那个库；金额相同比笔数，仍相同则归「未归属」并在日志里写明。
-4. **可撤回**：撤回过（``status='revoked'``）的地址之后不再自动入库，也不会
+5. **可撤回**：撤回过（``status='revoked'``）的地址之后不再自动入库，也不会
    被重复写进日志。
-5. **额度优先**：每处理完一个地址就落一次进度，请求预算用完就停、第二天
-   接着轮转；限速时安静退出本次 tick，不抛错给用户。
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 
-from . import settings_store, taostats
-from .crawl import stake_counterparty
+from . import settings_store
 from .db import (
     AddressLibrary,
     AutoImportLog,
     BookPairStat,
-    Transfer,
-    WatchSweepState,
     ChainCursor,
     Database,
-    ScanJob,
     Transfer,
     WatchCandidate,
-    WatchRun,
-    WatchState,
+    WatchSweepState,
     iso_utc,
     utcnow,
 )
 from .validation import is_valid_ss58
-from .taostats import (
-    TaostatsAuthError,
-    TaostatsRateLimitError,
-    TaostatsUnavailableError,
-    get_stake_transfer_page,
-    get_transfer_page_query,
-    requests_per_minute,
-)
 
 # Subtensor 的系统地址前缀（与 relation 里的默认 policy 保持一致）。
 SYSTEM_PREFIX = "5EYCAe5"
 # 自动入库记录的来源标记；也是「这条是不是自动来的」的判断依据。
 AUTO_SOURCE = "auto-watch:taostats"
 AUTO_CATEGORY = "其他"
-# 巡检不处理的分类：交易所、验证者、公共地址、系统（它们要么额度黑洞，要么
-# 是噪音源）。公共地址（PUBLIC）与交易所同性质——它和成千上万个不相关钱包
-# 都有往来，巡检它等于拿额度换噪音，且会把整库灌爆。service.py 的
-# SYSTEM_CATEGORIES 早就把它算作系统角色，这里原来漏了，导致标记为公共地址的
-# 记录仍被排进巡检队列。
+# 不处理的分类：交易所、验证者、公共地址、系统（它们要么是噪音源，要么会
+# 把整库灌爆）。公共地址（PUBLIC）与交易所同性质——它和成千上万个不相关钱包
+# 都有往来，顺着它扩散等于用噪音换库容量。service.py 的 SYSTEM_CATEGORIES
+# 早就把它算作系统角色，这里原来漏了，导致标记为公共地址的记录仍被当成
+# 触发源。
 SKIP_CATEGORIES = {"EXCHANGE", "VALIDATOR", "PUBLIC", "系统", "SYSTEM"}
 MAX_LOGS_PAGE = 200
-# 本地索引流水线：每次最多处理的行数。宁可小步快跑——它和巡检、查询共用
-# 同一个 SQLite 文件，一次拿太多会把库锁住几十秒。
+# 本地索引流水线：每次最多处理的行数。宁可小步快跑——它和查询共用同一个
+# SQLite 文件，一次拿太多会把库锁住几十秒。
 SWEEP_MAX_ROWS = 4000
 # 游标键名（WatchSweepState 只有一条记录）。
 SWEEP_KEY = "local-index"
 # 调度器一个 tick 的间隔（秒）。前端用它算「距下一轮还有几秒」，
 # 所以必须和 main.py 的 WATCH_TICK_SECONDS 是同一个值（那边直接引用这里）。
 SWEEP_TICK_SECONDS = 30
-# 本进程启动时刻：用来判断一个 running 轮次是本进程在推，还是上次进程
-# 被关掉后留下的（后者就是「断点续传」的状态，必须让用户看见）。
-PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 
 def _categories(row: AddressLibrary) -> set[str]:
@@ -152,103 +137,19 @@ class WatchService:
 
     def __init__(self, database: Database) -> None:
         self.database = database
-        # 最近一次 tick 的让路判定：调度器每 30 秒写一次，status() 读给前端。
-        self._pause: dict[str, Any] = {
-            "paused": False,
-            "reason": "",
-            "resume_in_seconds": 0,
-            "job_id": "",
-            "active_jobs": 0,
-            "stalled_jobs": 0,
-        }
-        # 调度器心跳：进度窗口用它区分「正在推进」和「停在上次断点」。
-        self._progress_heartbeat: dict[str, Any] = {"at": None, "paused": False}
         # 本地索引流水线的实时状态（进程内，供界面展示「正在跑」）。
         self._sweep_running = False
         self._sweep_started: datetime | None = None
         self._sweep_last_done: datetime | None = None
-        # 0.8.49 心跳：一次流水线可能不到 1 秒就跑完，前端 3~5 秒轮询几乎
-        # 抓不到 running；追平后累计数字也不涨，面板看起来像死的一样。
-        # 这里记录「每一轮 tick 都来过」，让界面能持续显示轮次、最近一轮
-        # 时间和距下一轮的倒计时，用户才知道它确实在工作。
+        # 心跳：一次流水线可能不到 1 秒就跑完，前端几秒轮询几乎抓不到
+        # running；追平后累计数字也不涨，面板看起来像死的一样。这里记录
+        # 「每一轮 tick 都来过」，让界面能持续显示轮次、最近一轮时间和
+        # 距下一轮的倒计时，用户才知道它确实在工作。
         self._sweep_last_tick: datetime | None = None
         self._sweep_tick_count = 0
         self._sweep_last_duration_ms = 0
         self._sweep_last_scanned = 0
         self._sweep_last_reason = ""
-        # 本进程内「走本地索引」的次数与省下的 API 请求数，给界面显示。
-        self._local_hits = 0
-        self._api_saved = 0
-
-    # -- 巡检让路 ---------------------------------------------------------
-    def set_pause(self, state: dict[str, Any]) -> None:
-        """记录调度器这一次的让路判定，供 ``/api/watch/status`` 展示。"""
-
-        self._pause = dict(state)
-
-    def pause_payload(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
-        """给前端一份可直接显示的中文说明，文案只在这里维护。
-
-        传入 ``state`` 就按它实时生成（status 路由用它，倒计时才准）；
-        不传则用调度器上次 tick 记下的快照。
-        """
-
-        current = dict(self._pause if state is None else state)
-        reason = current.get("reason", "")
-        if reason == "running":
-            detail = (
-                f"手动查询进行中，巡检已让路（避免抢走每分钟 "
-                f"{self._per_minute()} 次配额）"
-            )
-        elif reason == "cooldown":
-            detail = (
-                f"手动查询已结束，冷却 {current.get('resume_in_seconds', 0)} 秒后继续巡检"
-            )
-        elif reason == "stalled":
-            detail = (
-                f"有 {current.get('stalled_jobs', 1)} 个查询任务超过 10 分钟没有进度，"
-                "已按僵死处理并恢复巡检"
-            )
-        else:
-            detail = ""
-        return {**current, "detail": detail}
-
-    # -- 配置 -------------------------------------------------------------
-    @staticmethod
-    def _per_minute() -> int:
-        """当前每分钟额度，仅用于拼提示文案；读不到就退回免费档 5。"""
-
-        try:
-            return int(requests_per_minute())
-        except Exception:
-            return 5
-
-    def _rate_limit_note(self) -> str:
-        return f"Taostats 限速（每分钟 {self._per_minute()} 次），本轮稍后自动继续。"
-
-    def addresses_per_tick(self, config: dict[str, Any] | None = None) -> int:
-        """一个 tick 推进几个地址。
-
-        ``addresses_per_tick`` 为 0 时按每分钟额度自动算：每个地址约 2 次
-        请求，30 秒一个 tick 即半个窗口，所以「每分钟额度的一半÷2」是安全上限。
-        免费档 5 次/分钟 → 1 个；升级到 60 → 最多 15 个，但实际夹在 1~10，
-        避免一次 tick 把额度全吃光、把手动查询挤掉（巡检本来就要让路）。
-        """
-
-        cfg = config if config is not None else self.config()
-        try:
-            fixed = int(cfg.get("addresses_per_tick") or 0)
-        except (TypeError, ValueError):
-            fixed = 0
-        if fixed > 0:
-            return max(1, min(fixed, 50))
-        try:
-            per_minute = int(requests_per_minute())
-        except Exception:
-            per_minute = 5
-        # 半个窗口的额度 / 每地址 2 次请求
-        auto = max(1, (per_minute // 2) // 2)
-        return min(auto, 10)
 
     def config(self) -> dict[str, Any]:
         return settings_store.load_watch_config()
@@ -259,190 +160,16 @@ class WatchService:
         settings_store.save_watch_config(clean)
         return self.config()
 
-    # -- 状态统计 ---------------------------------------------------------
-    def _today_requests(self) -> int:
-        start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        with self.database.session() as db:
-            return int(
-                db.scalar(
-                    select(func.coalesce(func.sum(WatchRun.requests), 0)).where(
-                        WatchRun.started_at >= start
-                    )
-                )
-                or 0
-            )
-
-    def watchable_count(self) -> int:
-        config = self.config()
-        return len(self._watchable_addresses(config))
-
-    @staticmethod
-    def _should_watch(row: AddressLibrary, config: dict[str, Any]) -> bool:
-        """这个地址该不该进巡检队列（唯一判据，别在别处另写一套）。
-
-        三条排除：
-
-        1. 系统角色（交易所 / 验证者 / 公共地址 / 系统）——汇聚型地址，
-           查它等于拿额度换噪音；
-        2. 仅备注记录（``relation-note``，不在任何库）——用户只是给扫描结果
-           里某个地址写了句角色说明，那不是"入库"，自然不该被巡检。撤回自动
-           入库时如果保留人工备注，记录会转成这种形态，靠这一条挡住；
-        3. 自动入库的地址（默认）——否则会顺着转账一路扩散把库撑爆。
-        """
-
-        if _categories(row) & SKIP_CATEGORIES:
-            return False
-        if str(row.source or "").startswith(NOTE_ONLY_SOURCE):
-            return False
-        if not config["follow_auto_imported"] and str(row.source or "").startswith(
-            "auto-watch"
-        ):
-            return False
-        return True
-
-    def _watchable_addresses(
-        self, config: dict[str, Any], db: Any = None
-    ) -> list[str]:
-        """当前该巡检的地址集合。
-
-        每次都从 ``address_library`` 现算，**不缓存**：库里新增地址、就地改
-        分类（标成交易所/验证者/公共地址）、或撤回自动入库，下一轮立刻生效。
-        """
-
-        if db is not None:
-            rows = db.scalars(select(AddressLibrary)).all()
-        else:
-            with self.database.session() as session:
-                rows = session.scalars(select(AddressLibrary)).all()
-        return [
-            row.address for row in rows if self._should_watch(row, config)
-        ]
-
-    def _cycle_start(self, db: Any = None) -> datetime | None:
-        """本轮的起点时间。
-
-        一轮巡检会被拆成多条 ``watch_runs``：撞每日上限停一次、重启服务再
-        起一条，每条都从 0 计数。若直接拿最新那条的 ``addresses_checked``
-        当进度，进度条每被打断就归零一次——用户看到的就是「明明查了 700 个
-        又变回 0%」。
-
-        所以按「周期」算：从最新一条往回走，连续的非 ``complete`` 轮次都算
-        同一周期，遇到第一条 ``complete`` 时把它的 ``started_at`` 当周期起点
-        （那一条本身就是本轮的开头）。真正的完整一轮跑完后，下一条新轮次
-        才会开启新周期，进度自然重置。
-        """
-
-        def _load(session):
-            return session.scalars(
-                select(WatchRun).order_by(WatchRun.id.desc()).limit(50)
-            ).all()
-
-        if db is not None:
-            runs = _load(db)
-        else:
-            with self.database.session() as session:
-                runs = _load(session)
-        for row in runs:
-            if row.status == "complete":
-                started = row.started_at
-                if started is not None and started.tzinfo is None:
-                    started = started.replace(tzinfo=timezone.utc)
-                return started
-        # 一条完整的都没有（刚装好、或一直在被打断）：取最早那条的起点。
-        if not runs:
-            return None
-        oldest = runs[-1].started_at
-        if oldest is not None and oldest.tzinfo is None:
-            oldest = oldest.replace(tzinfo=timezone.utc)
-        return oldest
-
-    def _progress(
-        self, config: dict[str, Any], run: WatchRun | None, db: Any = None
-    ) -> dict[str, Any]:
-        """本轮进度：应查多少、已查多少、还剩多少、预计多久。
-
-        前端「进度窗口」只消费这个结构。以前界面上只有「已查 N 个」，
-        分母缺失，用户无法判断是刚开工还是快完了。
-        """
-
-        addresses = self._watchable_addresses(config, db)
-        total = len(addresses)
-        # 「已查」按周期内的游标统计，而不是单条 run 的计数器——否则撞上限、
-        # 重启之后进度会归零（见 _cycle_start 的说明）。
-        cycle_start = self._cycle_start(db)
-        checked = 0
-        checked_once = 0
-        if addresses:
-            set_checked = select(func.count(WatchState.address)).where(
-                WatchState.address.in_(addresses),
-                WatchState.last_checked_at.is_not(None),
-            )
-            set_cycle = set_checked
-            if cycle_start is not None:
-                set_cycle = set_checked.where(
-                    WatchState.last_checked_at >= cycle_start
-                )
-            if db is not None:
-                checked = int(db.scalar(set_cycle) or 0)
-                checked_once = int(db.scalar(set_checked) or 0)
-            else:
-                with self.database.session() as session:
-                    checked = int(session.scalar(set_cycle) or 0)
-                    checked_once = int(session.scalar(set_checked) or 0)
-        remaining = max(total - min(checked, total), 0)
-        per_tick = self.addresses_per_tick(config)
-        try:
-            per_minute = int(requests_per_minute())
-        except Exception:
-            per_minute = 5
-        # 30 秒一个 tick，每 tick 推进 per_tick 个地址（每地址约 2 次请求）。
-        seconds_per_address = 30 / max(per_tick, 1)
-        percent = round(min(checked / total, 1) * 100, 1) if total else 0.0
-        # -- 心跳：判断「真的在跑」还是「停在上一轮的断点上」 --------------
-        # 手动查询让路时进度本来就会停几秒到一分钟，不能算异常；超过 3 个
-        # tick（90 秒）没有任何推进、且不是因为让路，才是卡住。
-        running = run is not None and run.status == "running"
-        last_tick_at = self._progress_heartbeat.get("at")
-        idle_seconds = 0
-        stale = False
-        if running and last_tick_at is not None:
-            idle = (utcnow() - last_tick_at).total_seconds()
-            idle_seconds = int(max(idle, 0))
-            stale = idle > 90 and not self._progress_heartbeat.get("paused")
-        resumed = False
-        if running and run is not None:
-            started = run.started_at
-            if started is not None:
-                if started.tzinfo is None:
-                    started = started.replace(tzinfo=timezone.utc)
-                # 这一轮是上一次进程留下的 → 本轮就是「从断点接着跑」。
-                resumed = started < PROCESS_STARTED_AT and checked > 0
-        return {
-            "total": total,
-            "checked": checked,
-            "remaining": remaining,
-            "checked_once": checked_once,
-            "never_checked": max(total - checked_once, 0),
-            "per_tick": per_tick,
-            "requests_per_minute": per_minute,
-            "seconds_per_address": round(seconds_per_address, 1),
-            "eta_seconds": int(round(remaining * seconds_per_address)),
-            "percent": percent,
-            "running": running,
-            "resumed": resumed,
-            "idle_seconds": idle_seconds,
-            "stale": stale,
-        }
-
-    def mark_tick(self, *, paused: bool = False) -> None:
-        """调度器每次尝试推进时打一个心跳，进度窗口据此判断「还活着」。"""
-
-        self._progress_heartbeat = {"at": utcnow(), "paused": bool(paused)}
-
     def status(self) -> dict[str, Any]:
+        """地址库自动入库的现状。
+
+        0.9.0 起不再有「逐地址问 API」的巡检：地址的新往来全部由本地索引
+        流水线从链上 RPC 采到的转账里撞出来，零 Taostats 额度。所以这里
+        只留「入库了多少、还有哪些候选、流水线跑到哪」。
+        """
+
         config = self.config()
         with self.database.session() as db:
-            last_run = db.scalars(select(WatchRun).order_by(WatchRun.id.desc()).limit(1)).first()
             pending = db.scalar(select(func.count(WatchCandidate.id))) or 0
             imported = db.scalar(
                 select(func.count(AutoImportLog.id)).where(AutoImportLog.status == "active")
@@ -450,32 +177,16 @@ class WatchService:
             revoked = db.scalar(
                 select(func.count(AutoImportLog.id)).where(AutoImportLog.status == "revoked")
             ) or 0
-            checked = db.scalar(
-                select(func.count(WatchState.address)).where(
-                    WatchState.last_checked_at.is_not(None)
-                )
-            ) or 0
             candidates = db.scalars(
                 select(WatchCandidate)
                 .order_by(WatchCandidate.cumulative_tao.desc())
                 .limit(5)
             ).all()
-            recent = db.scalars(select(WatchRun).order_by(WatchRun.id.desc()).limit(8)).all()
-            progress = self._progress(config, last_run, db)
         return {
             "config": config,
-            "today_requests": self._today_requests(),
-            # 巡检是否因手动查询而暂停：前端据此显示「已让路 / 冷却 N 秒」。
-            "pause": self.pause_payload(),
-            "watchable": progress["total"],
-            "checked_once": int(checked),
-            # 进度窗口的完整数据：分母、剩余、每地址耗时、ETA 都在这里。
-            "progress": progress,
             "pending_candidates": int(pending),
             "imported": int(imported),
             "revoked": int(revoked),
-            "last_run": self._run_dict(last_run),
-            "runs": [self._run_dict(row) for row in recent],
             "top_candidates": [
                 {
                     "address": row.address,
@@ -486,38 +197,8 @@ class WatchService:
                 }
                 for row in candidates
             ],
-            "api_configured": taostats.is_configured(),
-            # 本地索引优先的省额度效果（本进程累计，重启清零）。
-            "local_index": {
-                "enabled": bool(config.get("prefer_local_index", True)),
-                "hits": self._local_hits,
-                "api_saved": self._api_saved,
-                "window": self.local_window(),
-                # 真实连续性：名义区间多半不连续，只有 safe_from..safe_to
-                # 这一段能安全省额度。
-                "coverage": self.coverage(),
-            },
             # 本地索引流水线：不花 API 额度、按块撞地址库的那条路。
-            # 与上面的「逐地址巡检」是两条独立链路，界面要分开显示，
-            # 否则用户分不清"进度条不动"到底是巡检停了还是没额度了。
             "sweep": self.sweep_status(),
-        }
-
-    @staticmethod
-    def _run_dict(row: WatchRun | None) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        return {
-            "id": row.id,
-            "status": row.status,
-            "manual": bool(row.manual),
-            "addresses_checked": row.addresses_checked,
-            "new_found": row.new_found,
-            "inserted": row.inserted,
-            "requests": row.requests,
-            "error": row.error,
-            "started_at": iso_utc(row.started_at),
-            "finished_at": iso_utc(row.finished_at),
         }
 
     # -- 入库日志 ---------------------------------------------------------
@@ -656,411 +337,6 @@ class WatchService:
                 row.revoked_at = utcnow()
             return {"ok": True, "revoked": len(rows)}
 
-    # -- 巡检主流程 -------------------------------------------------------
-    def next_targets(
-        self,
-        limit: int,
-        config: dict[str, Any] | None = None,
-        *,
-        before: datetime | None = None,
-    ):
-        """取本轮还没查过的地址，最久没查的排最前。
-
-        ``before`` 是本轮开始时间：只挑 ``last_checked_at`` 早于它（或从未查过）
-        的地址，这样一轮跑完自然收敛，不需要另外维护游标。
-        """
-
-        config = config or self.config()
-        with self.database.session() as db:
-            rows = db.scalars(select(AddressLibrary)).all()
-            states = {
-                state.address: state.last_checked_at
-                for state in db.scalars(select(WatchState)).all()
-            }
-        cutoff = None
-        if before is not None:
-            cutoff = before if before.tzinfo else before.replace(tzinfo=timezone.utc)
-
-        # 必须**先过滤再排序**。以前的写法是先按「最久没查的优先」取前 60 行，
-        # 再在里面过滤掉交易所/验证者——而库里 1194 条验证者大多从未巡检过
-        # （last_checked_at 为 NULL），恰好全排在最前面，60 个名额被它们占满
-        # 后过滤干净，于是 next_targets 返回空，巡检每轮都「瞬间完成」。
-        eligible: list[tuple[datetime | None, int, AddressLibrary]] = []
-        for row in rows:
-            if not self._should_watch(row, config):
-                continue
-            checked = states.get(row.address)
-            if checked is not None and checked.tzinfo is None:
-                checked = checked.replace(tzinfo=timezone.utc)
-            if cutoff is not None and checked is not None and checked >= cutoff:
-                # 本轮已经查过它了，让给别的地址，保证一轮收敛。
-                continue
-            eligible.append((checked, row.id, row))
-        # 从未查过的排最前（None 最小），其余按最久没查升序。
-        eligible.sort(key=lambda item: (item[0] is not None, item[0] or 0, item[1]))
-        return [item[2] for item in eligible[: max(limit, 0)]]
-
-    def run(
-        self,
-        *,
-        manual: bool = False,
-        max_addresses: int | None = None,
-        config: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """跑一轮巡检：处理到「库内地址都过一遍」或「请求预算用完」为止。
-
-        一轮可能跨几个小时（地址数 × 每地址 1~2 次请求 ÷ 每分钟额度）。
-        进度实时写在 ``watch_runs`` 上，地址游标写在 ``watch_state`` 上，
-        所以调度器下一个 tick、甚至服务重启后都能从断点接着推进，
-        不会重头再来。
-        """
-
-        config = config or self.config()
-        if not taostats.is_configured():
-            return {
-                "status": "no_api_key",
-                "error": "未配置 Taostats API key，巡检未执行。",
-                "addresses_checked": 0,
-                "inserted": 0,
-            }
-        if not config["enabled"] and not manual:
-            return {"status": "disabled", "addresses_checked": 0, "inserted": 0}
-
-        run_id, counters, started = self._ensure_run(manual=manual, config=config)
-        if run_id is None:
-            return {
-                "status": "waiting",
-                "error": "",
-                "addresses_checked": 0,
-                "inserted": 0,
-            }
-        limit = max_addresses if max_addresses is not None else 10**9
-        return self._advance(run_id, counters, started, limit, config)
-
-    def _ensure_run(
-        self, *, manual: bool, config: dict[str, Any]
-    ) -> tuple[int | None, dict[str, int], datetime]:
-        """取进行中的一轮；没有就按间隔决定是否开新一轮。"""
-
-        with self.database.session() as db:
-            running = db.scalars(
-                select(WatchRun)
-                .where(WatchRun.status == "running")
-                .order_by(WatchRun.id.desc())
-                .limit(1)
-            ).first()
-            if running is not None:
-                counters = {
-                    "checked": int(running.addresses_checked or 0),
-                    "new_found": int(running.new_found or 0),
-                    "inserted": int(running.inserted or 0),
-                    "requests": int(running.requests or 0),
-                }
-                started = running.started_at or utcnow()
-                return running.id, counters, started
-        if not manual and self._interval_waiting(config):
-            return None, {}, utcnow()
-        with self.database.session() as db:
-            run = WatchRun(manual=manual, status="running")
-            db.add(run)
-            db.flush()
-            return (
-                run.id,
-                {"checked": 0, "new_found": 0, "inserted": 0, "requests": 0},
-                run.started_at or utcnow(),
-            )
-
-    def _advance(
-        self,
-        run_id: int,
-        counters: dict[str, int],
-        started: datetime,
-        limit: int,
-        config: dict[str, Any],
-    ) -> dict[str, Any]:
-        budget = int(config["daily_budget"])
-        status = "running"
-        error = ""
-        done = 0
-        try:
-            # 每日上限对所有轮次生效——包括手动点的那次。以前这里是
-            # ``not manual``（「用户点了就让他跑完」），但手动开启的轮次
-            # ``manual=True`` 会被后续所有调度器 tick 继承，等于永久绕过每日
-            # 上限，一次误点就能把整月额度打光。用户想多跑就去调高界面上的
-            # 「每日请求上限」。
-            while done < limit:
-                if budget and self._today_requests() >= budget:
-                    status = "budget"
-                    break
-                targets = self.next_targets(1, config, before=started)
-                if not targets:
-                    status = "complete"
-                    break
-                result = self._check_address(targets[0].address, config)
-                counters["requests"] += result["requests"]
-                if not result.get("rate_limited"):
-                    # 被限速的地址游标没动（下次还会再查），不计入本轮进度。
-                    counters["checked"] += 1
-                counters["inserted"] += result["inserted"]
-                counters["new_found"] += result["new_found"]
-                done += 1
-                self._save_progress(run_id, counters, "running")
-                if result.get("rate_limited"):
-                    status = "running" if done < limit else "rate_limited"
-                    error = self._rate_limit_note()
-                    break
-        except TaostatsRateLimitError:
-            status = "running"
-            error = self._rate_limit_note()
-        except (TaostatsAuthError, TaostatsUnavailableError) as exc:
-            status = "error"
-            error = str(exc)
-        except Exception as exc:  # noqa: BLE001 - 巡检失败不能影响服务
-            status = "error"
-            error = f"{type(exc).__name__}: {exc}"
-        if status == "running" and not error:
-            # 单步推进（调度器 tick）不结束本轮；只有跑完或出错才收尾。
-            self._save_progress(run_id, counters, "running")
-            return {
-                "status": "running",
-                "error": "",
-                "addresses_checked": counters["checked"],
-                "new_found": counters["new_found"],
-                "inserted": counters["inserted"],
-                "requests": counters["requests"],
-                "run_id": run_id,
-            }
-        self._save_progress(run_id, counters, status, error=error)
-        return {
-            "status": status,
-            "error": error,
-            "addresses_checked": counters["checked"],
-            "new_found": counters["new_found"],
-            "inserted": counters["inserted"],
-            "requests": counters["requests"],
-            "run_id": run_id,
-        }
-
-    def tick(self, max_addresses: int = 1, config: dict[str, Any] | None = None) -> dict[str, Any]:
-        """调度器用的小步推进：只处理少量地址，限速就安静退出。"""
-
-        config = config or self.config()
-        if not config["enabled"]:
-            return {"status": "disabled", "addresses_checked": 0}
-        if not taostats.is_configured():
-            return {"status": "no_api_key", "addresses_checked": 0}
-        return self.run(manual=False, max_addresses=max_addresses, config=config)
-
-    def _interval_waiting(self, config: dict[str, Any]) -> bool:
-        """上一轮跑完还不到设定间隔时，先不开新一轮。"""
-
-        with self.database.session() as db:
-            last = db.scalars(
-                select(WatchRun)
-                .where(WatchRun.status.in_(("complete", "budget")))
-                .order_by(WatchRun.id.desc())
-                .limit(1)
-            ).first()
-            if last is None:
-                return False
-            finished = last.finished_at or last.started_at
-            if finished is None:
-                return False
-            if finished.tzinfo is None:
-                finished = finished.replace(tzinfo=timezone.utc)
-            interval = timedelta(minutes=int(config["interval_minutes"]))
-            return utcnow() - finished < interval
-
-    def _save_progress(
-        self,
-        run_id: int,
-        counters: dict[str, int],
-        status: str,
-        *,
-        error: str = "",
-    ) -> None:
-        try:
-            with self.database.session() as db:
-                run = db.get(WatchRun, run_id)
-                if run is None:
-                    return
-                run.addresses_checked = counters["checked"]
-                run.new_found = counters["new_found"]
-                run.inserted = counters["inserted"]
-                run.requests = counters["requests"]
-                run.error = error
-                if status != "running":
-                    run.status = status
-                    run.finished_at = utcnow()
-        except Exception:  # noqa: BLE001 - 进度写失败不该打断巡检
-            pass
-
-    # -- 本地索引优先（省额度） -------------------------------------------
-    def coverage(self) -> dict[str, Any]:
-        """本地索引的真实覆盖情况：区间、连续性、可用上界。
-
-        不能简单取 ``[min(block), max(block)]`` 当"已覆盖"——实测库里这个
-        区间是 18,254 块，但真正扫过的只有 9,575 块（52%），中间缺 8,679
-        块（含一段 7,715 块的整段空洞，来自早期某个失败任务）。拿这种不连续
-        的区间冒充"已覆盖"，巡检就会静默漏掉真实转账。
-
-        所以这里从**扫描任务**（``scan_jobs``，只算成功的、扫过块的）反推
-        真正扫过的区间集合，再算出一个"可以安全信任的连续上界"：
-
-        * 从游标往上回溯，遇到缺口就停；
-        * 只有从 ``safe_from`` 到 ``safe_to`` 连续无缝，才敢说这段可信。
-        """
-
-        with self.database.session() as db:
-            cursor = db.scalar(select(ChainCursor).limit(1))
-            cursor_block = int(cursor.last_block) if cursor and cursor.last_block else 0
-            jobs = db.scalars(
-                select(ScanJob)
-                .where(ScanJob.status == "complete", ScanJob.scanned_blocks > 0)
-                .order_by(ScanJob.start_block)
-            ).all()
-        ranges = [
-            (int(job.start_block), int(job.end_block))
-            for job in jobs
-            if job.start_block and job.end_block
-        ]
-        if not ranges or not cursor_block:
-            return {
-                "available": False,
-                "safe_from": 0,
-                "safe_to": 0,
-                "covered_blocks": 0,
-                "span_blocks": 0,
-                "ratio": 0.0,
-            }
-        covered = sum(end - start + 1 for start, end in ranges)
-        span = ranges[-1][1] - ranges[0][0] + 1
-        # 从游标往下回溯，找"连续无缝"的一段。
-        #
-        # ranges 已按起始块升序；逆序走，用 safe_from 表示当前连续段的下界。
-        # 只有某段的 end 与 safe_from 相接（end >= safe_from - 1）才能继续
-        # 往下延伸；中间一旦出现空隙就停，避免把断点之外的数据也算进来。
-        safe_from = cursor_block
-        for start, end in sorted(ranges, reverse=True):
-            if end < safe_from - 1:
-                break  # 这段与连续段之间有空隙，到此为止
-            safe_from = min(safe_from, start)
-        safe_to = cursor_block
-        if safe_from > safe_to:
-            safe_from = safe_to
-        return {
-            "available": safe_to > safe_from,
-            "safe_from": int(safe_from),
-            "safe_to": int(safe_to),
-            "covered_blocks": covered,
-            "span_blocks": span,
-            "ratio": round(covered / span, 4) if span else 0.0,
-        }
-
-    def local_window(self) -> tuple[int, int] | None:
-        """可安全信任的本地索引块区间 ``(from_block, to_block)``，没有则 None。
-
-        这是"能拿来省 API 额度"的区间，不是名义上的索引范围。参考
-        ``coverage()`` 的说明：名义范围可能只有 52% 连续性。
-        """
-
-        info = self.coverage()
-        if not info["available"]:
-            return None
-        return int(info["safe_from"]), int(info["safe_to"])
-
-    def _local_edges(self, address: str, from_block: int) -> list[dict[str, Any]]:
-        """从本地索引取该地址在 ``from_block`` 之后的全部边。
-
-        覆盖两类事件：
-        * 普通 TAO 转账（``tao_transfer``）——按 from/to 命中；
-        * 代币质押转移（``stake_transfer``）——冷钱包在 ``from_address``。
-
-        金额单位与 ``_edges_from_transfers`` 保持一致（rao → TAO）。
-        """
-
-        with self.database.session() as db:
-            rows = db.scalars(
-                select(Transfer)
-                .where(
-                    Transfer.block_number > from_block,
-                    or_(
-                        Transfer.from_address == address,
-                        Transfer.to_address == address,
-                        # stake 转移：冷钱包作为 from_address 落库。
-                        and_(
-                            Transfer.edge_type == "stake_transfer",
-                            Transfer.from_address == address,
-                        ),
-                    ),
-                )
-                .order_by(Transfer.block_number)
-            ).all()
-        edges: list[dict[str, Any]] = []
-        for row in rows:
-            source = str(row.from_address or "").strip()
-            target = str(row.to_address or "").strip()
-            if source == address:
-                partner = target
-            elif target == address:
-                partner = source
-            else:
-                # stake_transfer 的对手方可能落在 hotkey 上。
-                partner = str(row.hotkey or "").strip()
-            if not partner or partner == address:
-                continue
-            amount = Decimal(int(row.amount_rao or 0)) / Decimal(1_000_000_000)
-            edges.append(
-                {
-                    "counterparty": partner,
-                    "block": int(row.block_number or 0),
-                    "amount": amount.quantize(Decimal("0.000000001")),
-                    "tx": str(row.tx_hash or ""),
-                    "kind": "stake" if row.edge_type == "stake_transfer" else "tao",
-                }
-            )
-        return edges
-
-    def _local_covers(
-        self, address: str, baseline: int, window: tuple[int, int] | None
-    ) -> bool:
-        """本地索引能否完整体现「这个地址在 baseline 之后的新转账」。
-
-        三个条件全满足才算覆盖，任一不满足就退回 API：
-
-        1. 本地索引存在且有覆盖区间 ``[first, last]``；
-        2. ``baseline >= first``——上一轮看到的块必须**落在**本地区间之内。
-           若 baseline 比区间起点还早，中间那段（baseline → first）本地
-           根本没有数据，只看本地会漏掉真实转账；
-        3. ``last > baseline``——本地至少比上一轮多推进了一点，否则没新东西
-           可看，也就没必要声称"已覆盖"（调用方会走 API 拿到最新状态）。
-        4. **该地址在本地索引里出现过**。从没出现过的地址，本地只能证明
-           「我这没数据」，不能证明「它没有新转账」——可能是索引还没扫到
-           和它相关的块，也可能是它的往来都在索引覆盖范围之外。这种情况
-           必须问 API。
-        """
-
-        if window is None:
-            return False
-        first, last = window
-        if baseline < first:
-            return False
-        if last <= baseline:
-            return False
-        with self.database.session() as db:
-            seen = db.scalar(
-                select(Transfer.id)
-                .where(
-                    or_(
-                        Transfer.from_address == address,
-                        Transfer.to_address == address,
-                    )
-                )
-                .limit(1)
-            )
-        return seen is not None
-
-    # -- 本地索引流水线：不花 API 额度，边采边入库 ------------------------
     def sweep_local_index(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """拿本地索引里「新入库的块」去和地址库做交集，命中就直接自动入库。
 
@@ -1186,6 +462,18 @@ class WatchService:
             max_block = since
             for row in rows:
                 max_block = max(max_block, int(row.block_number))
+                # 库与库之间的往来统计：关联结果靠它给「同档对手方」加分。
+                # 原来只有逐地址 API 巡检会写这张表，0.9.0 删掉那条链路后
+                # 这里必须自己记，否则 table 永远停在旧数据上、加分失效。
+                from_row = by_address.get(str(row.from_address or ""))
+                to_row = by_address.get(str(row.to_address or ""))
+                if from_row is not None and to_row is not None:
+                    left = str(from_row.book or "")
+                    right = str(to_row.book or "")
+                    if left and right and left != right and from_row.address != to_row.address:
+                        self._bump_pair(
+                            db, left, right, Decimal(str(row.amount_tao or 0))
+                        )
                 sides = [
                     (str(row.from_address or ""), str(row.to_address or "")),
                     (str(row.to_address or ""), str(row.from_address or "")),
@@ -1293,203 +581,6 @@ class WatchService:
                 "inserted_total": int(state.inserted_total or 0),
                 "last_sweep_at": iso_utc(state.last_sweep_at),
             }
-
-    # -- 单个地址 ---------------------------------------------------------
-    def _check_address(self, address: str, config: dict[str, Any]) -> dict[str, Any]:
-        threshold = Decimal(str(config["threshold_tao"]))
-        requests = 0
-        new_found = 0
-        inserted = 0
-        edges: list[dict[str, Any]] = []
-        rate_limited = False
-
-        with self.database.session() as db:
-            row = db.scalar(
-                select(AddressLibrary).where(AddressLibrary.address == address)
-            )
-            book = (row.book if row is not None else "") or ""
-            pair_counter = self._counterparty_map(db)
-            revoked = set(
-                db.scalars(
-                    select(AutoImportLog.address).where(AutoImportLog.status == "revoked")
-                ).all()
-            )
-            state = db.get(WatchState, address)
-            baseline = state.last_block if state is not None else 0
-            # 首次巡检（last_checked_at 为空）只建立基线，不把历史对手方灌进库。
-            initialized = state is not None and state.last_checked_at is not None
-
-        # -- 本地索引优先：能确定「本地已覆盖这段时间」就不花 API 额度 --
-        #
-        # 一轮完整巡检每个地址要 2 次请求，754 个地址就是约 1500 次/轮。
-        # 而本地索引（链上 RPC 直采）完全不消耗 Taostats 额度，所以只要本地
-        # 真能覆盖「这个地址上一轮之后的新转账」，就没必要再问 API。
-        #
-        # 判据见 _local_covers()：必须本地有区间、baseline 早于区间起点、
-        # 且该地址在本地出现过。任一不满足就退回 API——宁可多花一次请求，
-        # 也不能因为本地数据缺口而漏掉真实转账（漏了就再也不会被补上）。
-        from_local = False
-        if config.get("prefer_local_index", True):
-            window = self.local_window()
-            if self._local_covers(address, baseline, window):
-                try:
-                    edges.extend(self._local_edges(address, baseline))
-                    from_local = True
-                    self._local_hits += 1
-                except Exception:  # noqa: BLE001 - 本地查询失败就退回 API
-                    edges = []
-                    from_local = False
-        if from_local:
-            self._api_saved += 2 if config["include_stake"] else 1
-
-        # 1) TAO 转账（本地没覆盖到才发请求）
-        if not from_local:
-            try:
-                page = get_transfer_page_query(address=address, page=1, limit=200)
-                requests += 1
-                self.database.record_api_request("/v1/transfers", success=True)
-                edges.extend(self._edges_from_transfers(page.rows, address))
-            except TaostatsRateLimitError:
-                rate_limited = True
-            except (TaostatsAuthError, TaostatsUnavailableError):
-                raise
-            except Exception:  # noqa: BLE001 - 单地址失败不影响整轮
-                pass
-
-        # 2) 代币（stake）转移（同上）
-        if config["include_stake"] and not rate_limited and not from_local:
-            try:
-                stake_page = get_stake_transfer_page(address, 1)
-                requests += 1
-                self.database.record_api_request("/v1/subnets/stake-events", success=True)
-                edges.extend(self._edges_from_stakes(stake_page.rows, address))
-            except TaostatsRateLimitError:
-                rate_limited = True
-            except (TaostatsAuthError, TaostatsUnavailableError):
-                raise
-            except Exception:  # noqa: BLE001
-                pass
-
-        max_block = max((edge["block"] for edge in edges), default=0)
-        with self.database.session() as db:
-            state = db.get(WatchState, address)
-            if state is None:
-                state = WatchState(address=address)
-                db.add(state)
-            if rate_limited:
-                # 被限速时数据不完整，两件事都不能做：
-                # 1) 不能入库——下次重查时 baseline 没推进，同一批转账会被
-                #    再累计一次，金额翻倍可能把不该入库的地址灌进来；
-                # 2) 不能写 last_checked_at——那等于把没查完的地址标记成
-                #    「已巡检」，要等下一整轮（约 2 天）才会再查，被静默跳过。
-                # 只留个原因，游标原地不动，下一 tick 重试同一个地址。
-                state.last_error = "限速暂停，稍后重试"
-            else:
-                if initialized and edges:
-                    fresh = [edge for edge in edges if edge["block"] > baseline]
-                    for edge in fresh:
-                        partner = edge["counterparty"]
-                        if not partner or partner == address:
-                            continue
-                        if partner.startswith(SYSTEM_PREFIX):
-                            continue
-                        if not is_valid_ss58(partner):
-                            continue
-                        in_library = partner in pair_counter
-                        partner_book, partner_source = pair_counter.get(partner, ("", ""))
-                        if not in_library and partner not in revoked:
-                            new_found += 1
-                        if in_library:
-                            self._bump_pair(db, book, partner_book, edge["amount"])
-                            # 自动入库的地址会继续累计：后面若另一个库的累计更大，
-                            # 就按「累计金额最多的库」改判归属。
-                            if (
-                                config["auto_import"]
-                                and str(partner_source or "").startswith("auto-watch")
-                            ):
-                                self._accumulate(
-                                    db, partner, book, edge, threshold, address
-                                )
-                            continue
-                        if partner in revoked:
-                            continue
-                        if config["auto_import"]:
-                            if self._accumulate(
-                                db, partner, book, edge, threshold, address
-                            ):
-                                inserted += 1
-                state.checked_count = int(state.checked_count or 0) + 1
-                state.last_checked_at = utcnow()
-                state.last_error = ""
-                # 首次巡检只建立基线；后续只推进到见过的最大块。
-                #
-                # 本地取数时若这段时间没有新转账，edges 为空、max_block=0，
-                # 直接 max() 会让游标原地不动——下一轮又会重复扫同一段本地
-                # 区间。所以本地成功时推进到「本地覆盖上界」，表示这段已经
-                # 确认看过了；下次只有超出这个上界的新块才会再看。
-                advance_to = max_block
-                if from_local and window is not None:
-                    advance_to = max(advance_to, int(window[1]))
-                state.last_block = max(int(state.last_block or 0), advance_to)
-        return {
-            "requests": requests,
-            "new_found": new_found,
-            "inserted": inserted,
-            "rate_limited": rate_limited,
-        }
-
-    @staticmethod
-    def _edges_from_transfers(rows: list[dict[str, Any]], address: str) -> list[dict[str, Any]]:
-        edges: list[dict[str, Any]] = []
-        for item in rows:
-            try:
-                source = str(item["from"]).strip()
-                target = str(item["to"]).strip()
-                block = int(item["block_number"])
-                raw = Decimal(str(item["amount"]))
-                amount = (raw / Decimal(1_000_000_000)).quantize(Decimal("0.000000001"))
-                tx_hash = str(item.get("transaction_hash") or item.get("id") or "")
-            except (KeyError, TypeError, ValueError, InvalidOperation):
-                continue
-            if not amount.is_finite() or amount < 0:
-                continue
-            partner = target if source == address else source if target == address else ""
-            if not partner:
-                continue
-            edges.append(
-                {"counterparty": partner, "block": block, "amount": amount, "tx": tx_hash, "kind": "tao"}
-            )
-        return edges
-
-    @staticmethod
-    def _edges_from_stakes(rows: list[dict[str, Any]], address: str) -> list[dict[str, Any]]:
-        edges: list[dict[str, Any]] = []
-        for item in rows:
-            if str(item.get("is_transfer") or "").lower() not in {"true", "1"}:
-                continue
-            try:
-                coldkey = str(item["coldkey"]).strip()
-                block = int(item["block_number"])
-                raw = Decimal(str(item["amount"]))
-                amount = (raw / Decimal(1_000_000_000)).quantize(Decimal("0.000000001"))
-            except (KeyError, TypeError, ValueError, InvalidOperation):
-                continue
-            partner = stake_counterparty(item)
-            action = str(item.get("action") or "").lower()
-            if not partner or action not in {"stake", "unstake"}:
-                continue
-            if coldkey != address:
-                continue
-            edges.append(
-                {
-                    "counterparty": partner,
-                    "block": block,
-                    "amount": amount,
-                    "tx": str(item.get("extrinsic_id") or item.get("id") or ""),
-                    "kind": "stake",
-                }
-            )
-        return edges
 
     @staticmethod
     def _counterparty_map(db) -> dict[str, tuple[str, str]]:

@@ -18,12 +18,10 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-import app.taostats as taostats
 import app.watch as watch_module
-from app.db import AddressLibrary, Database
+from app.db import AddressLibrary, Database, Transfer
 from app.service import LinkService
 from app.settings_store import DEFAULT_WATCH_CONFIG
-from app.taostats import TransferPage
 from app.watch import WatchService
 
 SEED = "5DceuTr7XPqw67PNHW9ewzzo2cZ7Cm8HgfjwUqEpd8Mh8QNg"
@@ -31,15 +29,22 @@ IMPORTED = "5GHtTroZhAxDFaEKR8HAdQRfvzdwqSr3YkbPvAi3hLktSxsN"
 BOOK = "6NCK"
 
 
-def _transfer(source, target, block, amount_tao, tx="0x1"):
-    return {
-        "id": tx,
-        "block_number": block,
-        "from": source,
-        "to": target,
-        "amount": str(int(Decimal(str(amount_tao)) * Decimal(1_000_000_000))),
-        "transaction_hash": tx,
-    }
+def _transfer(database, frm, to, block, amount_tao):
+    with database.session() as session:
+        session.add(
+            Transfer(
+                event_key=f"k{block}",
+                tx_hash=f"0x{block}",
+                block_number=block,
+                block_hash="h",
+                event_index=0,
+                from_address=frm,
+                to_address=to,
+                amount_rao=int(Decimal(str(amount_tao)) * 10**9),
+                amount_tao=Decimal(str(amount_tao)),
+                edge_type="tao_transfer",
+            )
+        )
 
 
 @pytest.fixture()
@@ -55,31 +60,17 @@ def client(monkeypatch):
         watch = WatchService(database)
 
         config = dict(DEFAULT_WATCH_CONFIG)
-        config.update(
-            {
-                "threshold_tao": 30.0,
-                "include_stake": False,
-                "daily_budget": 10_000,
-                "auto_import": True,
-                "follow_auto_imported": False,
-            }
-        )
-        pages = {SEED: []}
-
-        def fake_query(*, address=None, from_address=None, to_address=None, page=1, limit=200):
-            return TransferPage(list(pages.get(address, [])), None)
-
-        monkeypatch.setattr(watch_module, "get_transfer_page_query", fake_query)
-        monkeypatch.setattr(taostats, "is_configured", lambda: True)
+        config.update({"threshold_tao": 30.0, "auto_import": True, "sweep_enabled": True})
         monkeypatch.setattr(
             watch_module.settings_store, "load_watch_config", lambda: config
         )
 
-        # 建一个库 + 跑两遍巡检，产出恰好一条自动入库记录
+        # 建一个库 + 跑两轮流水线，产出恰好一条自动入库记录。
+        # 0.9.0 起没有逐地址 API 巡检了，入库只能由本地索引撞出来。
         service.import_rows([{"address": SEED, "book": BOOK}], "manual")
-        watch._check_address(SEED, config)  # 建基线
-        pages[SEED] = [_transfer(SEED, IMPORTED, 1000, 45, "0xabc")]
-        watch._check_address(SEED, config)
+        watch.sweep_local_index(config)  # 定游标
+        _transfer(database, SEED, IMPORTED, 1000, 45)
+        watch.sweep_local_index(config)
 
         log = watch.logs()["items"][0]
         assert log["address"] == IMPORTED
@@ -124,11 +115,9 @@ def test_revoke_and_mark_endpoint(client, role, expect_category, expect_flag):
         if expect_flag:
             assert getattr(row, expect_flag) is True
 
-    # 日志被标成已撤回，且巡检不再收它
+    # 日志被标成已撤回
     item = watch.logs()["items"][0]
     assert item["status"] == "revoked"
-    watched = {entry.address for entry in watch.next_targets(20, watch.config())}
-    assert IMPORTED not in watched
 
 
 def test_revoke_and_mark_rejects_unknown_role(client):

@@ -1173,3 +1173,28 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u al
 - `scanned=0 / duration=0ms` 是正常态（游标后无新块），**不要**把它当异常报错。
 - 测试坑：静态契约测试别用固定字符数截取函数体，面板一加内容就假失败；
   同名测试函数后定义会静默覆盖前者，追加前先 grep 一下有没有同名。
+
+## 67. 2026-11-11 0.9.0 交接：巡检只剩本地索引（**改地址库自动入库前必读**）
+
+- **架构事实**：0.9.0 起没有「逐地址问 API 的巡检」了。地址库的新地址只能由
+  `WatchService.sweep_local_index()` 产生：每 30 秒拿 `transfers`（RPC 直采）
+  里 `block > watch_sweep_state.last_block` 的行去撞地址库，零 Taostats 请求。
+  想「补某个地址的历史往来」只有一条路：主动对它发起关联扫描。
+- 已删除且**不许再加回来**：`run/tick/_advance/_check_address/next_targets/
+  coverage/local_window/set_pause/pause_payload/mark_tick/addresses_per_tick`、
+  `jobs.manual_busy` 与 `MANUAL_QUIET_SECONDS`、`POST /api/watch/run`、`WATCH_LOCK`、
+  前端 `#watch-enabled/#watch-progress/#watch-run` 等。`test_api_key_pool.py`
+  里的 `TestNoPerAddressWatchReservation` 三条契约会拦。
+- 配置只剩三项：`threshold_tao` / `auto_import` / `sweep_enabled`。旧 key 留在
+  用户 `settings.json` 里无害（`load_watch_config` 只读声明过的），别去删。
+- `taostats_request_budget()` **不再有 30 的上限**：`min(..., 30)` 是为了给巡检留
+  余量，巡检下线后没有理由限流自己。改这里要连带改
+  `test_request_budget_uses_full_limit_without_reservation`。
+- **`BookPairStat` 的写入搬到了流水线**（两边都在库且不同库时 `_bump_pair`）。
+  如果以后重构 sweep 的 sides 循环，注意别把它弄丢——丢了不会报错，只是关联
+  结果的同档加分静默失效。
+- `WatchRun` / `WatchState` 两张表保留但不再写入，只为老库能打开、导出包能读；
+  docstring 已标「已废弃」。
+- 测试坑：`test_watch.py` 的用例全靠「先 sweep 一次定游标、再塞 transfers、再
+  sweep」这个节奏；首轮 sweep 会把游标定在 `max(block_number)`，先塞数据再
+  sweep 等于跳过全部数据（`test_first_sweep_only_sets_cursor` 说明这一点）。

@@ -245,10 +245,11 @@ class WatchSweepState(Base):
 
     与 :class:`WatchState` 是两套独立游标，必须分开：
 
-    - ``WatchState.last_block`` 是「用 API 逐个地址巡检」的地址级游标；
-    - 这张表是「拿本地索引里的新块去撞地址库」的块级游标。
+    - ``WatchState.last_block`` 是已删除的「用 API 逐个地址巡检」的地址级游标
+      （0.9.0 起不再写入，仅为兼容旧库保留）；
+    - 这张表是「拿本地索引里的新块去撞地址库」的块级游标，现在是唯一在用的。
 
-    分开记的原因：本地流水线不吃 API 额度、可以高频跑；而逐地址巡检受额度
+    分开记的原因：本地流水线不吃 API 额度、可以高频跑；而旧的逐地址巡检受额度
     约束、可能几天才轮一遍。混用一个游标会让两边互相把对方的进度推飞。
     """
 
@@ -264,11 +265,11 @@ class WatchSweepState(Base):
 
 
 class WatchState(Base):
-    """某个库内地址上一次被巡检到哪。
+    """已废弃：逐地址 API 巡检的地址级游标（0.9.0 起不再写入）。
 
-    ``last_checked_at`` 为 NULL 表示新加入地址库、还没被巡检过；巡检循环按
-    它升序取下一批地址，天然就是「最久没查的优先」的轮转队列，不用再维护
-    一个自增游标。
+    表保留只是为了老库能打开；现在的游标是 ``watch_sweep_state.last_block``，
+    按「块」推进而不是按「地址」推进——本地索引采到什么块就撞什么块，
+    不需要每个地址各记一个进度。
     """
 
     __tablename__ = "watch_state"
@@ -282,7 +283,7 @@ class WatchState(Base):
 
 
 class WatchCandidate(Base):
-    """巡检发现的新地址，按「对端地址 × 归属库」累加转账金额。
+    """本地索引撞出来的新地址，按「对端地址 × 归属库」累加转账金额。
 
     只有累计金额达到阈值才会写进地址库；未达阈值的也先记账，否则「10 笔
     5 TAO」这种小额多次永远攒不到 30 TAO 的门槛。
@@ -350,7 +351,11 @@ class BookPairStat(Base):
 
 
 class WatchRun(Base):
-    """一次巡检（自动到点触发或手动点「立即巡检」）的进度与结果。"""
+    """已废弃：逐地址 API 巡检的轮次记录（0.9.0 起不再写入）。
+
+    表保留只是为了老库能正常打开、导出的同步包还能读到历史；新的自动入库
+    只写 ``auto_import_log`` 与 ``watch_sweep_state``。
+    """
 
     __tablename__ = "watch_runs"
     id: Mapped[int] = mapped_column(primary_key=True)

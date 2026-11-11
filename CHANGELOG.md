@@ -1,5 +1,43 @@
 # 变更记录
 
+## 0.9.0 · 删掉逐地址 API 巡检，自动入库全走本地索引 · 2026-11-11
+
+用户两句话定了方向：「扫描地址的 API 调用次数，不用预留 30 次额度给地址巡检了，全额给到扫描地址」「巡检地址的 API 调用模块可以取消，地址巡检全部有本地索引」。
+
+### 删除的东西
+
+- `WatchService` 里的整条逐地址 API 巡检：`run()` / `tick()` / `_advance()` / `_check_address()` / `next_targets()` / `_ensure_run()` / `_interval_waiting()` / `_save_progress()` / `_progress()` / `_cycle_start()` / `_local_covers()` / `_local_edges()` / `coverage()` / `local_window()` / `set_pause()` / `pause_payload()` / `mark_tick()` / `addresses`（原文 `addresses_per_tick()`）。`watch.py` 从 1662 行降到 741 行。
+- `app/jobs.py` 的「巡检让路」：`manual_busy()` / `_progress_signature()` / `_stalled()` / `MANUAL_QUIET_SECONDS` / `MANUAL_STALL_SECONDS` / 作业上的 `progress_key`、`progress_at`。
+- 接口 `POST /api/watch/run`（「立即巡检一轮」）与 `_watch_manual_run()`，以及 `WATCH_LOCK`。
+- 前端整块旧 UI：开启巡检、间隔、每日请求上限、每 30 秒推进、含代币转移、本地索引优先、跟踪自动入库地址、立即巡检按钮、进度窗口（含 `renderWatchProgress` / `formatEta` / `WATCH_RUN_LABEL` / `watchStatusText`）。
+- 配置项从 10 个降到 3 个：只剩 `threshold_tao` / `auto_import` / `sweep_enabled`。旧 key 留在 `settings.json` 里无害，`load_watch_config()` 只读声明过的三个。
+
+### 额度：不再预留 30 次
+
+`service.taostats_request_budget()` 原来返回 `min(每分钟额度, 30)`，剩下的留给巡检和余额查询。巡检不在 API 上跑了，这个上限直接去掉：**额度设 60，单轮扫描就能发 60 个请求**。
+
+### 保留并补强的东西
+
+- 自动入库现在只有一条路：本地索引（`transfers` 表，RPC 直采、零 API）× 地址库。判定规则没变——单笔或累计达阈值就入库，多库触发时归累计金额最大的库，交易所/验证者/公共地址不作为触发源。
+- **补回一个被连带删掉的写入**：`BookPairStat`（库对往来累计，关联排序给同档对手方加分）原来只有 API 巡检会写，删掉后会永久停在旧数据。现在流水线处理「两边都在库」的转账时自己记。
+- 面板保留倒计时、进度条、心跳行（0.8.49 那套可见性改动），状态文案改成「自动入库：流水线运行中 · 累计自动入库 N 个 · 待达标候选 N 个 · 已跑 N 轮」。
+
+### 测试
+
+- 删除只测旧链路的三个文件：`test_watch_local_first.py`、`test_watch_manual_run.py`、`test_watch_yield.py`。
+- `test_watch.py` 重写：行为断言（阈值、累计、归属库、撤回、公共地址不触发、入库日志）全部搬到本地索引链路上，另保强度分级与排序 3 条。
+- `test_revoke_and_mark.py` 夹具改成用 `transfers` 造入库记录。
+- `test_api_key_pool.py`：删掉 `addresses_per_tick` 三条，新增「额度用满不再封顶 30」与三条静态契约（`WatchService` 不许再长出 API 巡检方法、`/api/watch/run` 不许回来、`watch.py` 不许 import taostats）。
+- 全量 **623 passed**（0.8.49 是 656，减少的都是被删功能自己的用例）。
+
+### 实测（0.9.0 / PID 21432）
+
+- `/api/watch/status` 只剩 `config / imported / pending_candidates / revoked / sweep / top_candidates`；`config` 只有三个 key。
+- `POST /api/watch/run` → **404**。
+- 保存设置 `{"threshold_tao":35,...}` 生效并落盘。
+- 流水线跑三轮：`tick 3 / lag 0 / last_block 9482283 = index_block`，心跳 4.8 秒前、距下一轮 25 秒。
+- 浏览器探针：保留的 5 个控件都在、9 个旧控件全消失、面板 `is-alive`、倒计时 23s→21s、进度条在动、无横向溢出、两处资源戳 0.9.0。
+
 ## 0.8.49 · 本地索引流水线看得见在动 · 2026-11-11
 
 用户反馈：地址库页的「本地索引流水线」整块面板纹丝不动，看不出它到底在不在工作。

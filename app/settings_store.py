@@ -319,26 +319,15 @@ def save_scan_thresholds(min_edge_tao: Any, min_total_tao: Any) -> dict[str, str
 # -- 地址库巡检（自动发现新地址并入库） --------------------------------------
 _WATCH_FIELD = "address_watch"
 
-# 默认：开启、每天一轮、单笔或累计 30 TAO 触发、含代币转移、每天最多 700 次请求。
-# 700 是按「全库 690 个地址 × 1 次」估的，开代币转移实际会到 1380，
-# 所以每日预算到点就停、第二天接着轮转，不会超发。
+# 0.9.0 起，逐地址问 API 的巡检整条链路已移除：地址的新往来全部由本地索引
+# 流水线从链上 RPC 采到的转账里撞出来，零 Taostats 额度。配置只剩三个真正
+# 还在起作用的项——阈值（累计多少 TAO 才入库）、自动入库开关、流水线开关。
+# 旧的 key（interval_minutes / daily_budget / addresses_per_tick 等）留在
+# 用户已有的 settings.json 里也无害：load 只读这里声明过的 key。
 DEFAULT_WATCH_CONFIG: dict[str, Any] = {
-    "enabled": True,
-    "interval_minutes": 1440,
     "threshold_tao": 30.0,
-    "include_stake": True,
-    "daily_budget": 700,
-    # 一次巡检推进几个地址（每个地址约 2 次请求）。0 = 跟随每分钟额度自动算。
-    "addresses_per_tick": 0,
     "auto_import": True,
-    # 自动入库的地址默认不再继续巡检，否则会顺着转账一路扩散、把库撑爆。
-    "follow_auto_imported": False,
-    # 本地索引优先：本地已覆盖的区间不发 Taostats 请求（不花额度）。
-    # 本地索引由链上 RPC 直采，完全不消耗 Taostats 配额。
-    "prefer_local_index": True,
-    # 本地索引流水线：拿本地索引的新块去撞地址库，命中即入库。
-    # 与上面 prefer_local_index 的区别——那个是「逐地址巡检时先查本地」，
-    # 这个是完全独立的一条采集链路，零 API、可单独开关。
+    # 本地索引流水线：拿本地索引的新块去撞地址库，命中即入库，零 API。
     "sweep_enabled": True,
 }
 
@@ -351,17 +340,10 @@ def load_watch_config() -> dict[str, Any]:
             if key in raw:
                 config[key] = raw[key]
     try:
-        config["interval_minutes"] = max(15, int(config["interval_minutes"]))
-        config["daily_budget"] = max(0, int(config["daily_budget"]))
-        config["addresses_per_tick"] = max(0, min(int(config["addresses_per_tick"]), 50))
         config["threshold_tao"] = max(0.0, float(config["threshold_tao"]))
     except (TypeError, ValueError):
         return dict(DEFAULT_WATCH_CONFIG)
-    config["enabled"] = bool(config["enabled"])
-    config["include_stake"] = bool(config["include_stake"])
     config["auto_import"] = bool(config["auto_import"])
-    config["follow_auto_imported"] = bool(config["follow_auto_imported"])
-    config["prefer_local_index"] = bool(config["prefer_local_index"])
     config["sweep_enabled"] = bool(config["sweep_enabled"])
     return config
 

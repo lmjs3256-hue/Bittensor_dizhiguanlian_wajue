@@ -908,8 +908,8 @@ function navigate(view, updateHash = true) {
   if (view === "library") {
     loadLibrary();
     loadWatchStatus();
-    // 停在地址库页时持续刷新巡检进度：轮次可能跨几小时，用户需要看到它
-    // 还在动。切走页面就停，避免后台无意义轮询。
+    // 停在地址库页时持续刷新自动入库状态：面板上的倒计时靠它校正基准，
+    // 入库数涨了也能立刻刷新列表。切走页面就停，避免后台无意义轮询。
     scheduleWatchPolling(3000);
   } else {
     stopWatchPolling();
@@ -4189,7 +4189,7 @@ async function reconcileHistory() {
     const okay = window.confirm(
       `将按当前地址库校正 ${archives.changed} 条历史查询结果：\n\n` +
         `· ${archives.related_changed ?? archives.changed} 条记录的关联被清理：共移除 ${archives.related_removed} 条无效关联（交易所/验证者/公共地址的下游）\n` +
-        `· 巡检候选清理 ${watch.candidates_removed ?? 0} 条、自动入库撤回 ${watch.auto_imports_revoked ?? 0} 条\n\n` +
+        `· 自动入库候选清理 ${watch.candidates_removed ?? 0} 条、自动入库撤回 ${watch.auto_imports_revoked ?? 0} 条\n\n` +
         (archives.unverified
           ? `\n另有 ${archives.unverified} 条关联缺少逐跳路径、无法确认是不是终点下游，已按「不删」处理，建议重查一次。\n`
           : "") +
@@ -4214,7 +4214,7 @@ async function reconcileHistory() {
     }
     toast(
       `已校正 ${done.changed} 条历史结果：移除 ${done.related_removed} 条由交易所/验证者/公共地址产生的无效关联；` +
-        `巡检候选清理 ${cleaned.candidates_removed} 条，自动入库撤回 ${cleaned.auto_imports_revoked} 条。`
+        `自动入库候选清理 ${cleaned.candidates_removed} 条，自动入库撤回 ${cleaned.auto_imports_revoked} 条。`
     );
   } catch (error) {
     toast(`校正历史结果失败：${error.message}`, true);
@@ -4252,9 +4252,9 @@ async function syncValidatorLibrary() {
   }
 }
 
-// -- 巡检进度窗口 -----------------------------------------------------------
-// 以前界面上只有一句「本轮已查 N 个」，没有分母、没有心跳，用户看不出
-// 是在慢慢推进、在让路等查询、还是整个停了。这里补一个常驻的进度窗口。
+// -- 自动入库轮询 -----------------------------------------------------------
+// 0.9.0 起只剩本地索引一条链路，轮询只干两件事：把流水线心跳/入库数取回来，
+// 入库数涨了就刷新地址列表。定时器与它绑定的状态放在这里。
 let watchPollTimer = null;
 // 0.8.49：本地索引流水线的「活着」证明。一次流水线可能不到 1 秒就跑完，
 // 接口轮询几乎抓不到 running；追平后累计数字也不涨，面板会像死了一样。
@@ -4262,104 +4262,11 @@ let watchPollTimer = null;
 let sweepTickTimer = null;
 let sweepRunningUntil = 0;
 
-function formatEta(seconds) {
-  const total = Math.max(0, Math.round(Number(seconds) || 0));
-  if (total <= 0) return "—";
-  if (total < 90) return `${total} 秒`;
-  const minutes = Math.round(total / 60);
-  if (minutes < 90) return `${minutes} 分钟`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
-}
-
-function renderWatchProgress(data) {
-  const box = $("#watch-progress");
-  if (!box) return;
-  const config = data?.config || {};
-  const run = data?.last_run;
-  const progress = data?.progress;
-  const pause = data?.pause || {};
-  if (!progress) {
-    box.classList.add("hidden");
-    return;
-  }
-  box.classList.remove("hidden");
-  const title = $("#watch-progress-title");
-  const percentText = $("#watch-progress-percent");
-  const bar = $("#watch-progress-bar");
-  const meta = $("#watch-progress-meta");
-  const hint = $("#watch-progress-hint");
-  const running = run && run.status === "running";
-  const ratio = progress.total ? Math.min(progress.checked / progress.total, 1) : 0;
-
-  if (title) {
-    title.textContent = running ? "巡检进行中" : "巡检进度";
-  }
-  if (percentText) {
-    percentText.textContent = `${progress.percent ?? Math.round(ratio * 100)}%`;
-  }
-  if (bar) {
-    bar.style.width = `${Math.max(ratio * 100, running ? 2 : 0)}%`;
-    bar.classList.toggle("breathing", Boolean(running) && !pause.paused);
-  }
-  if (meta) {
-    const parts = [
-      `本轮已查 <b>${progress.checked || 0}</b> / 共 <b>${progress.total || 0}</b> 个可巡检地址`,
-      `剩余 <b>${progress.remaining || 0}</b> 个`,
-    ];
-    if (run && running) {
-      parts.push(`已入库 <b>${run.inserted || 0}</b>`);
-      parts.push(`本轮请求 <b>${run.requests || 0}</b> 次`);
-      parts.push(`预计还需 <b>${formatEta(progress.eta_seconds)}</b>`);
-    }
-    if (progress.never_checked) parts.push(`从未巡检过 <b>${progress.never_checked}</b> 个`);
-    // 本地索引优先的省额度效果：走本地命中几次、省了多少次 API 请求。
-    const localIndex = data.local_index || {};
-    if (localIndex.enabled && localIndex.hits) {
-      parts.push(`本地索引命中 <b>${localIndex.hits}</b> 次，省下 <b>${localIndex.api_saved || 0}</b> 次请求`);
-    }
-    parts.push(`今日请求 <b>${data.today_requests || 0}</b> / ${config.daily_budget || 0}`);
-    // 本地索引流水线单独一块（见 renderSweepPanel），这里不再混进来：
-    // 两条链路放同一行会让人误以为"额度用完就全停了"。
-    meta.innerHTML = parts.map((item) => `<span>${item}</span>`).join("");
-  }
-  if (hint) {
-    const notes = [];
-    let warn = false;
-    if (!config.enabled) {
-      notes.push("巡检已关闭，打开「开启巡检」后才会继续推进。");
-    } else if (pause.reason === "running") {
-      notes.push("让路中：手动查询正在使用额度，查询出结果后巡检自动继续（这是正常现象，不是卡住）。");
-    } else if (pause.reason === "cooldown") {
-      notes.push(`让路中：查询刚结束，冷却 ${pause.resume_in_seconds || 0} 秒后继续巡检。`);
-    } else if (progress.stale) {
-      notes.push(`已经 ${progress.idle_seconds} 秒没有任何推进，巡检可能卡住了；可以点「立即巡检一轮」重试。`);
-      warn = true;
-    } else if (running) {
-      notes.push(
-        `正常推进中：每 30 秒推进 ${progress.per_tick || 1} 个地址（每分钟额度 ${progress.requests_per_minute} 次，每个地址约 2 次请求）。关掉页面也不会中断，下次打开或服务重启会从断点接着跑。`,
-      );
-    } else if (run && run.status === "complete") {
-      notes.push("上一轮已跑完；到设定间隔后自动开始下一轮。中途关掉服务不会丢进度，下次启动从断点继续。");
-    } else if (run && run.status === "budget") {
-      notes.push("上一轮撞到「每日请求上限」停下的，第二天额度重置后从断点继续。");
-    } else if (run && run.status === "error") {
-      notes.push(`上一轮出错停下：${run.error || "未知错误"}。修好后点「立即巡检一轮」可从断点继续。`);
-      warn = true;
-    } else {
-      notes.push("还没有跑过巡检，点「立即巡检一轮」开始。");
-    }
-    hint.textContent = notes.join(" ");
-    hint.classList.toggle("warn", warn);
-  }
-}
-
 /* 本地索引流水线的实时展示。
    ------------------------------------------------------------------------
-   为什么要单独一块：它是**另一条链路**（本地索引 × 地址库求交集，零 API），
-   和上面那个"逐地址问 API"的进度条是两件事。混在一起看，用户会以为
-   "额度用完了就是全停了"——实际这条一直在跑。
+   0.9.0 起这是地址库唯一的自动入库链路（本地索引 × 地址库求交集，零 API）。
+   逐地址问 API 的巡检和它的进度条已经整条删掉，所以这里不再需要「和上面
+   那个进度条区分」的解释。
 
    三种状态要能一眼分清：
      已关闭   —— 开关关掉了，这条不干活
@@ -4455,7 +4362,7 @@ function renderSweepPanel(data) {
     if (!enabled) {
       meta.innerHTML = '<span>已关闭：勾选「本地索引流水线」再点「保存设置」即可重新开启。</span>';
     } else if (!sweep.initialized) {
-      meta.innerHTML = '<span>已启用，等下一轮巡检开始时建立游标（从当前区块往后，不回扫历史）。</span>';
+      meta.innerHTML = '<span>已启用，等下一轮流水线开始时建立游标（从当前区块往后，不回扫历史）。</span>';
     } else {
       const parts = [
         `已处理 <b>${number(sweep.scanned_total || 0)}</b> 笔`,
@@ -4486,7 +4393,7 @@ function renderSweepPanel(data) {
     const notes = [];
     let warn = false;
     if (!enabled) {
-      notes.push("这条链路已关停；上面那条逐地址巡检不受影响。");
+      notes.push("本地索引流水线已关停，地址库不会自动收录新地址；打开上面的开关即可恢复。");
     } else if (sweep.initialized && sweep.lag_blocks > 0) {
       const blocks = Number(sweep.lag_blocks) || 0;
       const minutes = Math.round((blocks * 12) / 60);
@@ -4528,87 +4435,33 @@ function scheduleWatchPolling(delay = 3000) {
     // 让人以为没在工作。3 秒足够抓到 running，也不至于打爆接口。
     if (!document.hidden) scheduleWatchPolling(3000);
     else scheduleWatchPolling(30000);
-    if (data?.last_run && data.last_run.status !== "running") {
-      // 一轮刚结束：刷新地址库，让新入库的地址立刻出现在列表里。
-      if (state.watchStatus?.last_run?.status === "running") await loadLibrary();
-    }
-    // 本地流水线入库也算「库变了」：它的 inserted 会一直涨，跟上次比一下。
-    // 这段轮询只在地址库页启动（见 navigate），所以不必再判视图，直接刷新。
+    // 流水线入库算「库变了」：inserted_total 一直涨就刷新地址库列表。
+    // 这段轮询只在地址库页启动（见 navigate），所以不必再判视图。
     const sweptNow = Number(data?.sweep?.inserted_total || 0);
     const sweptBefore = Number(state.watchStatus?.sweep?.inserted_total || 0);
     if (sweptNow > sweptBefore) await loadLibrary();
   }, delay);
 }
 
-const WATCH_RUN_LABEL = {
-  running: "进行中",
-  complete: "已完成",
-  budget: "已达每日上限",
-  error: "失败",
-  disabled: "已关闭",
-  no_api_key: "未配置 API key",
-  waiting: "等待下一轮",
-};
-
-function watchStatusText(data) {
+function autoImportStatusText(data) {
   const config = data.config || {};
-  const run = data.last_run;
+  const sweep = data.sweep || {};
   const parts = [];
-  parts.push(config.enabled ? "已开启" : "已关闭");
-  // 巡检给手动查询让路时，进度会停住。必须明说，否则过两天又会以为坏了。
-  const pause = data.pause || {};
-  if (config.enabled && pause.reason === "running") {
-    parts.push("已让路：手动查询进行中，等出结果后继续");
-  } else if (config.enabled && pause.reason === "cooldown") {
-    parts.push(`已让路：查询已结束，冷却 ${pause.resume_in_seconds || 0} 秒`);
-  } else if (config.enabled && pause.reason === "stalled") {
-    parts.push("提示：有查询任务长时间无进度，巡检已恢复");
-  }
-  parts.push(`可巡检 ${data.watchable || 0} 个地址`);
-  if (!config.enabled) {
-    parts.push("打开开关后才会自动巡检");
-  } else if (run && run.status === "running") {
-    parts.push(`本轮已查 ${run.addresses_checked || 0} 个，入库 ${run.inserted || 0} 个`);
-  } else if (run && run.finished_at) {
-    parts.push(`上轮${WATCH_RUN_LABEL[run.status] || run.status}：查 ${run.addresses_checked || 0} 个，入库 ${run.inserted || 0} 个`);
-    parts.push(historyTime(run.finished_at));
-  } else {
-    parts.push("尚未跑过，等待第一次巡检");
-  }
-  parts.push(`今日请求 ${data.today_requests || 0}/${config.daily_budget || 0}`);
-  if (data.imported) parts.push(`累计自动入库 ${data.imported} 个`);
-  if (!data.api_configured) parts.push("未配置 Taostats key，巡检不会执行");
-  if (run && run.error) parts.push(`提示：${run.error}`);
-  return `巡检状态：${parts.join(" · ")}（时间均为北京时间）`;
+  parts.push(config.sweep_enabled === false ? "流水线已关闭" : "流水线运行中");
+  if (config.auto_import === false) parts.push("自动入库已关闭");
+  parts.push(`累计自动入库 ${data.imported || 0} 个`);
+  if (data.pending_candidates) parts.push(`待达标候选 ${data.pending_candidates} 个`);
+  if (sweep.tick_count) parts.push(`已跑 ${sweep.tick_count} 轮`);
+  parts.push("全部由本地索引产生，不消耗查询额度");
+  return `自动入库：${parts.join(" · ")}`;
 }
 
 function fillWatchConfig(config) {
   if (!config) return;
-  const enabled = $("#watch-enabled");
-  if (enabled) enabled.checked = Boolean(config.enabled);
   const threshold = $("#watch-threshold");
   if (threshold) threshold.value = config.threshold_tao ?? 30;
-  const interval = $("#watch-interval");
-  if (interval) {
-    const value = String(config.interval_minutes ?? 1440);
-    if (![...interval.options].some((option) => option.value === value)) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = `每 ${value} 分钟`;
-      interval.appendChild(option);
-    }
-    interval.value = value;
-  }
-  const budget = $("#watch-budget");
-  if (budget) budget.value = config.daily_budget ?? 700;
-  const perTick = $("#watch-per-tick");
-  if (perTick) perTick.value = config.addresses_per_tick ?? 0;
-  const stake = $("#watch-stake");
-  if (stake) stake.checked = Boolean(config.include_stake);
-  const follow = $("#watch-follow");
-  if (follow) follow.checked = Boolean(config.follow_auto_imported);
-  const localFirst = $("#watch-local-first");
-  if (localFirst) localFirst.checked = config.prefer_local_index !== false;
+  const autoImport = $("#watch-auto-import");
+  if (autoImport) autoImport.checked = config.auto_import !== false;
   const sweep = $("#watch-sweep");
   if (sweep) sweep.checked = config.sweep_enabled !== false;
 }
@@ -4618,62 +4471,33 @@ async function loadWatchStatus() {
   try {
     const data = await api("/api/watch/status");
     fillWatchConfig(data.config);
-    if (label) label.textContent = watchStatusText(data);
+    if (label) label.textContent = autoImportStatusText(data);
     state.watchStatus = data;
-    renderWatchProgress(data);
     renderSweepPanel(data);
     return data;
   } catch (_) {
-    if (label) label.textContent = "巡检状态：读取失败";
+    if (label) label.textContent = "自动入库：读取失败";
     return null;
   }
 }
 
 async function saveWatchConfig() {
   const payload = {
-    enabled: Boolean($("#watch-enabled")?.checked),
     threshold_tao: Number($("#watch-threshold")?.value || 30),
-    interval_minutes: Number($("#watch-interval")?.value || 1440),
-    daily_budget: Number($("#watch-budget")?.value || 700),
-    addresses_per_tick: Number($("#watch-per-tick")?.value || 0),
-    include_stake: Boolean($("#watch-stake")?.checked),
-    follow_auto_imported: Boolean($("#watch-follow")?.checked),
-    prefer_local_index: Boolean($("#watch-local-first")?.checked),
+    auto_import: Boolean($("#watch-auto-import")?.checked),
     sweep_enabled: Boolean($("#watch-sweep")?.checked),
   };
   try {
     await api("/api/watch/config", { method: "POST", body: JSON.stringify(payload) });
     await loadWatchStatus();
     scheduleWatchPolling(3000);
-    const perTickText = payload.addresses_per_tick > 0
-      ? `每 30 秒推进 ${payload.addresses_per_tick} 个地址`
-      : "每 30 秒推进量跟随每分钟额度自动算";
-    const sweepText = payload.sweep_enabled ? "本地流水线开启" : "本地流水线关闭";
-    toast(`巡检设置已保存：${payload.enabled ? "开启" : "关闭"}，${sweepText}，阈值 ${payload.threshold_tao} TAO，${payload.include_stake ? "含" : "不含"}代币转移，${perTickText}。`);
+    toast(
+      `设置已保存：阈值 ${payload.threshold_tao} TAO，` +
+        `${payload.auto_import ? "开启" : "关闭"}自动入库，` +
+        `${payload.sweep_enabled ? "开启" : "关闭"}本地索引流水线。`,
+    );
   } catch (error) {
-    toast(`保存巡检设置失败：${error.message}`, true);
-  }
-}
-
-async function runWatchNow() {
-  const button = $("#watch-run");
-  button.disabled = true;
-  button.textContent = "已启动…";
-  try {
-    const data = await api("/api/watch/run", { method: "POST" });
-    if (!data.started) {
-      toast("巡检已经在跑了，进度看下面的进度窗口。");
-    } else {
-      toast("巡检已在后台启动，进度窗口会实时更新；关掉页面也会继续跑。");
-    }
-    // 进度窗口自己会轮询，这里只立刻刷新一次让数字马上动起来。
-    await loadWatchStatus();
-    scheduleWatchPolling(3000);
-  } catch (error) {
-    toast(`启动巡检失败：${error.message}`, true);
-  } finally {
-    button.disabled = false;
-    button.textContent = "立即巡检一轮";
+    toast(`保存设置失败：${error.message}`, true);
   }
 }
 
@@ -4719,7 +4543,7 @@ function watchLogHtml(item) {
   const actions = [];
   if (!revoked) {
     actions.push(
-      `<button class="ghost note-save" data-revoke-import="${item.id}" type="button" title="从地址库删掉这条自动入库记录，之后巡检不再收它">仅撤回</button>`,
+      `<button class="ghost note-save" data-revoke-import="${item.id}" type="button" title="从地址库删掉这条自动入库记录，之后自动入库不再收它">仅撤回</button>`,
     );
     if (!role) {
       for (const [key, label] of [
@@ -4730,7 +4554,7 @@ function watchLogHtml(item) {
         actions.push(
           `<button class="ghost note-save mark-role" data-revoke-and-mark="${item.id}"
              data-mark-role="${key}" data-mark-address="${esc(item.address)}" type="button"
-             title="撤回这条自动入库，并标为${label}（移入系统分组，以后巡检不再收它）">标为${label}</button>`,
+             title="撤回这条自动入库，并标为${label}（移入系统分组，以后自动入库不再收它）">标为${label}</button>`,
         );
       }
     }
@@ -4789,7 +4613,7 @@ async function loadWatchLogs() {
     const data = await api(`/api/library/auto-import-log?limit=100&status=${encodeURIComponent(status)}`);
     if (count) count.textContent = `共 ${data.total} 条`;
     if (!data.items.length) {
-      list.innerHTML = '<div class="placeholder">还没有自动入库记录。巡检发现达标的新地址后会写在这里。</div>';
+      list.innerHTML = '<div class="placeholder">还没有自动入库记录。流水线发现达标的新地址后会写在这里。</div>';
       return;
     }
     list.innerHTML = data.items.map(watchLogHtml).join("");
@@ -4801,7 +4625,7 @@ async function loadWatchLogs() {
 async function revokeWatchImport(logId) {
   try {
     const data = await api(`/api/library/auto-import-log/${logId}/revoke`, { method: "POST" });
-    toast(data.removed ? "已撤回：地址已从地址库删除，之后巡检不会再收它。" : "已标记撤回：该地址是人工记录，只停止自动入库。");
+    toast(data.removed ? "已撤回：地址已从地址库删除，之后自动入库不会再收它。" : "已标记撤回：该地址是人工记录，只停止自动入库。");
     await loadWatchLogs();
     await loadLibrary();
     await loadWatchStatus();
@@ -4811,7 +4635,7 @@ async function revokeWatchImport(logId) {
 }
 
 // 「撤回 + 标为系统角色」：用户要求点一下就同时做这两件事。
-// 只撤回不下结论 → 下次巡检又把它收回来；只下结论不撤回 → 日志里留着
+// 只撤回不下结论 → 下次自动入库又把它收回来；只下结论不撤回 → 日志里留着
 // active 记录，看着像「它还在库里」。所以后端合成一个接口，前端只负责确认。
 const REVOKE_MARK_LABELS = {
   exchange: "交易所",
@@ -4824,7 +4648,7 @@ async function revokeAndMarkWatchImport(logId, role, address) {
   const ok = window.confirm(
     `把这个地址标为「${label}」？\n\n` +
       `会做两件事：\n` +
-      `1. 撤回这条自动入库记录，之后巡检不再收它；\n` +
+      `1. 撤回这条自动入库记录，之后自动入库不再收它；\n` +
       `2. 标为${label}并移出当前地址库（归到「${label}」分组）。\n\n` +
       `地址：${address || "（按日志记录）"}`,
   );
@@ -4839,7 +4663,7 @@ async function revokeAndMarkWatchImport(logId, role, address) {
     const pruned = (archive.changed || archive.related_removed)
       ? " 历史查询结果已按新判定重新剪枝。"
       : "";
-    toast(`已撤回并标为${label}，之后巡检不再收它。${pruned}`);
+    toast(`已撤回并标为${label}，之后自动入库不再收它。${pruned}`);
     await loadWatchLogs();
     await loadLibrary();
     await loadWatchStatus();
@@ -5591,7 +5415,6 @@ $("#sync-exchanges").addEventListener("click", syncExchangeLibrary);
 $("#sync-validators").addEventListener("click", syncValidatorLibrary);
 $("#reconcile-history").addEventListener("click", reconcileHistory);
 $("#watch-save").addEventListener("click", saveWatchConfig);
-$("#watch-run").addEventListener("click", runWatchNow);
 $("#watch-logs-toggle").addEventListener("click", toggleWatchLogs);
 $("#watch-log-filter").addEventListener("change", loadWatchLogs);
 $("#export-library-all").addEventListener("click", () => exportLibrary("all"));

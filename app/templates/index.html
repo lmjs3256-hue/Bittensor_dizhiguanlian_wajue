@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.8.49">
+  <link rel="stylesheet" href="/static/styles.css?v=0.9.0">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -201,41 +201,19 @@
         </section>
         <section class="panel watch-panel">
           <div class="section-title">
-            <div><h3>地址库巡检</h3><span class="tag">自动发现新地址</span></div>
-            <small>按设定间隔检查库内每个地址的新转账（含代币转移）：新出现的对手方单笔或累计达到阈值就自动入库，归属到累计金额最多的地址库，并写一条入库日志。第一次检查只记录基线，不会把历史对手方灌进库；交易所、验证者、公共地址、系统地址不参与巡检。巡检范围每次实时读取地址库——新增地址自动加入，被标成上述角色的自动移出，不需要手工维护名单。中途关掉服务不会丢进度，重启后从断点继续。</small>
+            <div><h3>地址库自动入库</h3><span class="tag">本地索引 · 零 API</span></div>
+            <small>地址的新往来全部来自本地索引（链上 RPC 直采的转账与代币转移），不再对每个地址调用 Taostats 接口，因此不消耗任何查询额度。流水线每 30 秒拿新采到的块去撞地址库：库里地址的对手方单笔或累计达到阈值就自动入库，归属到累计金额最多的地址库，并写一条入库日志。交易所、验证者、公共地址、系统地址不参与。关掉服务不会丢进度，重启后从游标处继续。</small>
           </div>
           <div class="watch-form">
-            <label class="watch-check"><input type="checkbox" id="watch-enabled"> 开启巡检</label>
             <label>阈值 TAO<input id="watch-threshold" type="number" min="0" step="1" value="30" inputmode="decimal"></label>
-            <label>间隔<select id="watch-interval">
-              <option value="60">每 1 小时</option>
-              <option value="360">每 6 小时</option>
-              <option value="720">每 12 小时</option>
-              <option value="1440" selected>每天</option>
-              <option value="10080">每周</option>
-            </select></label>
-            <label>每日请求上限<input id="watch-budget" type="number" min="0" step="50" value="700" inputmode="numeric"></label>
-            <label title="一次巡检（30 秒）推进几个地址，每个地址约 2 次请求。填 0 表示跟随「每分钟额度」自动算——额度 5 时是 1 个、额度 60 时自动提到 10 个。">每 30 秒推进<input id="watch-per-tick" type="number" min="0" max="50" step="1" value="0" inputmode="numeric"></label>
-            <label class="watch-check"><input type="checkbox" id="watch-stake"> 含代币转移</label>
-            <label class="watch-check" title="本地索引由链上 RPC 直采，不消耗 Taostats 额度。打开后，本地已覆盖的区间不再调用 API；本地没覆盖到的地址仍会走 API，不会漏数据。"><input type="checkbox" id="watch-local-first"> 本地索引优先</label>
-            <label class="watch-check" title="独立的一条采集链路：拿本地索引里的新块去撞地址库，库里地址一有新转账/代币转移累计达标就入库。完全不消耗 Taostats 额度，也不受每日上限和手动查询让路影响。关掉后这条链路停止，只保留上面那条逐地址问 API 的巡检。"><input type="checkbox" id="watch-sweep"> 本地索引流水线</label>
-            <label class="watch-check" title="打开后，自动入库的地址也会继续被巡检，会顺着转账一层层扩散"><input type="checkbox" id="watch-follow"> 跟踪自动入库地址</label>
+            <label class="watch-check" title="关掉后流水线仍会推进游标，但不会把命中的地址写进地址库。"><input type="checkbox" id="watch-auto-import"> 自动入库</label>
+            <label class="watch-check" title="本地索引流水线：拿本地索引里的新块去撞地址库，命中即入库。完全不消耗 Taostats 额度，也不受任何限速约束。"><input type="checkbox" id="watch-sweep"> 本地索引流水线</label>
             <div class="watch-actions">
               <button class="secondary" id="watch-save" type="button">保存设置</button>
-              <button class="primary cta" id="watch-run" type="button">立即巡检一轮</button>
               <button class="ghost" id="watch-logs-toggle" type="button">入库日志</button>
             </div>
           </div>
-          <small id="watch-status" class="library-hint">巡检状态：读取中…</small>
-          <div id="watch-progress" class="watch-progress hidden" aria-live="polite">
-            <div class="watch-progress-head">
-              <strong id="watch-progress-title">巡检进度</strong>
-              <span id="watch-progress-percent" class="watch-progress-percent">0%</span>
-            </div>
-            <div class="watch-progress-track"><div id="watch-progress-bar" class="watch-progress-bar"></div></div>
-            <div id="watch-progress-meta" class="watch-progress-meta"></div>
-            <div id="watch-progress-hint" class="watch-progress-hint"></div>
-          </div>
+          <small id="watch-status" class="library-hint">自动入库：读取中…</small>
           <div id="sweep-panel" class="sweep-panel hidden" aria-live="polite">
             <div class="sweep-head">
               <span class="sweep-dot" id="sweep-dot"></span>
@@ -320,6 +298,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.8.49"></script>
+  <script src="/static/app.js?v=0.9.0"></script>
 </body>
 </html>
