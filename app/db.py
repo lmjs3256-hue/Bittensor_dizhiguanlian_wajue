@@ -172,6 +172,10 @@ class RelationArchive(Base):
     library_hit_count: Mapped[int] = mapped_column(Integer, default=0)
     # 完整结果 JSON；历史页的“查看结果”和导出都从这里还原。
     payload: Mapped[str] = mapped_column(Text, default="")
+    # 谁发起的。多人共用一台主机时，「查询记录」按它过滤，
+    # 每个人只看自己的；地址库仍是全机共享（用户要求维护都同步到主机）。
+    # 空串 = 单人模式 / 老数据，对所有人可见。
+    owner: Mapped[str] = mapped_column(String(64), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -474,6 +478,25 @@ class Database:
                     text(
                         "ALTER TABLE transfers ADD COLUMN hotkey "
                         "VARCHAR(64) NOT NULL DEFAULT ''"
+                    )
+                )
+            # 0.8.45：查询记录加 owner（多人共用主机时按人隔离"查询记录"）。
+            # 老数据一律空串 = 对所有人可见，不会因为升级后忽然"记录全没了"。
+            archive_columns = {
+                row[1]
+                for row in connection.execute(text("PRAGMA table_info(relation_archives)"))
+            }
+            if "owner" not in archive_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE relation_archives ADD COLUMN owner "
+                        "VARCHAR(64) NOT NULL DEFAULT ''"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_relation_archives_owner "
+                        "ON relation_archives (owner)"
                     )
                 )
             # 0.5.0：地址库分类改成用户自定义（大V / 群友 / 其他）。

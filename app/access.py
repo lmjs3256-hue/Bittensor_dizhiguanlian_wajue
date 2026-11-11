@@ -26,6 +26,7 @@ from __future__ import annotations
 import hmac
 import os
 import secrets
+from urllib.parse import unquote
 from typing import Any
 
 from fastapi import Request
@@ -189,6 +190,41 @@ def verify(token: str | None) -> bool:
         return False
     # 常量时间比较，避免用响应时间一点点试出口令。
     return hmac.compare_digest(_normalize(token), _normalize(expected))
+
+
+# -- 使用者标识（多人共用一台主机时区分"谁查的"）-------------------------
+# 大家共用同一个访问口令，口令本身不区分人。要"每人只看自己的查询记录"，
+# 就必须有另一套标识。这里不做账号体系（对"开放给几个人用"太重），而是
+# 让浏览器自报一个名字，存在 localStorage，随请求带上来。
+#
+# 名字由客户端提供，**不能用来做权限判断**——它只决定"这条查询记录归谁看"。
+# 真正能不能进站仍由访问口令负责。伪造名字最多看到别人的查询记录，改不了
+# 别的东西（地址库是全机共享的，本来就该都能改）。
+OWNER_HEADER = "x-client-name"
+
+
+def client_owner(request: Request) -> str:
+    """这次请求的使用者标识，没自报就返回空串。
+
+    空串的含义是"不区分人"：查询记录不加 owner、列表也不按人过滤，
+    行为与单人使用完全一致（老数据也全是空串，升级后照样能看到）。
+
+    **中文名字要 URL 编码**：HTTP 头历史上只允许 latin-1，直接塞「张三」
+    会让客户端抛 `UnicodeEncodeError`（实测踩到）。所以前端发过来的是
+    ``encodeURIComponent`` 之后的形式，这里解码还原。
+    """
+
+    raw = (request.headers.get(OWNER_HEADER) or "").strip()
+    if not raw:
+        return ""
+    # 前端用 encodeURIComponent 编码；解不开就按原样用（兼容只发 ASCII 的）。
+    try:
+        raw = unquote(raw)
+    except Exception:  # noqa: BLE001 - 解不开不影响主流程
+        pass
+    # 只留可打印、去掉换行：它会进数据库、也会显示在界面上。
+    cleaned = "".join(ch for ch in raw if ch.isprintable())
+    return cleaned[:32]
 
 
 def is_authenticated(request: Request) -> bool:

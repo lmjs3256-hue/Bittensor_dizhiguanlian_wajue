@@ -1717,16 +1717,26 @@ def seed_profile(
 
 @app.post("/api/relations/jobs")
 def start_relation_job(
-    payload: RelationJobInput, svc: Annotated[LinkService, Depends(service)]
+    request: Request,
+    payload: RelationJobInput,
+    svc: Annotated[LinkService, Depends(service)],
 ):
-    """创建分轮查询作业：每分钟推进一轮，直到所有待查地址查完。"""
+    """创建分轮查询作业，进入队列按发起先后排队执行。
+
+    多人同时点「扫描关联」时，**不再各自抢额度一起跑**：每个作业拿到一个
+    排队序号，同一时刻只有队首那个在推进。否则两个作业各分一半预算、都要
+    多等几轮，用户感受就是"抢额度"和"等太久"。
+    """
 
     if not payload.seed.strip():
         raise HTTPException(422, "seed must not be blank")
     if not taostats_is_configured():
         raise HTTPException(400, TAOSTATS_KEY_MISSING)
     try:
-        job = JOBS.create(
+        # 用 create_async：只入队就返回，首轮交给后台线程。
+        # 否则这个接口要等第一轮的真实 API 请求跑完（十几秒到几十秒），
+        # 前端点了按钮很久没反应，多人同时发起还会超时。
+        job = JOBS.create_async(
             svc,
             seed=payload.seed.strip(),
             depth=payload.depth,
@@ -1742,6 +1752,8 @@ def start_relation_job(
             round_interval=payload.round_interval_seconds,
             max_rounds=payload.max_rounds,
             prefetched_requests=payload.prefetched_requests,
+            # 谁发起的：决定这条查询记录归谁看（地址库仍是全机共享）。
+            owner=access_mod.client_owner(request),
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -1764,15 +1776,36 @@ def cancel_relation_job(job_id: str):
     return JOBS.payload(job)
 
 
+@app.get("/api/relations/queue")
+def relation_queue(request: Request):
+    """当前队列总览：谁在跑、谁在等、大概要等多久。
+
+    多人共用一台主机时，用户最想知道的是「我在第几位、还要多久」。
+    只靠自己的工单 payload 也能算，但前端要额外请求一次队列才能显示
+    "前面还有几个人"，所以单开一个轻量接口。
+    """
+
+    me = access_mod.client_owner(request)
+    return JOBS.queue_overview(me)
+
+
 @app.get("/api/relations/history")
 def relation_history(
+    request: Request,
     svc: Annotated[LinkService, Depends(service)],
     limit: int = Query(default=30, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    all_users: bool = Query(default=False),
 ):
-    """查询记录列表：每次关联查询（含中途停止）都会留下一条。"""
+    """查询记录列表：每次关联查询（含中途停止）都会留下一条。
 
-    return svc.relation_history(limit=limit, offset=offset)
+    **默认只返回自己发起的**（外加没标过人的老记录）。多人共用一台主机时，
+    别人查了什么都看得见会很别扭；要看全部（比如排查）可以显式加
+    ``?all_users=true``。
+    """
+
+    owner = None if all_users else access_mod.client_owner(request)
+    return svc.relation_history(limit=limit, offset=offset, owner=owner)
 
 
 @app.get("/api/relations/history/{archive_id}")

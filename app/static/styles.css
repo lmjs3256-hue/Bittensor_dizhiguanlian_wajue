@@ -552,7 +552,22 @@ body.access-locked .shell { filter:blur(2px); pointer-events:none; user-select:n
 .watch-check input { width:16px; height:16px; padding:0; accent-color:var(--accent); }
 .watch-panel .library-hint { display:block; margin-top:10px; color:var(--muted); font-size:11.5px; line-height:1.6; }
 /* 逐地址 API 巡检的进度窗口已在 0.9.0 删除，样式一并清掉。 */
-/* 本地索引流水线：地址库唯一的自动入库链路（零 API）。 */
+/* 「你的名字」：多人共用一台主机时用来分开各自的查询记录。
+   只在远程模式下出现，单人使用看不到，不添乱。 */
+.client-name-box { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--bg); }
+.client-name-box label { flex:1; min-width:200px; font-size:11.5px; color:var(--muted); }
+.client-name-box label small { color:var(--muted); font-weight:400; }
+.client-name-box input { width:100%; margin-top:4px; padding:7px 10px; font-size:13px; }
+.client-name-badge { font-size:11px; color:var(--muted); white-space:nowrap; }
+.client-name-badge.warn { color:var(--warn); }
+@media (max-width:700px) {
+  .client-name-box { gap:6px; }
+  .client-name-box label { min-width:0; }
+}
+
+/* 本地索引流水线：地址库唯一的自动入库链路（零 API）。独立一块，
+   和"逐地址巡检"的进度条分开——混在一起会让人以为额度用完就全停了。 */
+
 .sweep-panel { margin-top:10px; padding:12px 14px; border:1px solid var(--line); border-radius:11px; background:var(--bg); display:grid; gap:7px; }
 .sweep-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .sweep-head strong { font-size:12.5px; }

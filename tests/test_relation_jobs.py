@@ -232,10 +232,24 @@ def test_job_endpoints_expose_progress_and_result(monkeypatch):
                 assert created.status_code == 200
                 body = created.json()
                 job_id = body["job_id"]
-                assert body["status"] == "waiting"
-                assert body["requests_total"] == 5
-                assert body["pending_stake"] >= 1
-                assert body["next_round_in"] > 0
+                # 0.8.45 起这个接口**不再同步跑第一轮**：它只入队就返回，
+                # 首轮交给后台线程。否则接口要等真实 API 请求（十几秒到
+                # 几十秒），前端点了按钮很久没反应。
+                # 所以这里只断言"作业建起来了、有 id 可轮询"，不再断言
+                # 已经跑完一轮。
+                assert body["status"] in {"queued", "running", "waiting"}
+                assert job_id
+
+                # 等首轮真的跑起来（后台线程），再断言进度字段
+                import time as _time
+
+                for _ in range(50):
+                    live = client.get(f"/api/relations/jobs/{job_id}").json()
+                    if live["requests_total"] >= 5:
+                        break
+                    _time.sleep(0.1)
+                assert live["requests_total"] == 5
+                assert live["pending_stake"] >= 1
 
                 status = client.get(f"/api/relations/jobs/{job_id}")
                 assert status.status_code == 200

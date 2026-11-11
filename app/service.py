@@ -3430,6 +3430,7 @@ class LinkService:
         status: str = "complete",
         rounds: int = 0,
         requests: int = 0,
+        owner: str = "",
     ) -> int:
         """把一次关联查询的结果存进历史记录，返回记录 id。"""
 
@@ -3458,6 +3459,7 @@ class LinkService:
                 related_count=len(related),
                 library_hit_count=hit_count,
                 payload=payload,
+                owner=str(owner or ""),
                 finished_at=utcnow(),
             )
             db.add(row)
@@ -3869,21 +3871,34 @@ class LinkService:
             "requests": row.requests,
             "related_count": row.related_count,
             "library_hit_count": row.library_hit_count,
+            # 谁发起的：多人共用时界面据此标出"这条是谁查的"。
+            # 空串 = 升级前的老记录 / 单人模式。
+            "owner": row.owner or "",
             "created_at": iso_utc(row.created_at),
             "finished_at": iso_utc(row.finished_at),
         }
 
-    def relation_history(self, *, limit: int = 30, offset: int = 0) -> dict[str, Any]:
+    def relation_history(
+        self, *, limit: int = 30, offset: int = 0, owner: str | None = None
+    ) -> dict[str, Any]:
+        """查询记录列表。
+
+        ``owner`` 为 None 表示不区分人（单人使用、或后台维护）。传具体名字时
+        只返回这个人发起的记录，外加 ``owner`` 为空的老记录——升级前记下来的
+        那些没标过人，一律对所有人可见，否则用户会以为"记录全丢了"。
+        """
+
         limit = max(1, min(int(limit), 200))
         offset = max(0, int(offset))
         with self.database.session() as db:
-            total = db.query(RelationArchive).count()
+            query = db.query(RelationArchive)
+            if owner is not None:
+                query = query.filter(
+                    or_(RelationArchive.owner == owner, RelationArchive.owner == "")
+                )
+            total = query.count()
             rows = (
-                db.query(RelationArchive)
-                .order_by(RelationArchive.id.desc())
-                .offset(offset)
-                .limit(limit)
-                .all()
+                query.order_by(RelationArchive.id.desc()).offset(offset).limit(limit).all()
             )
             return {
                 "total": total,

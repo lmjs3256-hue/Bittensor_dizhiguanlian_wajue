@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.9.1">
+  <link rel="stylesheet" href="/static/styles.css?v=0.9.2">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -103,6 +103,12 @@
           <div class="remote-body" id="remote-body">
             <div class="access-list" id="access-list">
               <div class="access-row"><span class="access-kind">本机</span><code class="access-value" id="access-local">http://127.0.0.1:8766</code><button class="access-copy" type="button" data-copy-target="access-local" title="复制本机地址">复制</button></div>
+            </div>
+            <div class="client-name-box hidden" id="client-name-box">
+              <label for="client-name">你的名字<small>（多人共用时用来分开各自的查询记录）</small>
+                <input id="client-name" type="text" maxlength="32" autocomplete="off" placeholder="如：张三">
+              </label>
+              <span class="client-name-badge" id="client-name-badge"></span>
             </div>
             <p class="access-note" id="access-note">远程地址、公网隧道和访问口令会显示在这里（仅主机可见）。</p>
             <div class="remote-actions" id="remote-actions">
@@ -298,6 +304,6 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.9.1"></script>
+  <script src="/static/app.js?v=0.9.2"></script>
 </body>
 </html>

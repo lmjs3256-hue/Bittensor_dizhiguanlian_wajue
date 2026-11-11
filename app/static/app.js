@@ -524,9 +524,71 @@ function setTheme(mode, persist = true) {
   }
 }
 
+/* -- 使用者标识（多人共用一台主机时区分"谁查的"）-------------------------
+   大家共用一个访问口令，口令本身不区分人。「每人只看自己的查询记录」需要
+   另一套标识，但不值得为此做账号体系。这里做法很轻：
+
+   - 第一次访问时让用户起个名字（或自动生成一个），存在 localStorage；
+   - 之后每个请求都带 `X-Client-Name`；
+   - 后端据此给查询记录打 owner，列表只返回自己的。
+
+   这个名字**不是权限**：伪造它最多看到别人的查询记录，改不了别的东西。
+   地址库本来就是全机共享的（谁改都生效，以最后标记为准）。
+   没有名字时（单机自己用）一切照旧，不会平白多一步。 */
+const CLIENT_NAME_KEY = "wallet-link-client-name";
+
+function clientName() {
+  try {
+    return (localStorage.getItem(CLIENT_NAME_KEY) || "").trim();
+  } catch (error) {
+    return "";
+  }
+}
+
+function setClientName(name) {
+  const cleaned = String(name || "").trim().slice(0, 32);
+  try {
+    if (cleaned) localStorage.setItem(CLIENT_NAME_KEY, cleaned);
+    else localStorage.removeItem(CLIENT_NAME_KEY);
+  } catch (error) {
+    /* 隐私模式下写不进去，不影响使用 */
+  }
+  renderClientName();
+  return cleaned;
+}
+
+function renderClientName() {
+  const input = $("#client-name");
+  if (input && input.value !== clientName()) input.value = clientName();
+  const badge = $("#client-name-badge");
+  if (badge) {
+    const name = clientName();
+    badge.textContent = name ? `以「${name}」身份` : "未设置名字";
+    badge.classList.toggle("warn", !name);
+  }
+}
+
+/* 远程访问时显示"我叫什么"的入口。本机不需要（本机的记录本来就只有自己的），
+   所以只在远程模式下出现，避免给单人使用添乱。 */
+function syncClientNameVisibility(status) {
+  const box = $("#client-name-box");
+  if (!box) return;
+  const show = Boolean(status && status.remote_mode && !status.local);
+  box.classList.toggle("hidden", !show);
+  renderClientName();
+}
+
 async function api(url, options = {}) {
+  const name = clientName();
+  // HTTP 头只允许 latin-1，中文名字（如「张三」）必须编码后才能发。
+  // 不编码浏览器直接抛 TypeError: Failed to execute 'fetch'。
+  const extra = name ? { "X-Client-Name": encodeURIComponent(name) } : {};
   const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...extra,
+      ...(options.headers || {}),
+    },
     ...options,
   });
   const body = await response.json().catch(() => ({}));
@@ -578,6 +640,8 @@ function applyAccessStatus(status) {
   // （标题、地址行、口令提示）也是主机信息，远程设备连看都不该看到。
   state.isLocal = status ? status.local !== false : true;
   applyLocalOnlyVisibility();
+  // 「你的名字」只在远程（他人共用）时出现：本机用不到，不该占位置。
+  syncClientNameVisibility(status);
   renderAccessEndpoints(status);
 }
 
@@ -1847,46 +1911,77 @@ function describeRound(counts, labels) {
 }
 
 function showJobProgress(state) {
+  /* 动态进度框。三种来源共用一套渲染：
+       - 点「扫描关联」后的本地占位（local_placeholder，立刻出现）
+       - 排队的工单（status === "queued"，显示排第几、大概等多久）
+       - 真正在跑的工单（running/waiting/finalizing，显示轮次和请求数）
+     用户明确要求「生成工单等待查询的过程仍然需要有进度反馈，防止卡死还不知
+     道」，所以排队态也要有内容，不能只写"排队中"。 */
   const box = $("#job-progress");
   const text = $("#job-text");
   const planLine = $("#job-plan");
+  const cancel = $("#cancel-job");
   if (!state) {
     box.classList.add("hidden");
-    planLine.textContent = "";
+    if (planLine) planLine.textContent = "";
     jobStopping = false;
-    $("#cancel-job").disabled = false;
-    $("#cancel-job").textContent = "停止续查";
+    if (cancel) {
+      cancel.disabled = false;
+      cancel.textContent = "停止续查";
+      cancel.classList.add("hidden");
+    }
     return;
   }
   box.classList.remove("hidden");
+
   const parts = [];
-  if (state.status === "running") {
+  const placeholder = Boolean(state.local_placeholder);
+  if (placeholder) {
+    // 刚点下去、还没拿到作业 id：只报当前在做什么，不要假装有进度。
+    parts.push(state.stage_text || "正在准备查询…");
+  } else if (state.status === "queued") {
+    const position = Number(state.queue_position) || 0;
+    parts.push(position > 0 ? `排队中：你排第 ${position} 位` : "排队中：马上开始");
+    const wait = Number(state.queue_wait_seconds) || 0;
+    if (wait > 0) parts.push(`预计约 ${formatDuration(wait)}后开始`);
+    if (state.owner) parts.push(`发起人 ${state.owner}`);
+  } else if (state.status === "running") {
     parts.push(`正在执行第 ${state.rounds_done + 1}/${state.max_rounds} 轮`);
   } else if (state.status === "waiting") {
     parts.push(`已完成第 ${state.rounds_done}/${state.max_rounds} 轮`);
   } else if (state.status === "finalizing") {
     parts.push("查询已结束，正在合成结果（最多约 12 秒）");
+  } else if (state.status === "starting") {
+    parts.push(state.stage_text || "正在准备查询…");
   }
-  parts.push(`累计请求 ${state.requests_total} 次`);
-  if (state.prefetched_requests > 0) {
-    parts.push(`起始地址画像已用 ${state.prefetched_requests} 次`);
+
+  if (!placeholder) {
+    parts.push(`累计请求 ${state.requests_total} 次`);
+    if (state.prefetched_requests > 0) {
+      parts.push(`起始地址画像已用 ${state.prefetched_requests} 次`);
+    }
+    if (state.remaining_requests > 0) {
+      parts.push(`剩余 ${state.remaining_requests} 个请求（约 ${state.estimated_rounds_left} 轮）`);
+    } else if (state.status !== "queued") {
+      parts.push("待查队列已清空");
+    }
+    parts.push(`已发现 ${state.queued_addresses} 个地址`);
+    if (state.status === "waiting" && state.next_round_in > 0) {
+      parts.push(`下一轮约 ${state.next_round_in} 秒后`);
+    }
+    if (state.error) parts.push(state.error);
+    if (state.cancel_requested) {
+      parts.push("已收到停止指令：当前请求一结束立即出结果（最长约 20 秒）");
+    }
   }
-  if (state.remaining_requests > 0) {
-    parts.push(`剩余 ${state.remaining_requests} 个请求（约 ${state.estimated_rounds_left} 轮）`);
-  } else {
-    parts.push("待查队列已清空");
-  }
-  parts.push(`已发现 ${state.queued_addresses} 个地址`);
-  if (state.status === "waiting" && state.next_round_in > 0) {
-    parts.push(`下一轮约 ${state.next_round_in} 秒后`);
-  }
-  if (state.error) parts.push(state.error);
-  if (state.cancel_requested) {
-    parts.push("已收到停止指令：当前请求一结束立即出结果（最长约 20 秒）");
-  }
-  text.textContent = parts.join(" · ");
+  if (text) text.textContent = parts.join(" · ");
 
   const lines = [];
+  if (placeholder) {
+    lines.push("正在读取起始地址画像，随后会把查询工单排进队列");
+  } else if (state.status === "queued") {
+    lines.push("同一时刻只跑一个工单，前面收尾后自动开始，不用重新点击");
+  }
   const last = state.last_round;
   if (last && last.requests > 0) {
     lines.push(`上一轮实际查询：${describeRound(last.counts, state.kind_labels) || "无"}（${last.requests} 次请求，新增 ${last.new_addresses} 个地址 / ${last.new_records} 条记录）`);
@@ -1895,7 +1990,28 @@ function showJobProgress(state) {
   if (plan && plan.requests > 0) {
     lines.push(`下一轮计划查询：${describeRound(plan.counts, state.kind_labels) || "无"}（${plan.requests} 次请求）`);
   }
-  planLine.textContent = lines.join("　|　");
+  if (planLine) planLine.textContent = lines.join("　|　");
+
+  // 停止按钮只在「真的有一个在跑的作业」时给。排队中点了没意义（还没跑），
+  // 占位阶段更是没 id 可发。
+  if (cancel) {
+    const canCancel = !placeholder && Boolean(activeJob) && state.status !== "queued";
+    cancel.classList.toggle("hidden", !canCancel);
+  }
+}
+
+/* 秒数 → 人话。用于排队估算，别让用户看到「约 3720 秒」。 */
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (total < 60) return `${total} 秒`;
+  if (total < 3600) {
+    const minutes = Math.floor(total / 60);
+    const rest = total % 60;
+    return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`;
+  }
+  const hours = Math.floor(total / 3600);
+  const rest = Math.round((total % 3600) / 60);
+  return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
 }
 
 async function cancelActiveJob() {
@@ -1961,17 +2077,22 @@ async function runRelationJob(payload) {
       toast(last.error || "分轮查询失败。", true);
       return;
     }
-    // 停止或合成结果期间加快轮询，让状态尽快切换成结果。
+    // 轮询间隔按状态给：
+    //   finalizing / 正在停止 → 800ms（马上就出结果了）
+    //   queued（排队中）      → 3000ms（排多久都可能，别太密）
+    //   其他                  → 3000ms
     await sleep(jobStopping || last.status === "finalizing" ? 800 : 3000);
     if (activeJob !== jobId) return;
     try {
       last = await api(`/api/relations/jobs/${jobId}`);
+      // 每次轮询都把最新进度画出来：排队位置、轮次、请求数都会变。
+      // 以前只在创建时画一次，中间过程用户看不到，像是"卡住了"。
+      showJobProgress(last);
     } catch (error) {
       activeJob = null;
       showJobProgress(null);
       throw error;
     }
-    showJobProgress(last);
   }
 }
 
@@ -2038,6 +2159,24 @@ async function runRelations(keepRemovals = false) {
   const button = $("#run-scan");
   button.disabled = true;
   button.textContent = "扫描中…";
+  // **立刻**把动态框显示出来。
+  //
+  // 以前这里要等 `prefetchSeedProfile` 跑完（2 次 Taostats 请求，慢的时候
+  // 十几秒甚至更久）才创建作业，动态框要等作业创建后才出现——用户点了按钮
+  // 之后长时间看到的是"什么都没发生"，正是他说的"延迟很久才出现"。
+  // 现在先放一个本地占位状态，让进度框马上出来，再把真实进度覆盖上去。
+  showJobProgress({
+    status: "starting",
+    seed,
+    rounds_done: 0,
+    requests_total: 0,
+    remaining_requests: 0,
+    pending_transfer: 0,
+    pending_stake: 0,
+    queued_addresses: 0,
+    local_placeholder: true,
+    stage_text: "正在读取起始地址画像…",
+  });
   if (!keepRemovals) {
     state.removedAddresses.clear();
     state.exchangePruned.clear();
@@ -2063,6 +2202,21 @@ async function runRelations(keepRemovals = false) {
       await runRelationJob(payload);
       return;
     }
+    // 单轮查询（不分轮）：占位框已经在点了按钮的瞬间显示出来，这里把文案
+    // 推进到"正在查询"，让用户知道画像查完了、正在跑关联。
+    showJobProgress({
+      status: "starting",
+      seed,
+      rounds_done: 0,
+      requests_total: payload.prefetched_requests || 0,
+      prefetched_requests: payload.prefetched_requests || 0,
+      remaining_requests: 0,
+      pending_transfer: 0,
+      pending_stake: 0,
+      queued_addresses: 0,
+      local_placeholder: true,
+      stage_text: "正在查询关联地址（单轮模式，通常几十秒内出结果）…",
+    });
     const data = await api("/api/relations", { method: "POST", body: JSON.stringify(payload) });
     if (requestedSource === "taostats" && data.data_source !== "taostats") {
       toast("当前后台尚未加载 Taostats 接入版本。请在项目 PowerShell 窗口执行 .\\stop.ps1，再执行 .\\start.ps1。", true);
@@ -5271,6 +5425,19 @@ $("#keypool-new-key").addEventListener("keydown", (event) => {
 $("#toggle-api-key").addEventListener("click", () => setApiKeyFolded(state.apiKeyBodyOpen));
 $("#run-scan").addEventListener("click", () => runRelations(false));
 // 远程面板折叠/展开（状态记在 localStorage，见 setRemoteFolded）。
+// 「你的名字」：输入即存（不需要"保存"按钮，改完立刻生效）。
+// 说明：这个名字只决定"查询记录归谁看"，不是权限；地址库仍全机共享。
+const clientNameInput = $("#client-name");
+if (clientNameInput) {
+  clientNameInput.addEventListener("input", () => {
+    setClientName(clientNameInput.value);
+  });
+  clientNameInput.addEventListener("blur", () => {
+    const saved = setClientName(clientNameInput.value);
+    if (saved) toast(`已记住：之后你的查询记录只有你能看到。`, false);
+  });
+}
+
 $("#remote-toggle").addEventListener("click", () => {
   const body = $("#remote-body");
   if (!body) return;
@@ -5997,6 +6164,8 @@ $("#copy-machine").addEventListener("click", async () => {
   restoreSeed();
   // 远程面板的折叠状态也要在首次渲染前恢复，否则会闪一下再收起。
   restoreRemoteFold();
+  // 名字回填：刷新后输入框要显示上次保存的名字。
+  renderClientName();
   // 甲方案：主机跑服务，其余设备只当浏览器客户端。先过访问口令再谈业务。
   const access = await loadAccessStatus();
   applyAccessStatus(access);
