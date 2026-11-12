@@ -1640,6 +1640,8 @@ function refreshRelatedTable() {
   const visible = relatedVisibleRows();
   // 建库提示按"当前条件"算，筛选一变就得跟着变，否则提示数量会和实际导入不一致。
   updateBookHint();
+  // 同步提示同理：0.9.7 起同步也走"当前可见条件"，提示必须跟着筛选变。
+  updateSyncHint();
   $("#count-related").textContent = number(visible.length);
   const totalPages = Math.max(1, Math.ceil(visible.length / state.pageSize));
   if (state.page > totalPages) state.page = totalPages;
@@ -5361,7 +5363,10 @@ async function clearHistory() {
 
 // -- 关联地址同步进地址库 -------------------------------------------------
 async function syncAddresses({ seed, related, mode = "all", category = "其他", label = "", book = "" }) {
-  const addresses = (related || []).map((row) => row.address).filter(Boolean);
+  // 允许传行对象（结果表）或地址字符串（已过白名单筛的纯地址清单）。
+  const addresses = (related || [])
+    .map((row) => (typeof row === "string" ? row : row?.address))
+    .filter(Boolean);
   return api("/api/relations/sync-library", {
     method: "POST",
     body: JSON.stringify({
@@ -5448,7 +5453,13 @@ function updateSyncHint() {
   const targetText = target === "__new__"
     ? "将新建一个标签组"
     : `将合并进「${target.replace(/^(book|label):/, "")}」，不另起新组`;
-  hint.textContent = `本次 ${(data.related || []).length} 个关联地址 + 发起地址；命中已知地址库 ${libraryHitCount} 个，${targetText}。`;
+  // 同步跟随结果表的可见集合（层级 + 强度 + 金额 + 手动移除/剪枝），
+  // 所以提示里报的是"当前能同步几个"，不是 lastResult 的全量。
+  const visible = relatedVisibleRows().length;
+  const total = (data.related || []).length;
+  const hidden = total - visible;
+  const hiddenText = hidden > 0 ? `（另有 ${hidden} 个被层级/强度/金额筛选隐藏，不会同步）` : "";
+  hint.textContent = `本次 ${visible} 个关联地址 + 发起地址${hiddenText}；命中已知地址库 ${libraryHitCount} 个，${targetText}。`;
 }
 
 function applyDefaultSyncGroup(force = false) {
@@ -5700,14 +5711,56 @@ async function syncCurrentResult(mode) {
     state.syncTargetTouched = false;
     applyDefaultSyncGroup(true);
   }
+  const target = $("#sync-label-group").value;
+  const { label, book } = syncTargetPayload(target, $("#sync-label").value);
+
+  // 同步按「当前可见条件」走：层级 + 强度 + 金额 + 手动移除/剪枝，并剔除
+  // 已确认交易所、验证者、公共地址——与建库、导出同一口径。
+  //
+  // 以前这里直接提交 state.lastResult.related 全量：用户把结果表筛到「1 级 +
+  // 强以上」看见 8 条，点同步却把 66 条全灌进地址库，数量对不上还没法解释，
+  // 更麻烦的是把被筛掉的弱关联也一起归了库，之后要一条条删。
+  const visible = relatedVisibleRows();
+  const { addresses, skippedExchange, skippedValidator, skippedPublic } =
+    selectExportableAddresses(visible);
+  if (!addresses.length) {
+    toast("当前筛选条件下没有可同步的地址；调整层级、强度或金额后再试。", true);
+    return;
+  }
+
+  const total = (state.lastResult.related || []).length;
+  const hidden = total - visible.length;
+  const targetName = book || label || "新建标签组";
+  const lines = [
+    mode === "matched" ? "同步命中地址 + 发起地址" : "同步关联地址 + 发起地址",
+    `目标：${targetName}`,
+    "",
+    ...describeCurrentFilters().map((line) => `· ${line}`),
+    "",
+    `本次同步 ${addresses.length} 个关联地址 + 发起地址`,
+  ];
+  if (hidden > 0) {
+    lines.push(`另有 ${hidden} 个关联地址不在当前筛选条件内，不会同步`);
+    lines.push("（要全部同步，请先把层级/强度筛选改回「全部」再点同步）");
+  }
+  const excluded = skippedExchange + skippedValidator + skippedPublic;
+  if (excluded) {
+    const parts = [];
+    if (skippedExchange) parts.push(`交易所 ${skippedExchange}`);
+    if (skippedValidator) parts.push(`验证者 ${skippedValidator}`);
+    if (skippedPublic) parts.push(`公共地址 ${skippedPublic}`);
+    lines.push(`已排除：${parts.join("、")}（共 ${excluded} 个）`);
+  }
+  lines.push("");
+  lines.push("条件不对可以先取消，回页面上调整筛选再操作。");
+  if (!window.confirm(lines.join("\n"))) return;
+
   const button = mode === "matched" ? $("#sync-matched") : $("#sync-all");
   button.disabled = true;
   try {
-    const target = $("#sync-label-group").value;
-    const { label, book } = syncTargetPayload(target, $("#sync-label").value);
     const result = await syncAddresses({
       seed: state.lastResult.seed,
-      related: state.lastResult.related,
+      related: addresses,
       mode,
       category: $("#sync-category").value,
       label,
