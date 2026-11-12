@@ -3229,6 +3229,19 @@ function fillCategorySelects() {
     const keep = names.includes(select.value) ? select.value : names[0] || "";
     select.innerHTML = categoryOptionsMarkup(keep);
   });
+  fillImportCategorySelect();
+}
+
+/* 导入弹窗的分类下拉：不带「＋ 新建分类…」（那一步要走分类管理的确认流程），
+   只列现有分类 + 一个「其他」兜底。 */
+function fillImportCategorySelect() {
+  const select = $("#import-category");
+  if (!select) return;
+  const names = state.categories.map((item) => item.name);
+  const keep = names.includes(select.value) ? select.value : names.includes("其他") ? "其他" : names[0] || "";
+  select.innerHTML = names
+    .map((name) => `<option value="${esc(name)}"${name === keep ? " selected" : ""}>${esc(name)}</option>`)
+    .join("");
 }
 
 function renderCategories() {
@@ -4250,30 +4263,203 @@ async function addAddress() {
   } catch (error) { toast(error.message, true); }
 }
 
-async function uploadLibrary(file) {
-  const form = new FormData();
-  form.append("file", file);
+/* -- 导入地址库：先弹窗问清楚「导到哪个库」---------------------------------
+   用户原话：「应该要弹窗让我确认导入到哪个地址库或者新增地址库，填写地址库
+   名称和分类，如果是导入已有地址库，还有去重，只导入新增部分。」
+
+   以前点「导入文件」是直接 POST 到 /api/library/import，地址全落到默认分类、
+   库名为空——用户回头找不到这批地址，还得一条条改。现在流程是：
+   选文件 → 弹窗（预检 + 选库/新建 + 分类 + 库备注）→ 确认才真正导入。 */
+
+let pendingImportFile = null;   // 已选好、等确认的文件
+let importBooks = [];           // 可选的自建库清单
+
+function openImportDialog(file) {
+  pendingImportFile = file;
+  $("#import-dialog-file").textContent = `${file.name} · ${formatBytes(file.size)}`;
+  $("#import-dialog").classList.remove("hidden");
+  // 默认「新建地址库」，库里没有可选项时也只能新建。
+  const hasBooks = importBooks.length > 0;
+  $("#import-mode-new").checked = true;
+  syncImportModeUI();
+  $("#import-book-name").value = suggestBookName(file.name);
+  $("#import-book-note").value = "";
+  $("#import-preview").innerHTML = '<span class="import-preview-loading">正在检查文件…</span>';
+  $("#import-dedup-hint").textContent = "";
+  $("#import-confirm").disabled = true;
+  // 弹窗打开时先把库清单刷新一遍，避免刚建的库不在下拉里。
+  void refreshImportBooks();
+  void runImportPreview();
+  setTimeout(() => $("#import-book-name").focus(), 40);
+}
+
+function closeImportDialog() {
+  $("#import-dialog").classList.add("hidden");
+  pendingImportFile = null;
+  $("#library-file").value = "";
+}
+
+function formatBytes(size) {
+  const n = Number(size) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/* 用文件名猜一个库名，省得每次都手打。去掉扩展名和常见前缀噪音。 */
+function suggestBookName(filename) {
+  const base = String(filename || "").replace(/\.[^.]+$/, "").trim();
+  if (!base || base.length > 60) return "";
+  return base;
+}
+
+async function refreshImportBooks() {
   try {
-    const response = await fetch("/api/library/import", { method: "POST", body: form });
+    const data = await api("/api/library/books");
+    importBooks = Array.isArray(data.items) ? data.items : [];
+  } catch {
+    importBooks = [];
+  }
+  const select = $("#import-book-select");
+  select.innerHTML = importBooks.length
+    ? importBooks.map((item) => `<option value="${esc(item.name)}">${esc(item.name)}（${item.count} 个）</option>`).join("")
+    : '<option value="">（还没有自建地址库）</option>';
+  // 没有库可选时，禁用「已有地址库」这一项，免得选了却导不进去。
+  $("#import-mode-existing").disabled = !importBooks.length;
+  if (!importBooks.length) {
+    $("#import-mode-new").checked = true;
+    syncImportModeUI();
+  }
+}
+
+function syncImportModeUI() {
+  const useNew = $("#import-mode-new").checked;
+  $("#import-new-field").classList.toggle("hidden", !useNew);
+  $("#import-existing-field").classList.toggle("hidden", useNew);
+}
+
+function currentImportBook() {
+  return $("#import-mode-new").checked
+    ? $("#import-book-name").value.trim()
+    : $("#import-book-select").value;
+}
+
+/* 预检：只解析不入库，告诉用户这份文件有多少条、多少条已在目标库里。 */
+async function runImportPreview() {
+  if (!pendingImportFile) return;
+  const form = new FormData();
+  form.append("file", pendingImportFile);
+  const book = currentImportBook();
+  const url = `/api/library/import/preview${book ? `?book=${encodeURIComponent(book)}` : ""}`;
+  const box = $("#import-preview");
+  box.innerHTML = '<span class="import-preview-loading">正在检查文件…</span>';
+  $("#import-confirm").disabled = true;
+  try {
+    const response = await fetch(url, { method: "POST", body: form });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "无法解析这个文件");
+    renderImportPreview(data);
+    $("#import-confirm").disabled = data.valid <= 0;
+  } catch (error) {
+    box.innerHTML = `<span class="bad">${esc(error.message)}</span>`;
+    $("#import-confirm").disabled = true;
+  }
+}
+
+function renderImportPreview(data) {
+  const bits = [`共认出 <b>${data.total_found ?? data.valid}</b> 个地址片段`];
+  bits.push(`有效 <b>${data.valid}</b> 条`);
+  if (data.duplicate) bits.push(`文件内重复 <b>${data.duplicate}</b> 条已合并`);
+  if (data.remarks) bits.push(`识别备注 <b>${data.remarks}</b> 条`);
+  let html = `<div>${bits.join(" · ")}</div>`;
+
+  if (data.invalid) {
+    const samples = (data.invalid_samples || []).slice(0, 3).join("、");
+    html += `<div class="bad">${data.invalid} 个格式不正确，将跳过${samples ? `（如 ${esc(samples)}）` : ""}。</div>`;
+  }
+  if ((data.suspect_remarks || []).length) {
+    html += `<div class="warn">备注 ${esc(data.suspect_remarks.join("、"))} 看着像粘贴残留，导入后可核对。</div>`;
+  }
+  $("#import-preview").innerHTML = html;
+
+  // 去重提示：这是用户最关心的一句——「只导入新增部分」到底会加几条。
+  const hint = $("#import-dedup-hint");
+  const book = currentImportBook();
+  if (!book) {
+    hint.innerHTML = "填一个地址库名称，这批地址就会归到该库下，方便日后按库查看。";
+    return;
+  }
+  const fresh = Math.max(0, data.valid - (data.already_in_book || 0));
+  if (data.already_in_book) {
+    hint.innerHTML =
+      `「${esc(book)}」里已有 <span class="num">${data.already_in_book}</span> 条，` +
+      `本次只导入新增的 <span class="num">${fresh}</span> 条，重复的会跳过。`;
+  } else if (fresh === 0) {
+    hint.innerHTML = `这份清单里的地址都已在「${esc(book)}」中，导入不会新增任何条目。`;
+  } else {
+    // 不说「库是空的」：库里可能有几百条、只是跟这份清单没交集。
+    hint.innerHTML = `这份清单有 <span class="num">${fresh}</span> 条不在「${esc(book)}」里，将全部导入。`;
+  }
+  if (data.in_other_books) {
+    hint.innerHTML += ` 其中 <span class="num">${data.in_other_books}</span> 条已在其他库里，会保留原库归属，只补本库标记。`;
+  }
+}
+
+async function confirmImport() {
+  if (!pendingImportFile) return;
+  const useNew = $("#import-mode-new").checked;
+  const book = currentImportBook();
+  const category = $("#import-category").value;
+  const note = $("#import-book-note").value.trim();
+
+  if (!book) {
+    toast(useNew ? "请填写地址库名称。" : "请选择一个地址库。", true);
+    return;
+  }
+  if (useNew && importBooks.some((item) => item.name === book)) {
+    toast(`已有同名地址库「${book}」，请换一个名字，或改用「已有地址库」。`, true);
+    return;
+  }
+
+  const button = $("#import-confirm");
+  button.disabled = true;
+  button.textContent = "导入中…";
+  const form = new FormData();
+  form.append("file", pendingImportFile);
+  const params = new URLSearchParams({
+    filename: pendingImportFile.name,
+    book,
+  });
+  if (category) params.set("category", category);
+  if (note) params.set("note", note);
+
+  try {
+    const response = await fetch(`/api/library/import?${params}`, { method: "POST", body: form });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || "导入失败");
     await loadLibrary();
-    // 有格式不对的地址才用告警色，纯粹去重/保留备注算正常结果。
+    await refreshImportBooks();
+    closeImportDialog();
     toast(describeImportResult(data), Boolean(data.invalid));
-  } catch (error) { toast(error.message, true); }
-  finally { $("#library-file").value = ""; }
+  } catch (error) {
+    toast(error.message, true);
+    button.disabled = false;
+    button.textContent = "开始导入";
+  }
 }
 
-/* 导入结果回显：把「自动修正了什么」讲清楚。
+/* 导入结果回显：把「自动修正了什么」讲清楚，并点明归到了哪个库。
    用户导进来的常是手抄/复制拼接的清单，出现重复和格式问题是常态，
    所以这里要如实报数，而不是只给一句「导入完成」。 */
 function describeImportResult(data) {
   const parts = [`新增 ${data.inserted ?? 0}`];
   if (data.updated) parts.push(`更新 ${data.updated}`);
-  if (data.skipped) parts.push(`无变化 ${data.skipped}`);
-  if (data.duplicate) parts.push(`自动去重 ${data.duplicate}`);
+  if (data.already_in_book) parts.push(`库内已存在跳过 ${data.already_in_book}`);
+  else if (data.skipped) parts.push(`无变化 ${data.skipped}`);
+  if (data.duplicate) parts.push(`文件内去重 ${data.duplicate}`);
   if (data.remarks) parts.push(`保留备注 ${data.remarks}`);
-  let text = `导入完成：${parts.join("，")}。`;
+  const where = data.book ? `「${data.book}」` : "";
+  let text = `已导入${where}：${parts.join("，")}。`;
   if (data.invalid) {
     const samples = (data.invalid_samples || []).join("、");
     text += ` 有 ${data.invalid} 个格式不正确未导入${samples ? `（如 ${samples}）` : ""}。`;
@@ -5605,7 +5791,40 @@ $("#scan-latest").addEventListener("click", () => scanBlocks(false));
 $("#scan-advance").addEventListener("click", () => scanBlocks(true));
 $("#add-address").addEventListener("click", addAddress);
 $("#choose-file").addEventListener("click", () => $("#library-file").click());
-$("#library-file").addEventListener("change", (event) => { if (event.target.files[0]) uploadLibrary(event.target.files[0]); });
+
+/* -- 导入弹窗的事件绑定 --------------------------------------------------
+   换库/换分类都要重新预检：库变了，「其中多少条已存在」就变了。 */
+$("#import-cancel").addEventListener("click", closeImportDialog);
+$("#import-cancel-x").addEventListener("click", closeImportDialog);
+$("#import-confirm").addEventListener("click", confirmImport);
+// 点遮罩空白处关闭（点弹窗内容不关）。
+$("#import-dialog").addEventListener("click", (event) => {
+  if (event.target.id === "import-dialog") closeImportDialog();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("#import-dialog").classList.contains("hidden")) {
+    closeImportDialog();
+  }
+});
+$("#import-mode-existing").addEventListener("change", () => {
+  syncImportModeUI();
+  void runImportPreview();
+});
+$("#import-mode-new").addEventListener("change", () => {
+  syncImportModeUI();
+  void runImportPreview();
+});
+$("#import-book-select").addEventListener("change", () => void runImportPreview());
+// 库名是手动输入的，防抖后再预检（不要每敲一个字就打一次接口）。
+let importNameTimer = 0;
+$("#import-book-name").addEventListener("input", () => {
+  clearTimeout(importNameTimer);
+  importNameTimer = setTimeout(() => void runImportPreview(), 400);
+});
+$("#library-file").addEventListener("change", (event) => {
+  // 选了文件先弹窗确认导到哪个库，不再直接导入。
+  if (event.target.files[0]) openImportDialog(event.target.files[0]);
+});
 $("#sync-exchanges").addEventListener("click", syncExchangeLibrary);
 $("#sync-validators").addEventListener("click", syncValidatorLibrary);
 $("#reconcile-history").addEventListener("click", reconcileHistory);

@@ -1494,8 +1494,67 @@ async def import_library(
     else:
         filename = request.query_params.get("filename", "upload.txt")
         payload = raw
+    # 目标库与分类从查询参数取（multipart 里再塞字段要改前端 FormData，
+    # 查询参数更简单，也方便用 curl 复现）。
+    book = request.query_params.get("book", "")
+    category = request.query_params.get("category", "")
+    note = request.query_params.get("note", "")
     try:
-        return svc.import_upload(filename, payload.decode("utf-8-sig"))
+        return svc.import_upload(
+            filename,
+            payload.decode("utf-8-sig"),
+            book=book,
+            category=category,
+            note=note,
+        )
+    except (UnicodeDecodeError, InputError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/library/import/preview")
+async def preview_library_import(
+    request: Request,
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """只解析、不入库：弹窗里先告诉用户「这份文件有多少条、要导到哪儿去」。
+
+    ``book`` 传了的话额外算出「其中多少条已经在那个库里」——用户要的
+    「导入已有地址库时只导入新增部分」得先能看到这个数，才敢点确认。
+    """
+
+    raw = await request.body()
+    if len(raw) > 2_000_000:
+        raise HTTPException(413, "upload exceeds 2 MB")
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        boundary = content_type.split("boundary=", 1)
+        if len(boundary) != 2:
+            raise HTTPException(422, "multipart boundary is missing")
+        try:
+            import email
+
+            message = email.message_from_bytes(
+                b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + raw
+            )
+            part = next(
+                (item for item in message.walk() if item.get_filename() is not None),
+                None,
+            )
+            if part is None:
+                raise HTTPException(422, "no uploaded file")
+            payload = part.get_payload(decode=True) or b""
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(422, f"invalid upload: {exc}") from exc
+    else:
+        payload = raw
+
+    book = request.query_params.get("book", "").strip()
+    try:
+        return svc.preview_import(
+            payload.decode("utf-8-sig"), book=book
+        )
     except (UnicodeDecodeError, InputError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
 

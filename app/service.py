@@ -1224,20 +1224,120 @@ class LinkService:
                 )
         return {"inserted": inserted, "updated": updated, "skipped": skipped}
 
-    def import_upload(self, filename: str, text: str) -> dict[str, Any]:
+    def preview_import(self, text: str, *, book: str = "") -> dict[str, Any]:
+        """只解析不入库，给导入弹窗做预览。
+
+        ``book`` 给了就额外算「其中多少条已经在这个库里」，让用户在点确认
+        之前就知道「只导入新增部分」到底会新增多少条。
+        """
+
+        book_name = str(book or "").strip()[:BOOK_NAME_MAX_LENGTH]
+        rows, report = _parse_upload_with_report("preview.txt", text)
+        addresses = [row["address"] for row in rows]
+
+        already: list[str] = []
+        in_other_books = 0
+        if addresses:
+            with self.database.session() as db:
+                found = db.execute(
+                    select(AddressLibrary.address, AddressLibrary.book, AddressLibrary.category)
+                    .where(AddressLibrary.address.in_(addresses))
+                ).all()
+            book_of = {row[0]: (row[1] or "") for row in found}
+            if book_name:
+                already = [addr for addr in addresses if book_of.get(addr) == book_name]
+            in_other_books = sum(
+                1
+                for addr in addresses
+                if book_of.get(addr) and book_of.get(addr) != book_name
+            )
+            existing_any = len([addr for addr in addresses if addr in book_of])
+        else:
+            existing_any = 0
+
+        return {
+            "book": book_name,
+            "valid": len(rows),
+            "already_in_book": len(already),
+            "already_samples": already[:5],
+            # 已经在别的库里：导进新库会把它们"移"过去还是"复制"一份？
+            # 这里只报数，具体行为由 import_rows 的既有语义决定（保留原库归属）。
+            "in_other_books": in_other_books,
+            "existing_any": existing_any,
+            "duplicate": len(report.get("duplicate") or []),
+            "invalid": len(report.get("invalid") or []),
+            "invalid_samples": (report.get("invalid") or [])[:5],
+            "remarks": len(report.get("remarks") or []),
+            "suspect_remarks": (report.get("suspect") or [])[:5],
+            "total_found": report.get("total") or len(rows),
+            "labels": [row.get("label") or "" for row in rows[:5]],
+        }
+
+    def import_upload(
+        self,
+        filename: str,
+        text: str,
+        *,
+        book: str = "",
+        category: str = "",
+        note: str = "",
+    ) -> dict[str, Any]:
         """导入上传文件，并回传「自动修正了什么」。
 
-        返回值在 ``inserted`` / ``updated`` / ``skipped`` 之外多三项：
+        ``book`` 指定导入到哪个地址库（自建库名）。给了就把这批地址全部
+        归入该库；库不存在会自动登记，``note`` 作为库备注。``category``
+        指定主分类（不传就沿用文件里写的 / 默认「其他」）。
 
-        - ``duplicate``：文件内重复、已自动合并的地址（个数，附样例）；
-        - ``invalid``：格式不对、没能导入的片段（个数，附样例）；
+        返回值：
+
+        - ``inserted`` / ``updated`` / ``skipped``：新增 / 更新 / 已存在且无变化；
+        - ``already_in_book``：**已经在这个库里**、本次跳过的条数（重复导入同一
+          文件时这就是全部，用户能一眼看出"只导新增部分"生效了）；
+        - ``duplicate``：文件内重复、已自动合并的地址；
+        - ``invalid``：格式不对、没能导入的片段；
         - ``remarks``：识别并保存为标签/备注的条数。
         """
 
+        book_name = str(book or "").strip()[:BOOK_NAME_MAX_LENGTH]
         rows, report = _parse_upload_with_report(filename, text)
+
+        # 先算出「哪些地址本来就在目标库里」——要在写库之前问，否则
+        # 刚写进去的也会被算成"已存在"，去重数字就变成 0 了。
+        already_in_book: list[str] = []
+        if book_name and rows:
+            wanted = [row["address"] for row in rows]
+            with self.database.session() as db:
+                existing = set(
+                    db.scalars(
+                        select(AddressLibrary.address).where(
+                            AddressLibrary.address.in_(wanted),
+                            AddressLibrary.book == book_name,
+                        )
+                    ).all()
+                )
+            already_in_book = [addr for addr in wanted if addr in existing]
+
+        if book_name or category:
+            for row in rows:
+                if book_name:
+                    row["book"] = book_name
+                if category:
+                    row["category"] = category
+                    # categories 里也要带上，否则 import_rows 会用旧列表覆盖。
+                    cats = [c for c in (row.get("categories") or []) if c]
+                    if category not in cats:
+                        cats = [category, *cats]
+                    row["categories"] = cats
+
         result = self.import_rows(rows, filename)
+        if book_name:
+            self._ensure_book_registry(book_name, note=note)
+
         return {
             **result,
+            "book": book_name,
+            "already_in_book": len(already_in_book),
+            "already_samples": already_in_book[:5],
             # 文件里先做去重，所以 import_rows 看到的是干净的列表；
             # 这里把「修正了多少」如实告诉用户。
             "duplicate": len(report.get("duplicate") or []),
@@ -1248,6 +1348,23 @@ class LinkService:
             "suspect_remarks": (report.get("suspect") or [])[:5],
             "total_found": report.get("total") or len(rows),
         }
+
+    def _ensure_book_registry(self, name: str, *, note: str = "") -> None:
+        """确保这个库名在台账里存在（导入时库可能是新建的）。
+
+        只登记台账，不碰地址：``import_rows`` 已经把 ``book`` 写进每条记录了。
+        不登记的话库只存在于地址行的字段里，删空了就再也查不到这个名字。
+        """
+
+        name = str(name or "").strip()[:BOOK_NAME_MAX_LENGTH]
+        if not name:
+            return
+        with self.database.session() as db:
+            registry = db.scalar(select(AddressBook).where(AddressBook.name == name))
+            if registry is None:
+                db.add(AddressBook(name=name, note=str(note or "").strip()[:500]))
+            elif note and not (registry.note or "").strip():
+                registry.note = str(note).strip()[:500]
 
     def add_group_addresses(
         self,

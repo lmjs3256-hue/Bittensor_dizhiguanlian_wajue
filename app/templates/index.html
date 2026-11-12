@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.9.3">
+  <link rel="stylesheet" href="/static/styles.css?v=0.9.4">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -308,6 +308,62 @@
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.9.3"></script>
+  <!-- 导入地址库：先问清楚"导到哪个库"，而不是悄悄塞进默认分类。
+       用户原话：「应该要弹窗让我确认导入到哪个地址库或者新增地址库，
+       填写地址库名称和分类，如果是导入已有地址库，还有去重，只导入新增部分。」 -->
+  <div class="import-dialog-mask hidden" id="import-dialog">
+    <div class="import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-dialog-title">
+      <div class="import-dialog-head">
+        <h3 id="import-dialog-title">导入地址</h3>
+        <button class="import-dialog-close" id="import-cancel-x" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="import-dialog-file" id="import-dialog-file">-</p>
+
+      <div class="import-dialog-body">
+        <div class="import-preview" id="import-preview">
+          <span class="import-preview-loading">正在检查文件…</span>
+        </div>
+
+        <fieldset class="import-mode">
+          <legend>导入到</legend>
+          <label class="import-mode-option">
+            <input type="radio" name="import-mode" id="import-mode-existing" value="existing">
+            <span>已有地址库</span>
+          </label>
+          <label class="import-mode-option">
+            <input type="radio" name="import-mode" id="import-mode-new" value="new" checked>
+            <span>新建地址库</span>
+          </label>
+        </fieldset>
+
+        <label class="import-field" id="import-existing-field">
+          <span>选择地址库</span>
+          <select id="import-book-select"></select>
+        </label>
+
+        <label class="import-field" id="import-new-field">
+          <span>地址库名称</span>
+          <input id="import-book-name" type="text" maxlength="60" placeholder="例如：项目方钱包、群友名单" autocomplete="off">
+        </label>
+
+        <label class="import-field">
+          <span>分类<small>（这批地址的主分类）</small></span>
+          <select id="import-category"></select>
+        </label>
+        <label class="import-field">
+          <span>库备注<small>（可选）</small></span>
+          <input id="import-book-note" type="text" maxlength="200" placeholder="例如：2026-11 从群公告整理" autocomplete="off">
+        </label>
+
+        <div class="import-dedup-hint" id="import-dedup-hint"></div>
+      </div>
+
+      <div class="import-dialog-actions">
+        <button class="ghost" id="import-cancel" type="button">取消</button>
+        <button class="primary" id="import-confirm" type="button">开始导入</button>
+      </div>
+    </div>
+  </div>
+  <script src="/static/app.js?v=0.9.4"></script>
 </body>
 </html>

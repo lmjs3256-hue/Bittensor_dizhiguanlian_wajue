@@ -11,6 +11,43 @@
 .aside-version #app-version { overflow-wrap:anywhere; }
 .aside-release-link { border:0; padding:0; background:transparent; color:var(--muted); font-size:11px; font-family:inherit; text-decoration:underline; text-underline-offset:2px; white-space:nowrap; }
 .aside-release-link:hover { color:var(--accent); }
+
+/* -- 导入地址库弹窗 ---------------------------------------------------------
+   导入前必须让人明确「导到哪个库、什么分类」，否则地址会散在默认分类里，
+   事后还得一个个去改。弹窗里同时显示预检结果（几条有效、几条已在库里）。 */
+.import-dialog-mask { position:fixed; inset:0; z-index:220; display:flex; align-items:center; justify-content:center; padding:24px; background:rgba(12,18,28,.46); backdrop-filter:blur(2px); overflow:auto; }
+.import-dialog { width:min(560px,100%); background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:0 24px 60px rgba(8,14,24,.28); display:flex; flex-direction:column; max-height:calc(100vh - 48px); }
+.import-dialog-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:18px 22px 0; }
+.import-dialog-head h3 { margin:0; font-size:18px; }
+.import-dialog-close { border:0; background:transparent; color:var(--muted); font-size:22px; line-height:1; padding:0 4px; cursor:pointer; }
+.import-dialog-close:hover { color:var(--ink); }
+.import-dialog-file { margin:6px 22px 0; color:var(--muted); font-size:12px; font-family:var(--mono); overflow-wrap:anywhere; }
+.import-dialog-body { padding:14px 22px 4px; display:grid; gap:13px; overflow:auto; }
+.import-preview { border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:11px 13px; font-size:12.5px; color:var(--ink); line-height:1.7; }
+.import-preview b { font-family:var(--mono); }
+.import-preview .ok { color:var(--accent); font-weight:650; }
+.import-preview .warn { color:var(--warn); }
+.import-preview .bad { color:var(--danger); }
+.import-preview-loading { color:var(--muted); }
+.import-mode { border:0; padding:0; margin:0; display:flex; gap:18px; flex-wrap:wrap; }
+.import-mode legend { padding:0; color:var(--muted); font-size:12px; margin-bottom:7px; }
+.import-mode-option { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink); }
+.import-mode-option input { width:16px; height:16px; padding:0; accent-color:var(--accent); }
+.import-field { display:grid; gap:6px; font-size:12px; color:var(--muted); }
+.import-field small { font-weight:400; }
+.import-field.hidden { display:none; }
+.import-dedup-hint { min-height:0; font-size:12px; line-height:1.65; color:var(--muted); }
+.import-dedup-hint:empty { display:none; }
+.import-dedup-hint .num { font-family:var(--mono); font-weight:700; color:var(--accent); }
+.import-dialog-actions { display:flex; justify-content:flex-end; gap:10px; padding:14px 22px 18px; border-top:1px solid var(--line); margin-top:10px; }
+@media (max-width:560px) {
+  .import-dialog-mask { padding:12px; align-items:flex-start; }
+  .import-dialog { border-radius:13px; }
+  .import-dialog-body { padding:12px 16px 4px; }
+  .import-dialog-head { padding:15px 16px 0; }
+  .import-dialog-actions { padding:12px 16px 15px; }
+  .import-dialog-actions button { flex:1; }
+}
 main { max-width:1320px; width:100%; margin:0 auto; padding:26px clamp(18px,3vw,44px) 72px; } header { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; margin-bottom:22px; } h1 { font-size:clamp(26px,3vw,36px); margin:6px 0 0; letter-spacing:-1.2px; } h2 { margin:7px 0 11px; font-size:24px; } h3 { margin:0 0 9px; } p { color:var(--muted); line-height:1.65; margin:8px 0; } .eyebrow,.label { font-size:10px; letter-spacing:1.6px; color:var(--accent); font-weight:750; } .live-pill { display:flex; gap:8px; align-items:center; border:1px solid var(--line); border-radius:30px; padding:8px 12px; color:var(--muted); font-size:12px; white-space:nowrap; } .dot { width:8px; height:8px; border-radius:50%; background:#c78a19; display:inline-block; } .dot.ok { background:#0b9b72; } .dot.bad { background:var(--danger); }
 .header-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; } .theme-select { display:flex; align-items:center; gap:7px; color:var(--muted); white-space:nowrap; } .theme-select select { width:auto; min-width:138px; padding:8px 28px 8px 11px; border-radius:24px; font-size:12px; } .theme-select select:focus { border-color:var(--accent); }
 .theme-select select option { background:var(--panel); color:var(--ink); }

@@ -234,3 +234,156 @@ def test_export_roundtrip_preserves_remark(svc):
         assert library[B]["label"] == "主钱包"
     finally:
         other.database.engine.dispose()
+
+
+# -- 导入到指定地址库：弹窗里选库 / 新建库 / 按库去重 -------------------------
+# 用户原话：「应该要弹窗让我确认导入到哪个地址库或者新增地址库，填写地址库
+# 名称和分类，如果是导入已有地址库，还有去重，只导入新增部分。」
+#
+# 以前「导入文件」直接 POST，书名为空、分类落到默认，用户回头找不到这批地址。
+def test_import_into_new_book_sets_book_and_category(svc):
+    result = svc.import_upload(
+        "a.txt", f"{A},甲\n{B},乙\n", book="项目方钱包", category="群友", note="11月整理"
+    )
+    assert result["inserted"] == 2
+    assert result["book"] == "项目方钱包"
+
+    library = {item["address"]: item for item in svc.library()}
+    assert library[A]["book"] == "项目方钱包"
+    assert library[A]["category"] == "群友"
+    assert "群友" in library[A]["categories"]
+
+    # 库要出现在清单里，否则用户没法按库查看，也删不掉这个空库名。
+    books = {item["name"]: item for item in svc.address_books()}
+    assert "项目方钱包" in books
+    assert books["项目方钱包"]["count"] == 2
+    assert books["项目方钱包"]["note"] == "11月整理"
+
+
+def test_reimport_into_same_book_only_adds_new(svc):
+    """导入已有地址库：去重，只导入新增部分。"""
+
+    svc.import_upload("a.txt", f"{A},甲\n{B},乙\n", book="我的库", category="群友")
+    result = svc.import_upload(
+        "b.txt", f"{A},甲\n{B},乙\n{C},丙\n", book="我的库", category="群友"
+    )
+
+    assert result["inserted"] == 1, "只应该新增 C"
+    assert result["already_in_book"] == 2, "A、B 已在该库"
+    assert result["already_samples"] and set(result["already_samples"]) == {A, B}
+    assert {item["address"] for item in svc.library()} == {A, B, C}
+
+
+def test_reimport_identical_file_adds_nothing(svc):
+    text = f"{A},甲\n{B},乙\n"
+    svc.import_upload("a.txt", text, book="我的库")
+    again = svc.import_upload("a.txt", text, book="我的库")
+
+    assert again["inserted"] == 0
+    assert again["already_in_book"] == 2
+
+
+def test_book_registry_is_created_for_imports(svc):
+    """只登记地址行不够：台账没有这个名字，库就"不存在"了。"""
+
+    svc.import_upload("a.txt", f"{A}\n", book="新库")
+    assert [item["name"] for item in svc.address_books()] == ["新库"]
+
+
+def test_import_without_book_keeps_old_behaviour(svc):
+    """不传 book 时保持原样：不进任何自建库，方便只要分类的场景。"""
+
+    result = svc.import_upload("a.txt", f"{A}\n")
+    assert result["book"] == ""
+    library = {item["address"]: item for item in svc.library()}
+    assert library[A]["book"] == ""
+    assert svc.address_books() == []
+
+
+# -- 预检接口：点确认之前就要能看到「会新增几条」------------------------------
+def test_preview_reports_valid_and_existing(svc):
+    svc.import_upload("a.txt", f"{A},甲\n", book="我的库")
+    preview = svc.preview_import(f"{A},甲\n{B},乙\n{C}\n", book="我的库")
+
+    assert preview["valid"] == 3
+    assert preview["already_in_book"] == 1
+    assert preview["already_samples"] == [A]
+    assert preview["remarks"] == 2
+
+
+def test_preview_does_not_write_anything(svc):
+    preview = svc.preview_import(f"{A},甲\n{B}\n", book="我的库")
+    assert preview["valid"] == 2
+    assert svc.library() == [], "预检不能入库"
+    assert svc.address_books() == [], "预检不能建库"
+
+
+def test_preview_counts_addresses_in_other_books(svc):
+    svc.import_upload("a.txt", f"{A}\n", book="库一")
+    preview = svc.preview_import(f"{A}\n{B}\n", book="库二")
+
+    assert preview["already_in_book"] == 0, "A 不在库二"
+    assert preview["in_other_books"] == 1, "但已在库一，要提示"
+    assert preview["existing_any"] == 1
+
+
+def test_preview_without_book_reports_nothing_existing(svc):
+    preview = svc.preview_import(f"{A}\n")
+    assert preview["valid"] == 1
+    assert preview["already_in_book"] == 0
+    assert preview["book"] == ""
+
+
+def test_import_into_new_book_keeps_existing_book_of_other_addresses(svc):
+    """把已在别的库的地址导进新库：只补本库标记，不抢走原库归属。
+
+    这是 ``import_rows`` 的既有语义（book 只在空的时候才写），
+    这里锁住它，避免以后为了"导入就该归新库"而误改。
+    """
+
+    svc.import_upload("a.txt", f"{A}\n", book="库一")
+    svc.import_upload("b.txt", f"{A}\n{B}\n", book="库二")
+
+    library = {item["address"]: item for item in svc.library()}
+    assert library[A]["book"] == "库一", "原库归属不被覆盖"
+    assert library[B]["book"] == "库二", "新地址进新库"
+
+
+# -- HTTP 层：查询参数要真的传到 service --------------------------------------
+def test_http_import_accepts_book_and_category(tmp_path):
+    from fastapi.testclient import TestClient
+
+    import app.main as M
+    from app.db import Database as _DB
+    from app.service import LinkService as _Svc
+
+    db = _DB(tmp_path / "http.db")
+    db.initialize()
+    local = _Svc(db, "wss://example.invalid")
+    original = M.SERVICE
+    M.app.dependency_overrides[M.service] = lambda: local
+    try:
+        client = TestClient(M.app)
+        body = f"{A},甲\n{B},乙\n".encode()
+        resp = client.post(
+            "/api/library/import?filename=t.txt&book=HTTP库&category=群友",
+            content=body,
+            headers={"Content-Type": "text/plain"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["book"] == "HTTP库"
+        assert data["inserted"] == 2
+
+        preview = client.post(
+            "/api/library/import/preview?book=HTTP库",
+            content=body,
+            headers={"Content-Type": "text/plain"},
+        )
+        assert preview.status_code == 200
+        assert preview.json()["already_in_book"] == 2
+        assert preview.json()["valid"] == 2
+    finally:
+        M.app.dependency_overrides.pop(M.service, None)
+        M.SERVICE = original
+        db.engine.dispose()
