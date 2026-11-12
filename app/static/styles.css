@@ -12,6 +12,24 @@
 .aside-release-link { border:0; padding:0; background:transparent; color:var(--muted); font-size:11px; font-family:inherit; text-decoration:underline; text-underline-offset:2px; white-space:nowrap; }
 .aside-release-link:hover { color:var(--accent); }
 
+/* -- 已移除（干扰地址）小条 ------------------------------------------------
+   这些地址「不方便分类但人工确定是干扰」，所以不进地址库、不占分类，
+   只在结果页这一条里集中展示，随时可恢复。 */
+.removed-bar { margin:9px 0 11px; border:1px solid var(--line); border-radius:10px; background:var(--bg); padding:9px 12px; display:grid; gap:8px; }
+.removed-bar-head { display:flex; align-items:center; gap:8px 12px; flex-wrap:wrap; font-size:12px; }
+.removed-bar-title { color:var(--ink); font-weight:600; white-space:nowrap; }
+.removed-bar-title b { font-family:var(--mono); color:var(--warn); }
+.removed-bar-hint { color:var(--muted); font-size:11.5px; }
+.removed-toggle { margin-left:auto; padding:5px 11px; font-size:11.5px; }
+.removed-list { display:grid; gap:5px; max-height:220px; overflow-y:auto; border-top:1px solid var(--line); padding-top:8px; }
+.removed-item { display:flex; align-items:center; gap:10px; font-size:12px; padding:5px 0; }
+.removed-main { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; flex:1; }
+.removed-main code { font-family:var(--mono); color:var(--ink); }
+.removed-main small { color:var(--muted); font-size:11px; }
+.removed-seed { opacity:.8; }
+.removed-restore { padding:4px 10px; font-size:11.5px; white-space:nowrap; }
+.removed-bar-actions { display:flex; justify-content:flex-end; }
+.removed-clear { padding:4px 10px; font-size:11.5px; color:var(--danger); }
 /* -- 导入地址库弹窗 ---------------------------------------------------------
    导入前必须让人明确「导到哪个库、什么分类」，否则地址会散在默认分类里，
    事后还得一个个去改。弹窗里同时显示预检结果（几条有效、几条已在库里）。 */

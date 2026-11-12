@@ -37,7 +37,16 @@ const state = {
   keyPoolPerKey: 5,
   // 手动「移除关联」的地址：本次会话内刷新重查时作为 removed_addresses 传给后端，
   // 这些地址及其线索的下游都不会再出现。新查询（非刷新）会清空。
+  //
+  // 0.9.5 起这些地址同时会写进数据库（`removed_relations` 表，全机共享），
+  // 所以刷新页面、重启服务都还在；这里保留内存副本只是为了"立刻从当前表格
+  // 里去掉，不等重新查询"。
   removedAddresses: new Set(),
+  // 数据库里的干扰地址清单（全机共享），用于底部「已移除」小条与恢复列表。
+  removedList: [],
+  // 被移除地址的"直接往来地址"集合：与后端 pruned_contacts 同一套规则，
+  // 用于本地即刻剔除下游，避免"点了没反应要等刷新"的错觉。
+  removedContacts: null,
   // 勾选「过滤交易所/验证者/公共地址」后本地隐藏的地址 → 原始行。
   // 与 removedAddresses 分开：过滤是可逆的显示开关，不是删除决定。
   filteredOut: new Map(),
@@ -1736,12 +1745,135 @@ function updateRefreshButton() {
     : "按本地数据重算（不调用 API）：剔掉已移除的地址及其下游；要看最新链上数据请点「扫描关联」";
 }
 
-function removeRelation(address) {
-  if (!state.removedAddresses.has(address)) {
+async function removeRelation(address) {
+  /* 点「移除关联」= 永久标记为干扰地址（写进数据库，全机共享）。
+
+     以前只是往 state.removedAddresses 里塞一条，只活在浏览器内存：刷新页面
+     就没了，而且自动入库把地址加回库之后，下次重开页面它又完整出现。
+     现在改成落库——0.9.5 的行为：
+       · 任何一次扫描都不再显示它，也连带剪掉经由它的下游；
+       · 不进地址库、不需要选分类（用户要的正是"不方便分类但确定是干扰"）；
+       · 不阻止自动入库（地址进不进库由金额阈值决定，与显示无关）；
+       · 主机 / 手机 / 远程电脑一致，重启服务也在。 */
+  const seed = state.lastResult?.seed || state.seed || "";
+  try {
+    const data = await api("/api/relations/removed", {
+      method: "POST",
+      body: JSON.stringify({ address, seed }),
+    });
+    // 本地也记一份：立刻从当前表格里去掉，不等重新查询。
     state.removedAddresses.add(address);
+    applyRemovedLocally(address);
+    refreshRelatedTable();
+    updateRemovedBar(data.total);
+    toast(
+      data.created
+        ? `已标记为干扰地址，以后扫描都不再显示它和它的下游（共 ${data.total} 个）。可在下方「已移除」里恢复。`
+        : `这个地址已经在干扰名单里（共 ${data.total} 个），本次是重复标记。`,
+      false,
+    );
+  } catch (error) {
+    toast(error.message, true);
   }
-  refreshRelatedTable();
-  toast("已移除该关联。点「刷新结果」会按本地数据剔除它和只经由它连通的下游（不调用 API）；重新扫描会恢复全部关联。", false);
+}
+
+/* 从当前结果里就地剔除：被移除地址本身 + 与它有过直接转账往来的地址（下游）。
+   后端重查时也是这套规则（relation.py 的 pruned_contacts），这里保持一致，
+   避免"点了没反应、要等刷新"的错觉。 */
+function applyRemovedLocally(address) {
+  const result = state.lastResult;
+  if (!result) return;
+  const contacts = new Set([address]);
+  for (const edge of result.edges || []) {
+    const from = edge.from || edge.from_address;
+    const to = edge.to || edge.to_address;
+    if (from === address && to) contacts.add(to);
+    else if (to === address && from) contacts.add(from);
+  }
+  state.removedContacts = contacts;
+  if (Array.isArray(result.related)) {
+    result.related = result.related.filter((row) => !contacts.has(row.address));
+  }
+}
+
+function updateRemovedBar(total) {
+  const bar = $("#removed-bar");
+  if (!bar) return;
+  const count = Number(total ?? state.removedAddresses.size);
+  bar.classList.toggle("hidden", !count);
+  const label = $("#removed-count");
+  if (label) label.textContent = String(count);
+}
+
+/* 拉取「已移除（干扰地址）」清单。全机共享，所以别处标的这里也能看到。 */
+async function loadRemovedRelations() {
+  try {
+    const data = await api("/api/relations/removed");
+    state.removedList = Array.isArray(data.items) ? data.items : [];
+    updateRemovedBar(data.total ?? state.removedList.length);
+    renderRemovedList();
+  } catch {
+    state.removedList = [];
+  }
+}
+
+function renderRemovedList() {
+  const list = $("#removed-list");
+  if (!list) return;
+  const items = state.removedList || [];
+  if (!items.length) {
+    list.innerHTML = '<div class="placeholder">还没有标记任何干扰地址。在关联结果里点「移除关联」就会出现在这里。</div>';
+    return;
+  }
+  list.innerHTML = items
+    .map(
+      (item) => `<div class="removed-item">
+        <div class="removed-main">
+          <code title="${esc(item.address)}">${esc(shortAddr(item.address))}</code>
+          ${item.note ? `<small>${esc(item.note)}</small>` : ""}
+          ${item.seed ? `<small class="removed-seed">来自 ${esc(shortAddr(item.seed))} 的扫描</small>` : ""}
+        </div>
+        <button class="ghost removed-restore" data-restore-removed="${esc(item.address)}" type="button">恢复</button>
+      </div>`,
+    )
+    .join("");
+}
+
+async function restoreRemoved(address) {
+  try {
+    const data = await api(`/api/relations/removed/${encodeURIComponent(address)}`, {
+      method: "DELETE",
+    });
+    // 恢复后重新查一次结果，让它（和它的下游）回到表里。
+    state.removedAddresses.delete(address);
+    state.removedContacts = null;
+    await loadRemovedRelations();
+    toast(
+      data.removed
+        ? `已恢复，下次刷新结果时会重新出现（还剩 ${data.total} 个干扰地址）。`
+        : "这个地址本来就不在干扰名单里。",
+      false,
+    );
+    if (state.lastResult) recomputeLocally();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function clearRemovedRelations() {
+  const count = (state.removedList || []).length || state.removedAddresses.size;
+  if (!count) return;
+  if (!window.confirm(`确定要清空全部 ${count} 个干扰标记吗？清空后这些地址会重新出现在扫描结果里。`)) return;
+  try {
+    const data = await api("/api/relations/removed/clear", { method: "POST" });
+    state.removedAddresses.clear();
+    state.removedContacts = null;
+    await loadRemovedRelations();
+    toast(`已清空 ${data.cleared} 个干扰标记。`, false);
+    if (state.lastResult) recomputeLocally();
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 /* 0 个关联地址时，必须告诉用户"为什么是空表"，否则很容易被当成工具坏了。
@@ -5681,6 +5813,23 @@ $("#copy-seed-address").addEventListener("click", (event) => {
 SIDE_SEED_NARROW.addEventListener("change", placeSideSeed);
 placeSideSeed();
 $("#run-diagnose").addEventListener("click", runDiagnose);
+/* 按本地数据重算关联（不调 API）。「刷新结果」按钮和「恢复干扰地址」都用它。 */
+function recomputeLocally({ silent = false } = {}) {
+  if (!state.lastResult) return;
+  const { pruned, prunedByRole, kept } = rebuildRelationsLocally();
+  state.removedAddresses.clear(); // 已固化成"剔除"，不再反复扣减
+  state.page = 1;
+  refreshRelatedTable();
+  updateRefreshButton();
+  if (silent) return;
+  const byRole = Number(prunedByRole) || 0;
+  if (pruned > 0) {
+    toast(`已按本地数据重算：剔除 ${pruned} 个无效关联（已移除的、只经由它们连通的${byRole ? `、以及穿过交易所/验证者/公共地址的 ${byRole} 个` : ""}），保留 ${kept} 个。未调用 API。`, false);
+  } else {
+    toast(`已按本地数据重算，${kept} 个关联地址均有效。未调用 API。`, false);
+  }
+}
+
 $("#refresh-result").addEventListener("click", () => {
   if (!state.lastResult) {
     toast("还没有查询结果；先输入起始地址点「扫描关联」。", true);
@@ -5690,19 +5839,25 @@ $("#refresh-result").addEventListener("click", () => {
   // 它们连通的线索"，这件事用结果里已有的 edges 就能算完。以前这里跑
   // runRelations(true)，等于每次点刷新都重查一遍，慢且白烧额度。
   // 真要看最新链上数据，请点「扫描关联」重新查询。
-  const { pruned, prunedByRole, kept } = rebuildRelationsLocally();
-  state.removedAddresses.clear();     // 已固化成"剔除"，不再反复扣减
-  state.page = 1;
-  refreshRelatedTable();
-  updateRefreshButton();
-  const byRole = Number(prunedByRole) || 0;
-  if (pruned > 0) {
-    toast(`已按本地数据重算：剔除 ${pruned} 个无效关联（已移除的、只经由它们连通的${byRole ? `、以及穿过交易所/验证者/公共地址的 ${byRole} 个` : ""}），保留 ${kept} 个。未调用 API。`, false);
-  } else {
-    toast(`已按本地数据重算，${kept} 个关联地址均有效。未调用 API。`, false);
-  }
+  recomputeLocally();
 });
 $("#cancel-job").addEventListener("click", cancelActiveJob);
+/* 已移除（干扰地址）小条：展开/收起、恢复、清空。 */
+$("#removed-toggle").addEventListener("click", () => {
+  const list = $("#removed-list");
+  const actions = $("#removed-actions");
+  const open = list.classList.contains("hidden");
+  list.classList.toggle("hidden", !open);
+  actions.classList.toggle("hidden", !open);
+  $("#removed-toggle").textContent = open ? "收起" : "查看";
+  if (open) renderRemovedList();
+});
+$("#removed-clear").addEventListener("click", clearRemovedRelations);
+// 恢复按钮是动态渲染的，用事件委托。
+$("#removed-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-restore-removed]");
+  if (button) restoreRemoved(button.dataset.restoreRemoved);
+});
 /* 四个过滤勾选框：勾上/取消立即在本地隐藏或恢复，不用重查。
    以前它们只在发起查询时被读取，没有 change 监听——勾了看不到任何变化，
    像是"点了没反应"。 */
@@ -6427,5 +6582,6 @@ $("#copy-machine").addEventListener("click", async () => {
   loadOverview();
   loadVersionInfo();
   loadCategories();
+  loadRemovedRelations();
   checkExchangeSyncNotice();
 })();

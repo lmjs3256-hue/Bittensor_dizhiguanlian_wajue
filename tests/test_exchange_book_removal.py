@@ -835,7 +835,14 @@ def test_refresh_result_does_not_call_api():
         if "runRelations(" in line and not line.strip().startswith("//")
     ]
     assert not call_lines, f"刷新结果不能重新发起 API 查询：{call_lines}"
-    assert "rebuildRelationsLocally" in block, "刷新结果应走本地重算"
+    # 0.9.5 起按钮走 recomputeLocally()（它负责重绘表格、提示条数），纯剪枝
+    # 仍在 rebuildRelationsLocally() 里。两层都要查：只改名字不能把链路改断。
+    assert "recomputeLocally" in block, "刷新结果应走本地重算"
+
+    wrapper_start = js.index("function recomputeLocally(")
+    wrapper_block = js[wrapper_start: js.index("\n}\n", wrapper_start)]
+    assert "rebuildRelationsLocally()" in wrapper_block, "本地重算要复用纯剪枝函数"
+    assert "fetch(" not in wrapper_block and "api(" not in wrapper_block
 
     fn_start = js.index("function rebuildRelationsLocally()")
     fn_block = js[fn_start: js.index("\n}\n", fn_start)]

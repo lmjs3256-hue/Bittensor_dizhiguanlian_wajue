@@ -13,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 
 from .collector import RPCCollector, query_account_balances
 from .crawl import CrawlState, TaostatsCrawl
@@ -28,6 +28,7 @@ from .db import (
     Database,
     ImportBatch,
     RelationArchive,
+    RemovedRelation,
     ScanJob,
     ScanLock,
     SYSTEM_CLASSIFICATION,
@@ -3233,6 +3234,98 @@ class LinkService:
             "updated_at": iso_utc(row.updated_at if row is not None else None),
         }
 
+    # -- 干扰地址（永久移除关联）：结果页永远不显示，且连带剪掉下游 ----------
+    def removed_relation_addresses(self) -> set[str]:
+        """数据库里永久标记为"干扰"的地址集合。
+
+        每次 ``relations()`` 都要读一次（结果要精确保剪），所以只取地址列，
+        不做额外 join。表很小（用户手工判定，几十条量级）。
+        """
+
+        with self.database.session() as db:
+            return set(db.scalars(select(RemovedRelation.address)).all())
+
+    def removed_relations(self) -> list[dict[str, Any]]:
+        """给界面看的清单：谁被移除了、从哪次扫描、什么时候、什么理由。"""
+
+        with self.database.session() as db:
+            rows = db.scalars(
+                select(RemovedRelation).order_by(RemovedRelation.created_at.desc())
+            ).all()
+            return [
+                {
+                    "id": row.id,
+                    "address": row.address,
+                    "seed": row.seed or "",
+                    "note": row.note or "",
+                    "created_at": iso_utc(row.created_at),
+                }
+                for row in rows
+            ]
+
+    def remove_relation(
+        self, address: str, *, seed: str = "", note: str = ""
+    ) -> dict[str, Any]:
+        """把地址永久标记为干扰：结果页不再显示它，也不再经由它向下扩展。
+
+        幂等——同一个地址重复标记只更新备注，不报错。这是刻意的：用户可能
+        在两次扫描里都点了同一个地址，不该看到"已经在里面了"这种挫败提示。
+        """
+
+        address = str(address or "").strip()
+        if not is_valid_ss58(address):
+            raise InputError("地址格式不正确，无法标记为干扰")
+        seed = str(seed or "").strip()
+        note = str(note or "").strip()[:2000]
+        with self.database.session() as db:
+            row = db.scalar(
+                select(RemovedRelation).where(RemovedRelation.address == address)
+            )
+            created = row is None
+            if row is None:
+                row = RemovedRelation(address=address, seed=seed, note=note)
+                db.add(row)
+            else:
+                # 已经在名单里：补上之前缺的 seed / note，不覆盖已有值。
+                if seed and not row.seed:
+                    row.seed = seed
+                if note:
+                    row.note = note
+            db.flush()
+            return {
+                "address": address,
+                "created": created,
+                "total": db.scalar(select(func.count(RemovedRelation.id))) or 0,
+            }
+
+    def restore_relation(self, address: str) -> dict[str, Any]:
+        """取消"干扰"标记：地址重新可以出现在结果里。"""
+
+        address = str(address or "").strip()
+        with self.database.session() as db:
+            row = db.scalar(
+                select(RemovedRelation).where(RemovedRelation.address == address)
+            )
+            if row is None:
+                return {"address": address, "removed": False, "total": db.scalar(
+                    select(func.count(RemovedRelation.id))
+                ) or 0}
+            db.delete(row)
+            db.flush()
+            return {
+                "address": address,
+                "removed": True,
+                "total": db.scalar(select(func.count(RemovedRelation.id))) or 0,
+            }
+
+    def clear_removed_relations(self) -> dict[str, Any]:
+        """一次性清空全部干扰标记（"我判错了，全恢复"）。"""
+
+        with self.database.session() as db:
+            count = db.scalar(select(func.count(RemovedRelation.id))) or 0
+            db.execute(delete(RemovedRelation))
+            return {"cleared": int(count)}
+
     def address_books(self) -> list[dict[str, Any]]:
         """列出所有自建地址库，含按分类统计的地址数。"""
 
@@ -4772,10 +4865,19 @@ class LinkService:
             excluded_addresses.update(auto_validator_addresses)
         # 手动「移除关联」：地址既不进结果，也不再作为中转——它那条线索的
         # 下游地址在重查时一并消失。
+        #
+        # 两路来源合并：
+        # 1. 本次请求带的（前端会话里的临时移除）；
+        # 2. 数据库里永久标记的干扰地址（``removed_relations`` 表）。
+        #
+        # 第 2 路是 0.9.5 加的：以前移除决定只活在浏览器内存里，页面一关就
+        # 没了，用户移除十次、第十一次重开页面它还是回来。存进数据库后
+        # 主机/手机/远程电脑一致，刷新、重启都还在。
+        persistent_removed = self.removed_relation_addresses()
         removed_addresses = {
             value.strip()
-            for value in removed_addresses
-            if value.strip() and is_valid_ss58(value.strip()) and value.strip() != seed
+            for value in [*removed_addresses, *(persistent_removed)]
+            if value and value.strip() and is_valid_ss58(value.strip()) and value.strip() != seed
         }
         if filter_exchanges and exchange_addresses:
             warnings.append(f"已启用交易所过滤，跳过 {len(exchange_addresses)} 个已人工确认地址。")

@@ -444,6 +444,18 @@ class AddressNoteInput(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
+class RemovedRelationInput(BaseModel):
+    """标记一个「干扰地址」：永久排除，不进结果、连带剪下游。
+
+    与 `AddressNoteInput` 分开是因为语义不同：note 是描述"这个地址是谁"，
+    这里是下一个否定结论"这条线索别看了"。
+    """
+
+    address: str = Field(min_length=1, max_length=64)
+    seed: str = Field(default="", max_length=64)
+    note: str = Field(default="", max_length=2000)
+
+
 class ScanThresholdInput(BaseModel):
     """扫描阈值：单边最低 / 累计最低 TAO，存到本机 settings.json。"""
 
@@ -1092,6 +1104,48 @@ def interlink_search(
         )
     except InputError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/api/relations/removed")
+def list_removed_relations(svc: Annotated[LinkService, Depends(service)]):
+    """被人工判定为「干扰」的关联地址清单（永久移除，结果页不再显示）。"""
+
+    items = svc.removed_relations()
+    return {"items": items, "total": len(items)}
+
+
+@app.post("/api/relations/removed")
+def add_removed_relation(
+    payload: RemovedRelationInput, svc: Annotated[LinkService, Depends(service)]
+):
+    """把地址永久标记为干扰：以后任何一次扫描都不再显示它，也连带剪掉下游。
+
+    用户原话：「手动移除关联的地址是不方便分类，但人工能确定是干扰地址。」
+    这个标记**不进地址库、不占分类**，只是一条"这条线索是噪音"的否定结论。
+    """
+
+    try:
+        return svc.remove_relation(
+            payload.address, seed=payload.seed, note=payload.note
+        )
+    except InputError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.delete("/api/relations/removed/{address}")
+def delete_removed_relation(
+    address: str, svc: Annotated[LinkService, Depends(service)]
+):
+    """取消某个地址的干扰标记，让它重新可以出现在结果里。"""
+
+    return svc.restore_relation(address)
+
+
+@app.post("/api/relations/removed/clear")
+def clear_removed_relations(svc: Annotated[LinkService, Depends(service)]):
+    """清空全部干扰标记（判错了想全部恢复）。"""
+
+    return svc.clear_removed_relations()
 
 
 @app.get("/api/library/books")

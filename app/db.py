@@ -101,9 +101,44 @@ class AddressBook(Base):
     )
 
 
+class RemovedRelation(Base):
+    """人工判定为「干扰」的关联地址：永久排除，不进结果、不再向下扩展。
+
+    用户原话：「手动移除关联的地址是不方便分类，但人工能确定是干扰地址。」
+
+    为什么单独一张表、而不是往 ``address_library`` 塞个分类：
+
+    - 这些地址**不是"库里的地址"**，它们不该占用地址库名额、不该出现在
+      分类统计和导出里、也不该参与"库里地址有新转账就自动入库"的触发；
+    - 它们要的是一个**否定结论**（"这条线索是噪音"），与"这个地址是谁"
+      是两件事。混进地址库会让"库里有 754 个地址"这个数字失真。
+
+    与 `AutoImportLog(status='revoked')` 的区别：那条是"自动入库后又撤回"，
+    必须先入库；这条是**直接否决**，地址可以从来没进过库。
+
+    语义边界（刻意这么做）：
+
+    - **不阻止自动入库**——用户明确说「不阻止，照常入库」。地址要不要进库
+      由金额阈值那套规则决定，与"结果页要不要显示"无关。
+    - **连带剪掉下游**——按用户要求，与该地址有直接转账往来的地址及其下游
+      一起剪掉（见 ``relation.py`` 的 ``pruned_contacts``）。
+    - **全机共享**——存数据库而不是 localStorage，主机/手机/远程电脑一致。
+    """
+
+    __tablename__ = "removed_relations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    address: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # 从哪次扫描移除的，便于回看"这条是谁在哪次结果里判掉的"。
+    seed: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # 用户随手写的理由，可空。
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
 class SeedBook(Base):
     """外发预置地址库的安装记录。
-
     ``app/seed_books/*.txt`` 每个文件是一个预置标签组（文件名就是组名），
     第一次启动时装进已知地址库，并在这里记一笔。用户之后解散、改名或删掉
     其中地址都不会再被自动装回来。

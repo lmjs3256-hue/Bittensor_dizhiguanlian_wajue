@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.9.4">
+  <link rel="stylesheet" href="/static/styles.css?v=0.9.5">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -197,7 +197,22 @@
               <small><b>按当前筛选条件建库</b>：只导入眼下「关联地址」表里可见的地址——层级筛选（只看某一级）、金额筛选、已手动移除的都不计入；点按钮后会先弹窗列出实际生效的条件和最终数量供你确认。已人工确认的交易所 / 验证者 / 公共地址会自动剔除。同名库重复导入只补新地址，不改已有记录。</small>
             </div>
           </section>
-          <section class="panel related-panel"><div class="section-title"><div><h3>关联地址</h3><span class="tag">金额过滤后</span></div><div class="related-toolbar"><button class="refresh-result-btn" id="refresh-result" type="button" title="按当前设置重新查询：已手动移除的地址及其线索下游不会再出现" disabled><svg class="refresh-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.4 12a8.4 8.4 0 1 1-2.5-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M20.6 3.6v5h-5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="refresh-result-label">刷新结果</span></button><div class="result-filters"><label class="result-filter">层级筛选<select id="related-depth-filter" data-depth-options data-depth-label="只看" aria-label="关联地址层级筛选"><option value="all">全部层级</option></select></label><label class="result-filter">强度筛选<select id="related-strength-filter" aria-label="关联地址强度筛选"><option value="all">全部强度</option><option value="strong">强及以上</option><option value="mid">中及以上</option><option value="weak">含弱</option></select></label><label class="result-filter">金额筛选<select id="related-amount-mode" aria-label="按金额筛选关联地址的方式"><option value="off">不限</option><option value="either">流入或流出 ≥</option><option value="incoming">流入 ≥</option><option value="outgoing">流出 ≥</option><option value="total">累计 ≥</option><option value="both">流入且流出 ≥</option></select></label><label class="result-filter amount-filter"><span>TAO</span><input id="related-amount-min" type="number" min="0" step="any" inputmode="decimal" placeholder="0" aria-label="金额阈值 TAO"></label><button class="ghost" id="related-amount-reset" type="button" title="清除金额筛选，回到只看全部">重置</button></div></div></div><small id="related-strength-hint" class="related-filter-hint hidden"></small><small id="related-filter-hint" class="related-filter-hint hidden"></small><small id="removed-note" class="removed-note hidden"></small><div id="related" class="table-wrap"></div><div id="related-pagination" class="pagination-bar hidden"></div></section>
+          <section class="panel related-panel"><div class="section-title"><div><h3>关联地址</h3><span class="tag">金额过滤后</span></div><div class="related-toolbar"><button class="refresh-result-btn" id="refresh-result" type="button" title="按当前设置重新查询：已手动移除的地址及其线索下游不会再出现" disabled><svg class="refresh-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.4 12a8.4 8.4 0 1 1-2.5-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M20.6 3.6v5h-5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="refresh-result-label">刷新结果</span></button><div class="result-filters"><label class="result-filter">层级筛选<select id="related-depth-filter" data-depth-options data-depth-label="只看" aria-label="关联地址层级筛选"><option value="all">全部层级</option></select></label><label class="result-filter">强度筛选<select id="related-strength-filter" aria-label="关联地址强度筛选"><option value="all">全部强度</option><option value="strong">强及以上</option><option value="mid">中及以上</option><option value="weak">含弱</option></select></label><label class="result-filter">金额筛选<select id="related-amount-mode" aria-label="按金额筛选关联地址的方式"><option value="off">不限</option><option value="either">流入或流出 ≥</option><option value="incoming">流入 ≥</option><option value="outgoing">流出 ≥</option><option value="total">累计 ≥</option><option value="both">流入且流出 ≥</option></select></label><label class="result-filter amount-filter"><span>TAO</span><input id="related-amount-min" type="number" min="0" step="any" inputmode="decimal" placeholder="0" aria-label="金额阈值 TAO"></label><button class="ghost" id="related-amount-reset" type="button" title="清除金额筛选，回到只看全部">重置</button></div></div></div><small id="related-strength-hint" class="related-filter-hint hidden"></small><small id="related-filter-hint" class="related-filter-hint hidden"></small><small id="removed-note" class="removed-note hidden"></small>
+          <!-- 已移除（干扰地址）小条：全机共享、永久生效。
+               用户说这些地址「不方便分类，但人工能确定是干扰」，所以它们不进
+               地址库、不占分类，只在这里集中列出并可恢复。 -->
+          <div id="removed-bar" class="removed-bar hidden">
+            <div class="removed-bar-head">
+              <span class="removed-bar-title">已移除 <b id="removed-count">0</b> 个干扰地址</span>
+              <span class="removed-bar-hint">扫描时不再显示它们及其下游，只影响结果、不进地址库</span>
+              <button class="ghost removed-toggle" id="removed-toggle" type="button">查看</button>
+            </div>
+            <div id="removed-list" class="removed-list hidden"><div class="placeholder">加载中…</div></div>
+            <div class="removed-bar-actions hidden" id="removed-actions">
+              <button class="ghost removed-clear" id="removed-clear" type="button">清空全部</button>
+            </div>
+          </div>
+          <div id="related" class="table-wrap"></div><div id="related-pagination" class="pagination-bar hidden"></div></section>
           <section class="panel notes"><h3>数据范围与限制</h3><ul id="warnings"></ul></section>
         </section>
         <div id="empty" class="empty"><div class="empty-icon">3D</div><h2>输入地址，开始三跳关联</h2><p>默认使用 Taostats 历史索引；也可以关闭上方选项，只查本地采集区间。</p></div>
@@ -364,6 +379,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js?v=0.9.4"></script>
+  <script src="/static/app.js?v=0.9.5"></script>
 </body>
 </html>
