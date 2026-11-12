@@ -437,11 +437,14 @@ def discover(
 ) -> ScanReport:
     """Traverse transfer edges at most ``max_depth`` hops from the seed.
 
-    Traversal follows every non-system transfer so a low first hop is not
-    silently dropped. The displayed graph only contains first-hop transfers
-    and subsequent transfers above the edge amount threshold. Every relation
-    must meet the aggregate threshold; low-amount direct transfers are counted
-    but omitted from the reported graph.    """
+    Each hop must meet ``policy.edge_floor(depth)``: the first hop uses
+    ``min_direct_tao`` (default 0 = unlimited, the historical behaviour), every
+    later hop uses ``min_edge_tao``. A hop below its floor is neither a retained
+    graph edge nor an exploration step, so a dust transfer into the seed cannot
+    create a first-level association or drag its own downstream into the graph.
+    A reported relation also needs the sum of its retained edges to reach
+    ``min_total_tao``.
+    """
 
     seed = seed.strip()
     if not seed:
@@ -585,10 +588,12 @@ def discover(
                 continue
             if neighbor in excluded:
                 continue
-            material = depth == 0 or transfer.amount_tao >= policy.min_edge_tao
-            # Small indirect transfers are exploration hints only; they do not
-            # become retained graph edges and cannot introduce a new path layer.
-            if not material and depth > 0:
+            # depth=0 是从起始地址出发的第 1 跳，用「1 级关联最低 TAO」；
+            # 更深的跳仍用「单边最低 TAO」。两边都走 edge_floor()，口径唯一。
+            material = transfer.amount_tao >= policy.edge_floor(depth)
+            # 低于门槛的转账既不是保留边，也不能把对手方带进 BFS 队列：
+            # 否则「有人往起始地址转一笔灰尘」就能借这条边把整张下游图拖进来。
+            if not material:
                 continue
             if not transfer.tx_hash:
                 missing_hash_rows += 1
@@ -610,9 +615,9 @@ def discover(
                 distances[neighbor] = depth + 1
                 paths[neighbor] = paths[current] + [transfer]
 
-    # A low transfer can create a candidate but not carry a path. Every retained
-    # edge is therefore above the threshold, unless it starts directly at seed.
-    # Direct low transfers remain visible so they can be explicitly reviewed.
+    # 所有保留边都已过对应层级的金额门槛（第一跳看 min_direct_tao，
+    # 其余看 min_edge_tao）。0.9.8 起不再有「第一跳无条件保留」的特例，
+    # 是否保留小额直连完全由用户设置的 min_direct_tao 决定。
     frontier = [seed]
     visible: dict[str, int] = {seed: 0}
     depth = 0
@@ -635,7 +640,8 @@ def discover(
     edges = [
         edge
         for edge in retained.values()
-        if edge.depth <= max_depth and (edge.depth == 1 or edge.amount_tao >= policy.min_edge_tao)
+        if edge.depth <= max_depth
+        and edge.amount_tao >= policy.edge_floor(edge.depth - 1)
     ]
     by_relation: dict[str, list[Edge]] = defaultdict(list)
     for edge in edges:

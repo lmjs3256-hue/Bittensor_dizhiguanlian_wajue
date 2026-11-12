@@ -18,10 +18,12 @@ DEFAULT_RELATION_DEPTH = 3
 class LinkPolicy:
     """Controls which transfers become graph edges.
 
-    Direct seed transfers are always retained. This prevents a small first hop
-    from hiding a later large transfer that would otherwise have linked it to
-    the seed. A reported relation also requires one direct edge or the sum of
-    all retained indirect edges to meet ``min_total_tao``.
+    ``min_edge_tao`` applies to every hop after the first one;
+    ``min_direct_tao`` applies to the first hop (seed -> neighbour). The latter
+    defaults to ``0`` so existing scans keep their historical behaviour; raising
+    it stops a dust transfer from manufacturing a first-level association.
+    A reported relation also requires the sum of all retained edges for that
+    address to meet ``min_total_tao``.
     """
 
     min_edge_tao: Decimal = Decimal("1")
@@ -35,18 +37,35 @@ class LinkPolicy:
     medium_tao: Decimal = Decimal("30")
     strong_tao: Decimal = Decimal("100")
     extreme_tao: Decimal = Decimal("1000")
+    # 1 级关联（起始地址直接往来的那一笔转账）最低金额，0 = 不限（历史行为）。
+    # 故意放在字段末尾：历史代码里有 LinkPolicy(Decimal("1"), Decimal("0.1"))
+    # 这种位置参数写法，插在中间会静默改掉 min_total_tao。
+    min_direct_tao: Decimal = Decimal("0")
 
     def __post_init__(self) -> None:
         if self.min_edge_tao < 0:
             raise ValueError("min_edge_tao must be >= 0")
         if self.min_total_tao < 0:
             raise ValueError("min_total_tao must be >= 0")
+        if self.min_direct_tao < 0:
+            raise ValueError("min_direct_tao must be >= 0")
         if not self.include_incoming and not self.include_outgoing:
             raise ValueError("at least one transfer direction must be enabled")
         if not self.system_prefix:
             raise ValueError("system_prefix must not be empty")
         if not (0 <= self.medium_tao <= self.strong_tao <= self.extreme_tao):
             raise ValueError("强度阈值必须满足 0 <= medium <= strong <= extreme")
+
+    def edge_floor(self, depth: int) -> Decimal:
+        """这一跳转账必须达到的最低金额，BFS 与 Taostats 爬取共用同一口径。
+
+        ``depth`` 是**当前节点**距起始地址的跳数：0 表示正从起始地址往外走
+        （产生的是 1 级关联边），>=1 表示已经在中转地址上（2 级及更深）。
+        两边都调这个方法，避免只改一处造成「爬到的记录」和「算出来的关联」
+        对不上。
+        """
+
+        return self.min_direct_tao if depth <= 0 else self.min_edge_tao
 
     @classmethod
     def from_dict(cls, values: dict[str, Any] | None) -> "LinkPolicy":
@@ -64,6 +83,7 @@ class LinkPolicy:
                 medium_tao=Decimal(str(values.get("medium_tao", "30"))),
                 strong_tao=Decimal(str(values.get("strong_tao", "100"))),
                 extreme_tao=Decimal(str(values.get("extreme_tao", "1000"))),
+                min_direct_tao=Decimal(str(values.get("min_direct_tao", "0"))),
             )
         except (InvalidOperation, ValueError) as exc:
             raise ValueError(f"invalid link policy: {exc}") from exc

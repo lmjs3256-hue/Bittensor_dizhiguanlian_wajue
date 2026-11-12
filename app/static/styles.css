@@ -69,7 +69,7 @@
 main { max-width:1320px; width:100%; margin:0 auto; padding:26px clamp(18px,3vw,44px) 72px; } header { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; margin-bottom:22px; } h1 { font-size:clamp(26px,3vw,36px); margin:6px 0 0; letter-spacing:-1.2px; } h2 { margin:7px 0 11px; font-size:24px; } h3 { margin:0 0 9px; } p { color:var(--muted); line-height:1.65; margin:8px 0; } .eyebrow,.label { font-size:10px; letter-spacing:1.6px; color:var(--accent); font-weight:750; } .live-pill { display:flex; gap:8px; align-items:center; border:1px solid var(--line); border-radius:30px; padding:8px 12px; color:var(--muted); font-size:12px; white-space:nowrap; } .dot { width:8px; height:8px; border-radius:50%; background:#c78a19; display:inline-block; } .dot.ok { background:#0b9b72; } .dot.bad { background:var(--danger); }
 .header-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; } .theme-select { display:flex; align-items:center; gap:7px; color:var(--muted); white-space:nowrap; } .theme-select select { width:auto; min-width:138px; padding:8px 28px 8px 11px; border-radius:24px; font-size:12px; } .theme-select select:focus { border-color:var(--accent); }
 .theme-select select option { background:var(--panel); color:var(--ink); }
-.panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:23px; margin-bottom:18px; } .hero { display:flex; justify-content:space-between; gap:24px; align-items:center; background:linear-gradient(125deg,var(--panel),var(--accent-soft)); } .hero p { max-width:650px; } .metrics { display:grid; grid-template-columns:repeat(3,minmax(100px,1fr)); gap:20px; min-width:340px; } .metrics div,.stats div { display:flex; flex-direction:column; gap:4px; } .metrics span,.stats span { color:var(--muted); font-size:12px; } .metrics b { font-family:var(--mono); font-size:16px; overflow-wrap:anywhere; } .control-grid { display:grid; grid-template-columns:minmax(320px,1fr) 112px 132px 132px 152px auto; gap:14px; align-items:end; } .control-grid > label { min-width:0; } .control-grid .seed-field { min-width:0; } label { display:grid; gap:6px; color:var(--muted); font-size:12px; font-weight:500; } input,select { width:100%; padding:11px 12px; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:9px; outline:none; } input:focus,select:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); } .actions,.inline-form { display:flex; align-items:end; gap:10px; margin-top:16px; flex-wrap:wrap; } .inline-form label { min-width:110px; } .inline-form label:last-of-type { flex:1; min-width:190px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:23px; margin-bottom:18px; } .hero { display:flex; justify-content:space-between; gap:24px; align-items:center; background:linear-gradient(125deg,var(--panel),var(--accent-soft)); } .hero p { max-width:650px; } .metrics { display:grid; grid-template-columns:repeat(3,minmax(100px,1fr)); gap:20px; min-width:340px; } .metrics div,.stats div { display:flex; flex-direction:column; gap:4px; } .metrics span,.stats span { color:var(--muted); font-size:12px; } .metrics b { font-family:var(--mono); font-size:16px; overflow-wrap:anywhere; } .control-grid { display:grid; grid-template-columns:minmax(320px,1fr) 112px 132px 132px 132px 152px auto; gap:14px; align-items:end; } .control-grid > label { min-width:0; } .control-grid .seed-field { min-width:0; } label { display:grid; gap:6px; color:var(--muted); font-size:12px; font-weight:500; } input,select { width:100%; padding:11px 12px; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:9px; outline:none; } input:focus,select:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); } .actions,.inline-form { display:flex; align-items:end; gap:10px; margin-top:16px; flex-wrap:wrap; } .inline-form label { min-width:110px; } .inline-form label:last-of-type { flex:1; min-width:190px; }
 button.primary,button.secondary,button.ghost { border-radius:9px; border:1px solid transparent; padding:11px 17px; white-space:nowrap; font-size:13px; } button.primary { background:var(--accent); color:#fff; font-weight:750; } button.secondary { background:var(--accent-soft); color:var(--accent); border-color:var(--accent-soft); font-weight:650; } button.ghost { border-color:var(--line); background:transparent; color:var(--ink); }
 button.primary:hover,button.secondary:hover,button.ghost:hover { filter:brightness(1.04); }
 button:disabled { opacity:.55; cursor:not-allowed; }
@@ -727,8 +727,8 @@ body.access-locked .shell { filter:blur(2px); pointer-events:none; user-select:n
 /* 数值输入一律居中，阈值一眼可见 */
 input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font-family:var(--mono); letter-spacing:.3px; }
 
-/* 扫描设置：层级/阈值/方向都是短字段，固定窄宽；起始地址吃掉剩余空间 */
-.control-grid { grid-template-columns:minmax(300px,1fr) 96px 112px 112px 138px auto; }
+/* 扫描设置：层级/三把金额尺/方向都是短字段，固定窄宽；起始地址吃掉剩余空间 */
+.control-grid { grid-template-columns:minmax(300px,1fr) 96px 112px 112px 112px 138px auto; }
 .control-grid .field-compact { min-width:0; }
 .control-grid .field-compact select,
 .control-grid .field-compact input { text-align:center; text-align-last:center; padding-left:6px; padding-right:6px; }
@@ -740,8 +740,12 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 
 /* 「保存阈值」按钮：跟阈值输入框同一行、底边对齐。
    层级放到 4 级以上时用户会把单边/累计门槛一起抬高（如 10 / 50），
-   点一次就落盘，下次开页面自动填回，不用每次重填。 */
+   点一次就落盘，下次开页面自动填回，不用每次重填。
+   0.9.8 起多了一把「1 级关联最低 TAO」，三个值一起保存。 */
 .threshold-save { display:flex; align-items:flex-end; }
+/* 三把尺的口径说明：不解释清楚，用户会把它和结果表的「金额筛选」混起来 */
+.threshold-tip { display:block; margin-top:10px; color:var(--muted); font-size:12px; line-height:1.65; }
+.threshold-tip b { color:var(--ink); font-weight:650; }
 .threshold-save button { padding:11px 14px; font-size:12.5px; min-height:42px; white-space:nowrap; }
 .threshold-save button.is-saved { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:700; }
 .threshold-save button.is-dirty { border-color:var(--accent); color:var(--accent); font-weight:650; }
@@ -891,8 +895,8 @@ input[inputmode="decimal"], input[inputmode="numeric"] { text-align:center; font
 
 /* ---- 6. 响应式：窄屏改为两行 / 单列 -------------------------------------- */
 @media (max-width:1300px) {
-  /* 地址独占一行；四个短字段定宽靠左，剩余空间留白，不再被拉成四个大格子 */
-  .control-grid { grid-template-columns:110px 122px 122px 152px auto minmax(0,1fr); }
+  /* 地址独占一行；五个短字段定宽靠左，剩余空间留白，不再被拉成大格子 */
+  .control-grid { grid-template-columns:110px 122px 122px 122px 152px auto minmax(0,1fr); }
   .control-grid .wide.seed-field { grid-column:1/-1; }
   .control-grid .field-compact select,
   .control-grid .field-compact input { text-align:left; text-align-last:auto; }

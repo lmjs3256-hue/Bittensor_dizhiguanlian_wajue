@@ -24,8 +24,8 @@ const state = {
   // 单边门槛、累计门槛、交易所/公共地址截止等规则在每一级都一样。
   maxDepth: 10,
   defaultDepth: 3,
-  // 上次保存到本机的单边/累计最低 TAO（后端 settings.json），用于提示是否有改动。
-  savedThresholds: { min_edge_tao: "1", min_total_tao: "1" },
+  // 上次保存到本机的三把金额尺（后端 settings.json），用于提示是否有改动。
+  savedThresholds: { min_edge_tao: "1", min_total_tao: "1", min_direct_tao: "0" },
   // 金额筛选：按流入/流出 TAO 过滤掉金额很小的“轻微关联”，只影响显示（和地址 TXT 导出），不重新查询。
   amountFilter: { mode: "off", min: "" },
   taostatsConfigured: null,
@@ -1048,15 +1048,17 @@ function applyDepthOptions(maxDepth, defaultDepth) {
   syncThresholdSaveState();
 }
 
-// 把本机已保存的阈值填回输入框。用户没保存过时后端返回出厂值 1 / 1。
+// 把本机已保存的三把金额尺填回输入框。用户没保存过时后端返回出厂值 1 / 1 / 0。
 function applySavedThresholds(values) {
   const saved = {
     min_edge_tao: String(values?.min_edge_tao ?? "1"),
     min_total_tao: String(values?.min_total_tao ?? "1"),
+    min_direct_tao: String(values?.min_direct_tao ?? "0"),
   };
   state.savedThresholds = saved;
   if ($("#min-edge")) $("#min-edge").value = saved.min_edge_tao;
   if ($("#min-total")) $("#min-total").value = saved.min_total_tao;
+  if ($("#min-direct")) $("#min-direct").value = saved.min_direct_tao;
   syncThresholdSaveState();
 }
 
@@ -1067,14 +1069,16 @@ function syncThresholdSaveState() {
   if (!button) return;
   const edge = String($("#min-edge")?.value ?? "").trim();
   const total = String($("#min-total")?.value ?? "").trim();
+  const direct = String($("#min-direct")?.value ?? "").trim();
   const dirty = edge !== state.savedThresholds.min_edge_tao
-    || total !== state.savedThresholds.min_total_tao;
+    || total !== state.savedThresholds.min_total_tao
+    || direct !== state.savedThresholds.min_direct_tao;
   button.classList.toggle("is-dirty", dirty);
   button.classList.remove("is-saved");
   button.textContent = dirty ? "保存阈值 *" : "保存阈值";
   button.title = dirty
-    ? "当前阈值与本机保存的不一致，点一下保存；下次打开页面会自动填回这两个值。"
-    : `当前阈值已保存到本机（单边 ${state.savedThresholds.min_edge_tao} / 累计 ${state.savedThresholds.min_total_tao} TAO）。`;
+    ? "当前阈值与本机保存的不一致，点一下保存；下次打开页面会自动填回这三个值。"
+    : `当前阈值已保存到本机（1 级直连 ${state.savedThresholds.min_direct_tao} / 单边 ${state.savedThresholds.min_edge_tao} / 累计 ${state.savedThresholds.min_total_tao} TAO）。`;
 }
 
 async function saveScanThresholds() {
@@ -1082,23 +1086,29 @@ async function saveScanThresholds() {
   if (!button) return;
   const edge = String($("#min-edge")?.value ?? "").trim();
   const total = String($("#min-total")?.value ?? "").trim();
-  // 阈值是「单边 / 累计」两把尺，不允许负数；空值沿用上次保存的值。
-  const bad = [edge, total].find((value) => value !== "" && !(Number(value) >= 0));
+  const direct = String($("#min-direct")?.value ?? "").trim();
+  // 三把尺都不允许负数；空值**不提交该字段**，后端保持上次保存的值。
+  // 0.9.7 及以前空值被硬塞成 "1"，会把用户已保存的 10 / 50 悄悄冲掉。
+  const bad = [edge, total, direct].find((value) => value !== "" && !(Number(value) >= 0));
   if (bad !== undefined) {
-    toast("阈值只能填非负数字，例如 1、10、0.5。", true);
+    toast("阈值只能填非负数字，例如 0、1、10、0.5。", true);
     return;
   }
+  const body = {};
+  if (edge !== "") body.min_edge_tao = edge;
+  if (total !== "") body.min_total_tao = total;
+  if (direct !== "") body.min_direct_tao = direct;
   button.disabled = true;
   try {
     const data = await api("/api/settings/scan-thresholds", {
       method: "POST",
-      body: JSON.stringify({ min_edge_tao: edge || "1", min_total_tao: total || "1" }),
+      body: JSON.stringify(body),
     });
     applySavedThresholds(data);
     button.classList.add("is-saved");
     button.textContent = "已保存";
     toast(
-      `阈值已保存到本机：单边最低 ${data.min_edge_tao} TAO、累计最低 ${data.min_total_tao} TAO；下次打开页面自动填回。`
+      `阈值已保存到本机：1 级直连最低 ${data.min_direct_tao} TAO、单边最低 ${data.min_edge_tao} TAO、累计最低 ${data.min_total_tao} TAO；下次打开页面自动填回。`
     );
     window.setTimeout(syncThresholdSaveState, 1800);
   } catch (error) {
@@ -1917,8 +1927,12 @@ function emptyResultReason(data) {
     points.push(`过滤条件排除了 ${number(filtered)} 个地址（交易所/验证者），可以取消过滤再看一次。`);
   }
   const policy = data.policy || {};
-  if (Number(policy.min_edge_tao) > 0 || Number(policy.min_total_tao) > 0) {
-    points.push(`当前金额门槛是单边 ≥ ${policy.min_edge_tao} TAO、累计 ≥ ${policy.min_total_tao} TAO，低于门槛的转账不会出现在表里。`);
+  const directFloor = Number(policy.min_direct_tao || 0);
+  if (directFloor > 0 || Number(policy.min_edge_tao) > 0 || Number(policy.min_total_tao) > 0) {
+    const directText = directFloor > 0
+      ? `≥ ${policy.min_direct_tao} TAO`
+      : "不限金额（0）";
+    points.push(`当前金额门槛：1 级直连 ${directText}、第 2 跳及更深单笔 ≥ ${policy.min_edge_tao} TAO、每个关联地址累计 ≥ ${policy.min_total_tao} TAO；不达标的转账不会建立关联。`);
   }
   if (data.pagination_complete === false) {
     points.push("历史分页没有读完整（额度或服务端窗口限制），可以稍后重查或调高查询轮数。");
@@ -2247,6 +2261,8 @@ function scanPayload(seed) {
     depth,
     min_edge_tao: $("#min-edge").value,
     min_total_tao: $("#min-total").value,
+    // 1 级关联直连门槛：0 = 不限（旧行为），>0 才挡住小额蹭关联。
+    min_direct_tao: $("#min-direct")?.value ?? "0",
     include_incoming: direction !== "outgoing",
     include_outgoing: direction !== "incoming",
     data_source: $("#taostats-source").checked ? "taostats" : "local",
@@ -5844,7 +5860,7 @@ $("#remote-toggle").addEventListener("click", () => {
 });
 // 保存阈值：按钮 + 回车，跟 API key 那套交互一致。
 $("#save-thresholds").addEventListener("click", saveScanThresholds);
-["#min-edge", "#min-total"].forEach((selector) => {
+["#min-edge", "#min-total", "#min-direct"].forEach((selector) => {
   const input = $(selector);
   if (!input) return;
   input.addEventListener("input", syncThresholdSaveState);

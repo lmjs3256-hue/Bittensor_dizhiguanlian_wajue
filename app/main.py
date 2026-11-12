@@ -457,10 +457,15 @@ class RemovedRelationInput(BaseModel):
 
 
 class ScanThresholdInput(BaseModel):
-    """扫描阈值：单边最低 / 累计最低 TAO，存到本机 settings.json。"""
+    """扫描阈值：单边 / 累计 / 1 级关联最低 TAO，存到本机 settings.json。
 
-    min_edge_tao: str = Field(default="1", max_length=32)
-    min_total_tao: str = Field(default="1", max_length=32)
+    三个字段都允许省略：省略就保持上次保存的值，避免前端空输入框把用户
+    已保存的设置悄悄冲成出厂值（0.9.7 及以前会把空值硬塞成 "1"）。
+    """
+
+    min_edge_tao: str | None = Field(default=None, max_length=32)
+    min_total_tao: str | None = Field(default=None, max_length=32)
+    min_direct_tao: str | None = Field(default=None, max_length=32)
 
 
 class WatchConfigInput(BaseModel):
@@ -483,6 +488,7 @@ class RelationInput(BaseModel):
     )
     min_edge_tao: str = Field(default="1")
     min_total_tao: str = Field(default="1")
+    min_direct_tao: str = Field(default="0")
     include_incoming: bool = True
     include_outgoing: bool = True
     data_source: str = Field(default="local", pattern="^(local|taostats)$")
@@ -503,6 +509,7 @@ class RelationJobInput(BaseModel):
     )
     min_edge_tao: str = Field(default="1")
     min_total_tao: str = Field(default="1")
+    min_direct_tao: str = Field(default="0")
     include_incoming: bool = True
     include_outgoing: bool = True
     filter_exchanges: bool = False
@@ -1014,7 +1021,7 @@ def save_taostats_keys(payload: ApiKeyPoolInput, request: Request):
 
 @app.get("/api/settings/scan-thresholds")
 def get_scan_thresholds():
-    """上次保存的「单边最低 / 累计最低 TAO」；没保存过返回出厂值 1 / 1。"""
+    """上次保存的三把金额尺；没保存过返回出厂值 1 / 1 / 0。"""
 
     return settings_store.load_scan_thresholds()
 
@@ -1024,11 +1031,14 @@ def save_scan_thresholds(payload: ScanThresholdInput):
     """把扫描阈值存到本机 settings.json，下次打开页面自动填回。
 
     层级放到 4～10 级时，用户通常会把阈值抬到 10 / 50 这种量级；不落盘的话
-    每开一次页面都要重填。非法值不报错，保持上次保存的值并在返回值里体现。
+    每开一次页面都要重填。省略/非法值不报错，保持上次保存的值并在返回值里
+    体现；1 级关联门槛省略时也保持原值，不会把用户设好的防蹭关联门槛清掉。
     """
 
     return settings_store.save_scan_thresholds(
-        payload.min_edge_tao, payload.min_total_tao
+        payload.min_edge_tao,
+        payload.min_total_tao,
+        payload.min_direct_tao,
     )
 
 
@@ -1792,6 +1802,7 @@ def relations(payload: RelationInput, svc: Annotated[LinkService, Depends(servic
             depth=payload.depth,
             min_edge_tao=payload.min_edge_tao,
             min_total_tao=payload.min_total_tao,
+            min_direct_tao=payload.min_direct_tao,
             include_incoming=payload.include_incoming,
             include_outgoing=payload.include_outgoing,
             data_source=payload.data_source,
@@ -1855,6 +1866,7 @@ def start_relation_job(
             depth=payload.depth,
             min_edge_tao=payload.min_edge_tao,
             min_total_tao=payload.min_total_tao,
+            min_direct_tao=payload.min_direct_tao,
             include_incoming=payload.include_incoming,
             include_outgoing=payload.include_outgoing,
             filter_exchanges=payload.filter_exchanges,

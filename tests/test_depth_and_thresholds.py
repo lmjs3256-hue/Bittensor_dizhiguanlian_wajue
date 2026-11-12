@@ -235,18 +235,25 @@ def test_job_archives_depth_and_address_cap(monkeypatch):
 
 # -- 2. 阈值本地保存 -------------------------------------------------------
 def test_thresholds_default_to_one():
+    # 0.9.8 起返回值多一把「1 级关联最低 TAO」，出厂值 0 = 不限金额。
     assert settings_store.load_scan_thresholds() == {
         "min_edge_tao": "1",
         "min_total_tao": "1",
+        "min_direct_tao": "0",
     }
 
 
 def test_save_and_load_thresholds_roundtrip():
     saved = settings_store.save_scan_thresholds("10", "50")
-    assert saved == {"min_edge_tao": "10", "min_total_tao": "50"}
+    assert saved == {
+        "min_edge_tao": "10",
+        "min_total_tao": "50",
+        "min_direct_tao": "0",
+    }
     assert settings_store.load_scan_thresholds() == {
         "min_edge_tao": "10",
         "min_total_tao": "50",
+        "min_direct_tao": "0",
     }
 
 
@@ -264,7 +271,11 @@ def test_invalid_threshold_keeps_previous_value():
 
     settings_store.save_scan_thresholds("10", "50")
     kept = settings_store.save_scan_thresholds("abc", "-3")
-    assert kept == {"min_edge_tao": "10", "min_total_tao": "50"}
+    assert kept == {
+        "min_edge_tao": "10",
+        "min_total_tao": "50",
+        "min_direct_tao": "0",
+    }
     assert settings_store.load_scan_thresholds() == kept
 
 
@@ -276,10 +287,12 @@ def test_thresholds_survive_broken_file(tmp_path, monkeypatch):
     assert settings_store.load_scan_thresholds() == {
         "min_edge_tao": "1",
         "min_total_tao": "1",
+        "min_direct_tao": "0",
     }
     assert settings_store.save_scan_thresholds("7", "30") == {
         "min_edge_tao": "7",
         "min_total_tao": "30",
+        "min_direct_tao": "0",
     }
     assert settings_store.load_scan_thresholds()["min_edge_tao"] == "7"
 
@@ -306,14 +319,26 @@ def test_threshold_endpoints(monkeypatch):
             with TestClient(main_module.app) as client:
                 read = client.get("/api/settings/scan-thresholds")
                 assert read.status_code == 200
-                assert read.json() == {"min_edge_tao": "1", "min_total_tao": "1"}
+                assert read.json() == {
+                    "min_edge_tao": "1",
+                    "min_total_tao": "1",
+                    "min_direct_tao": "0",
+                }
 
                 written = client.post(
                     "/api/settings/scan-thresholds",
-                    json={"min_edge_tao": "20", "min_total_tao": "100"},
+                    json={
+                        "min_edge_tao": "20",
+                        "min_total_tao": "100",
+                        "min_direct_tao": "2",
+                    },
                 )
                 assert written.status_code == 200
-                assert written.json() == {"min_edge_tao": "20", "min_total_tao": "100"}
+                assert written.json() == {
+                    "min_edge_tao": "20",
+                    "min_total_tao": "100",
+                    "min_direct_tao": "2",
+                }
 
                 # 再读一次必须是刚存的值（真的落盘了）
                 again = client.get("/api/settings/scan-thresholds")
@@ -340,6 +365,7 @@ def test_overview_carries_depth_and_saved_thresholds(monkeypatch):
                 assert payload["scan_thresholds"] == {
                     "min_edge_tao": "15",
                     "min_total_tao": "80",
+                    "min_direct_tao": "0",
                 }
         finally:
             database.engine.dispose()

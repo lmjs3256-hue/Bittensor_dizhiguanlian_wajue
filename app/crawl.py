@@ -334,7 +334,10 @@ class TaostatsCrawl:
                 amount_tao=amount_tao,
                 timestamp=timestamp,
             )
-            if current_depth > 0 and amount_tao < state.policy.min_edge_tao:
+            # 第 1 跳用「1 级关联最低 TAO」，更深的跳用「单边最低 TAO」。
+            # 与 relation.discover() 共用 edge_floor()，避免「爬到的记录」和
+            # 「最终算出的关联」用两套门槛。
+            if amount_tao < state.policy.edge_floor(current_depth):
                 continue
             if (
                 source == address
@@ -389,8 +392,8 @@ class TaostatsCrawl:
                 except (KeyError, TypeError, ValueError, InvalidOperation):
                     skipped_stake_rows += 1
                     continue
-                # 0 金额事件没有任何资金往来，不能成为关联边；也不能靠
-                # 「第 1 跳不设金额门槛」这条规则漏进关联图。
+                # 0 金额事件没有任何资金往来，不能成为关联边；即便用户把
+                # 「1 级关联最低 TAO」设成 0（不限金额），也不能漏进关联图。
                 if amount_rao <= 0:
                     continue
                 counterparty = stake_counterparty(item)
@@ -427,7 +430,8 @@ class TaostatsCrawl:
                     netuid=netuid,
                     hotkey=hotkey,
                 )
-                if current_depth > 0 and amount_tao < state.policy.min_edge_tao:
+                # 同上：第 1 跳按 1 级门槛，其余按单边门槛。
+                if amount_tao < state.policy.edge_floor(current_depth):
                     continue
                 if (
                     source == address

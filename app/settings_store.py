@@ -251,16 +251,19 @@ def save_exchange_sync_state(state: dict[str, Any]) -> bool:
     return _write(data)
 
 
-# -- 扫描阈值（单边最低 / 累计最低 TAO） ------------------------------------
+# -- 扫描阈值（单边 / 累计 / 1 级关联最低 TAO） ------------------------------
 _SCAN_THRESHOLDS_FIELD = "scan_thresholds"
 
-# 默认就是页面出厂值：单边 1、累计 1（TAO）。
-# 把层级放大到 4～10 级时，浅层的零星小额会把结果灌满，用户会把这两个值
-# 抬上去（例如 10 / 50），抬完还要每次重开页面重新填一遍太麻烦，所以给一个
-# 显式的「保存」按钮落盘——只在用户点保存时写，不自动记住输入过程。
+# 默认就是页面出厂值：单边 1、累计 1、1 级关联 0（TAO）。
+# 1 级关联填 0 表示「不限金额」，保留 0.9.7 及以前的历史行为：起始地址直连
+# 的任何金额都算 1 级关联。填 1 或更高就能挡住「有人转一笔灰尘来蹭关联」。
+# 把层级放大到 4～10 级时，浅层的零星小额会把结果灌满，用户会把单边/累计
+# 两个值抬上去（例如 10 / 50），抬完还要每次重开页面重新填一遍太麻烦，所以
+# 给一个显式的「保存」按钮落盘——只在用户点保存时写，不自动记住输入过程。
 DEFAULT_SCAN_THRESHOLDS: dict[str, Any] = {
     "min_edge_tao": "1",
     "min_total_tao": "1",
+    "min_direct_tao": "0",
 }
 
 
@@ -287,7 +290,11 @@ def _clean_threshold(value: Any, fallback: str) -> str:
 
 
 def load_scan_thresholds() -> dict[str, str]:
-    """读取上次保存的单边 / 累计最低 TAO；没保存过就是 1 / 1。"""
+    """读取上次保存的三把金额尺；没保存过就是 1 / 1 / 0。
+
+    老 settings.json 里只有前两个 key，第三个会拿到出厂值 0（不限金额），
+    所以老用户升级后扫描结果不会突然变少。
+    """
 
     raw = _read().get(_SCAN_THRESHOLDS_FIELD)
     values = dict(DEFAULT_SCAN_THRESHOLDS)
@@ -297,17 +304,23 @@ def load_scan_thresholds() -> dict[str, str]:
     return values
 
 
-def save_scan_thresholds(min_edge_tao: Any, min_total_tao: Any) -> dict[str, str]:
-    """保存单边 / 累计最低 TAO，返回真正写入的值。
+def save_scan_thresholds(
+    min_edge_tao: Any,
+    min_total_tao: Any,
+    min_direct_tao: Any = None,
+) -> dict[str, str]:
+    """保存三把金额尺，返回真正写入的值。
 
-    非法输入（空、非数字、负数）**不覆盖**上次保存的值——用户误触「保存」
-    时应该保持原设置，而不是被悄悄改成出厂值 1 / 1。
+    非法输入（None、空、非数字、负数）**不覆盖**上次保存的值——用户误触
+    「保存」时应该保持原设置，而不是被悄悄改成出厂值 1 / 1 / 0。
+    第三个参数默认 None 是为了兼容历史调用方（只传单边/累计）。
     """
 
     current = load_scan_thresholds()
     values = {
         "min_edge_tao": _clean_threshold(min_edge_tao, current["min_edge_tao"]),
         "min_total_tao": _clean_threshold(min_total_tao, current["min_total_tao"]),
+        "min_direct_tao": _clean_threshold(min_direct_tao, current["min_direct_tao"]),
     }
     data = _read()
     data["version"] = 1
