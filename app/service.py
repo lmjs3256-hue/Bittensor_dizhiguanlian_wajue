@@ -1095,6 +1095,12 @@ class LinkService:
         inserted = updated = skipped = 0
         inserted_addresses: list[str] = []
         updated_snapshots: list[dict[str, Any]] = []
+        # 备份还原 / 跨机同步包里的地址都带着 ``book``。这些库名在来源机器上
+        # 一定有台账行，但这里如果只写地址行的 ``book`` 字段，目标机器就会出现
+        # 「地址库列表里看得见这个库，同步进去却报『目标地址库不存在』」的分裂
+        # 状态：列表页把「地址行里出现过的库名」和台账并集展示，而同步校验只
+        # 认台账。所以导入时把出现过的库名一并登记进台账。
+        book_names: set[str] = set()
         with self.database.session() as db:
             for position, row in enumerate(rows, start=1):
                 address = str(row["address"]).strip()
@@ -1111,6 +1117,9 @@ class LinkService:
                 )
                 if categories[0] != category:
                     categories = [category, *[name for name in categories if name != category]]
+                incoming_book_name = str(row.get("book") or "").strip()[:BOOK_NAME_MAX_LENGTH]
+                if incoming_book_name:
+                    book_names.add(incoming_book_name)
                 current = db.scalar(
                     select(AddressLibrary).where(AddressLibrary.address == address)
                 )
@@ -1151,7 +1160,7 @@ class LinkService:
                     and incoming_updated is not None
                     and not locked_exchange
                 )
-                incoming_book = str(row.get("book") or "").strip()
+                incoming_book = incoming_book_name
                 current_book = (current.book or "").strip()
                 if use_lww:
                     if incoming_updated > current_updated and incoming_book != current_book:
@@ -1211,6 +1220,16 @@ class LinkService:
                     updated_snapshots.append({"address": address, "snapshot": snapshot})
                 else:
                     skipped += 1
+            # 把导入过程中出现过的库名补进台账（已存在的不动，保留备注）。
+            # 只登记台账、不碰地址——地址行的 book 字段前面已经写好了。
+            if book_names:
+                known = set(
+                    db.scalars(
+                        select(AddressBook.name).where(AddressBook.name.in_(book_names))
+                    ).all()
+                )
+                for name in sorted(book_names - known):
+                    db.add(AddressBook(name=name))
             if inserted or updated:
                 if source == "manual":
                     summary = f"手动添加地址 · 新增 {inserted} 个、更新 {updated} 个"
@@ -4343,7 +4362,19 @@ class LinkService:
             if book_value and db.scalar(
                 select(AddressBook).where(AddressBook.name == book_value)
             ) is None:
-                raise InputError("目标地址库不存在；要新建地址库请用「新建地址库并导入」")
+                # 台账里没有这个名字，但地址行里确实挂在这个库下：这台机器的库
+                # 是「备份还原 / 跨机同步包」带过来的，而那条导入路径曾经只写
+                # 地址行的 ``book`` 字段、不登记台账。库清单把两者并集展示，
+                # 所以界面上看着库是存在的，一同步却报「目标地址库不存在」。
+                # 这里就地补登记，不打断用户操作（真正的空库名仍然报错）。
+                in_use = db.scalar(
+                    select(func.count(AddressLibrary.id)).where(
+                        AddressLibrary.book == book_value
+                    )
+                ) or 0
+                if not in_use:
+                    raise InputError("目标地址库不存在；要新建地址库请用「新建地址库并导入」")
+                db.add(AddressBook(name=book_value))
             if book_value and not label.strip():
                 label = book_value
             # 没填标签时用发起地址后四位，同一批扫描同步进来的地址天然归成一组。
