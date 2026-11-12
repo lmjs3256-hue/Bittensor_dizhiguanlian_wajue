@@ -44,7 +44,12 @@ from . import license as license_mod
 from . import interlink
 from . import settings_store
 from .builtin_addresses import BUILTIN_SOURCE_PREFIX, builtin_entries, is_builtin_source
-from .inputs import InputError, parse_plain_addresses, read_addresses
+from .inputs import (
+    InputError,
+    parse_messy_addresses,
+    parse_plain_addresses,
+    read_addresses,
+)
 from .relation import (
     # 私有函数：历史结果刷新库字段时要和实时查询走同一套身份判定，
     # 另抄一份必然漂移。
@@ -993,15 +998,32 @@ def _parse_iso_utc(value: Any) -> datetime | None:
 
 
 def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
+    # 兼容旧调用点：只要行，不要统计。
+    return _parse_upload_with_report(filename, text)[0]
+
+
+def _parse_upload_with_report(
+    filename: str, text: str
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """解析上传文件，同时返回「修正了多少」的统计。
+
+    ``.txt`` 交给容错解析器（一行多个地址、备注、空格、粘贴垃圾都能处理）；
+    ``.csv`` / ``.json`` 本来就是结构化格式，按列读，不做猜测。
+    """
+
     import csv
     import io
 
     suffix = Path(filename).suffix.lower()
     if suffix == ".txt":
-        return [
-            {"address": address, "category": "", "label": "", "note": ""}
-            for address in parse_plain_addresses(text)
-        ]
+        rows, report = parse_messy_addresses(text)
+        for row in rows:
+            row.setdefault("category", "")
+            row.setdefault("categories", [])
+            row.setdefault("book", "")
+            row.setdefault("exchange_confirmed", False)
+            row.setdefault("exchange_rejected", False)
+        return rows, report
     if suffix == ".json":
         raw = json.loads(text)
         values = raw.get("addresses") if isinstance(raw, dict) else raw
@@ -1057,7 +1079,7 @@ def _parse_upload(filename: str, text: str) -> list[dict[str, str]]:
                 "updated_at": str(row.get("updated_at") or "").strip(),
             }
         )
-    return result
+    return result, {"duplicate": [], "invalid": [], "suspect": [], "remarks": [], "total": len(result)}
 
 
 class LinkService:
@@ -1202,8 +1224,30 @@ class LinkService:
                 )
         return {"inserted": inserted, "updated": updated, "skipped": skipped}
 
-    def import_upload(self, filename: str, text: str) -> dict[str, int]:
-        return self.import_rows(_parse_upload(filename, text), filename)
+    def import_upload(self, filename: str, text: str) -> dict[str, Any]:
+        """导入上传文件，并回传「自动修正了什么」。
+
+        返回值在 ``inserted`` / ``updated`` / ``skipped`` 之外多三项：
+
+        - ``duplicate``：文件内重复、已自动合并的地址（个数，附样例）；
+        - ``invalid``：格式不对、没能导入的片段（个数，附样例）；
+        - ``remarks``：识别并保存为标签/备注的条数。
+        """
+
+        rows, report = _parse_upload_with_report(filename, text)
+        result = self.import_rows(rows, filename)
+        return {
+            **result,
+            # 文件里先做去重，所以 import_rows 看到的是干净的列表；
+            # 这里把「修正了多少」如实告诉用户。
+            "duplicate": len(report.get("duplicate") or []),
+            "duplicate_samples": (report.get("duplicate") or [])[:5],
+            "invalid": len(report.get("invalid") or []),
+            "invalid_samples": (report.get("invalid") or [])[:5],
+            "remarks": len(report.get("remarks") or []),
+            "suspect_remarks": (report.get("suspect") or [])[:5],
+            "total_found": report.get("total") or len(rows),
+        }
 
     def add_group_addresses(
         self,

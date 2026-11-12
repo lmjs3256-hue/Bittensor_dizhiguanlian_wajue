@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.9.2">
+  <link rel="stylesheet" href="/static/styles.css?v=0.9.3">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -67,6 +67,10 @@
       <div class="aside-status">
         <span class="dot" id="health-dot"></span>
         <span id="health-text">扫描服务连接中</span>
+      </div>
+      <div class="aside-version">
+        <span id="app-version">版本读取中…</span>
+        <button class="aside-release-link" data-nav="release" type="button">更新日志</button>
       </div>
     </aside>
     <main>
@@ -300,10 +304,10 @@
         <section class="panel prose release-page"><span class="label">SELF CHECK</span><h2>环境自检</h2><p>升级后如果「地址库里看不到预置验证者」或「同步还是报错」，先跑一次自检：它会告诉你现在跑的是哪个版本、预置名单文件在不在、有没有真的写进地址库。改完代码必须<b>停止再启动</b>一次服务，只刷新浏览器不算。</p><div id="version-stale-banner" class="version-stale-banner hidden"></div><div class="diagnose-actions"><button class="secondary" id="run-diagnose" type="button">运行自检</button><span id="diagnose-summary" class="diagnose-summary"></span></div><div id="diagnose-list" class="diagnose-list"></div></section>
         <section class="panel prose release-page"><span class="label">RELEASE NOTES</span><h2>版本更新日志</h2><p>这里显示当前运行版本及已发布版本的功能变更，内容来自项目内的 <code>VERSION</code> 和 <code>CHANGELOG.md</code>。</p><div id="release-list" class="release-list"><div class="placeholder">更新日志加载中…</div></div></section>
       </div>
-      <footer class="app-footer"><span>Bittensor 地址关联挖掘</span><span id="app-version">当前版本：读取中…</span><button class="footer-release-link" data-nav="release" type="button">查看更新日志</button></footer>
+      <footer class="app-footer"><span>Bittensor 地址关联挖掘</span></footer>
       <div id="toast" class="toast"></div>
     </main>
   </div>
-  <script src="/static/app.js?v=0.9.2"></script>
+  <script src="/static/app.js?v=0.9.3"></script>
 </body>
 </html>

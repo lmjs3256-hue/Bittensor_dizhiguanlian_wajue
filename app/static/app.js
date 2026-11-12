@@ -1150,12 +1150,19 @@ function renderReleaseNotes(data) {
   const stale = Boolean(data.stale) && running !== currentVersion;
   const footer = $("#app-version");
   if (footer) {
+    // 版本号挪到侧栏底部了，空间窄，平时只显示 "v0.9.2"；
+    // 但「磁盘已更新、进程还是旧的」必须说清楚，不能缩成一个数字。
     footer.textContent = stale
-      ? `运行中版本：${running}（磁盘已是 ${currentVersion}，需重启）`
+      ? `v${running} → 需重启（磁盘已 ${currentVersion}）`
       : currentVersion
-        ? `当前版本：${currentVersion}`
-        : "当前版本：未知";
+        ? `v${currentVersion}`
+        : "版本未知";
     footer.classList.toggle("version-stale", stale);
+    footer.title = stale
+      ? `磁盘上的 VERSION 已是 ${currentVersion}，但服务还在跑 ${running}；停下来重新启动才会生效。`
+      : currentVersion
+        ? `当前运行版本 ${currentVersion}`
+        : "未能读取版本号";
   }
   const banner = $("#version-stale-banner");
   if (banner) {
@@ -1184,7 +1191,7 @@ async function loadVersionInfo() {
   try {
     renderReleaseNotes(await api("/api/version"));
   } catch (error) {
-    $("#app-version").textContent = "当前版本：读取失败";
+    $("#app-version").textContent = "版本读取失败";
     $("#release-list").innerHTML = `<div class="placeholder">更新日志加载失败：${esc(error.message)}</div>`;
   }
 }
@@ -4251,9 +4258,30 @@ async function uploadLibrary(file) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || "导入失败");
     await loadLibrary();
-    toast(`导入完成：新增 ${data.inserted}，更新 ${data.updated}，跳过 ${data.skipped}。`);
+    // 有格式不对的地址才用告警色，纯粹去重/保留备注算正常结果。
+    toast(describeImportResult(data), Boolean(data.invalid));
   } catch (error) { toast(error.message, true); }
   finally { $("#library-file").value = ""; }
+}
+
+/* 导入结果回显：把「自动修正了什么」讲清楚。
+   用户导进来的常是手抄/复制拼接的清单，出现重复和格式问题是常态，
+   所以这里要如实报数，而不是只给一句「导入完成」。 */
+function describeImportResult(data) {
+  const parts = [`新增 ${data.inserted ?? 0}`];
+  if (data.updated) parts.push(`更新 ${data.updated}`);
+  if (data.skipped) parts.push(`无变化 ${data.skipped}`);
+  if (data.duplicate) parts.push(`自动去重 ${data.duplicate}`);
+  if (data.remarks) parts.push(`保留备注 ${data.remarks}`);
+  let text = `导入完成：${parts.join("，")}。`;
+  if (data.invalid) {
+    const samples = (data.invalid_samples || []).join("、");
+    text += ` 有 ${data.invalid} 个格式不正确未导入${samples ? `（如 ${samples}）` : ""}。`;
+  }
+  if ((data.suspect_remarks || []).length) {
+    text += ` 备注 ${data.suspect_remarks.join("、")} 看着像粘贴残留，建议核对。`;
+  }
+  return text;
 }
 
 // 把「新增了哪些官方交易所地址」拼成人能读的一行：名称（地址后四位）。
