@@ -38,6 +38,9 @@ migrate-*.db
 *.db-wal
 *.db-shm
 
+# 升级前手工备份的数据库（体积大且含运行时数据，只留在本机）
+backups/
+
 # 外发包（由 tools/make_release.py 生成，不进仓库）
 *.zip
 .pytest_tmp*/

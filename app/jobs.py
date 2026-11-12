@@ -417,12 +417,19 @@ class RelationJobManager:
         只靠第 1 条在并发下不够：两个线程可能**同时**判断"我是队首"然后一起
         跑（实测出现过：create_async 的后台线程 + 调度器撞在一起，两个工单
         都成了 running）。第 2 条用线程锁把这个窗口彻底关掉。
+
+        **接力必须等闸门放开后再做**：``_run_round_locked`` 可能在本轮里就把
+        自己收尾（``_finish``），而 ``_finish`` 会想拉起下一个工单。此时
+        ``_run_gate`` 还被当前线程攥着，下一个工单会被标成 ``running`` 却
+        跑不动，永久卡死（线上实测踩到，见 ``_promote_next`` 的说明）。
+        所以这里不在锁内接力，而是记一笔，等 finally 里闸门释放后再拉。
         """
 
         if job.is_finished:
             return
         if not self._run_gate.acquire(blocking=False):
             return  # 已经有别的工单在推进，直接让开
+        handed_off = False
         try:
             # 抢到名额后重新确认身份：可能在这期间队首变了。
             head = self._next_queued()
@@ -438,8 +445,13 @@ class RelationJobManager:
             finally:
                 self._running_id = ""
                 job._lock.release()
+                # 本轮把自己收尾了：出闸门后要把队里下一个拉起来。
+                handed_off = job.is_finished
         finally:
             self._run_gate.release()
+            if handed_off:
+                self._promote_next()
+
 
     def _run_round_locked(self, job: RelationJob) -> None:
         state = job.state
@@ -571,15 +583,31 @@ class RelationJobManager:
 
         不开的话队列会一直停在原地：due() 虽然会把队首的 queued 交出去，
         但那只在调度器 tick 时发生；这里主动拉一下，用户不用多等一个 tick。
+
+        **必须等 ``_run_gate`` 释放后再调**。它内部会走到 ``run_round``，
+        而那把闸门是不可重入的普通 ``Lock``；如果在前一个工单还攥着闸门时
+        调用，下一个工单会被标成 ``running``/写了 ``started_at``，却因为拿不到
+        闸门直接 return——留下一个"看起来在跑、其实一次没跑"的假活口，
+        而 ``due()`` 只捡 ``queued``/``waiting``，它就此永久卡死（线上实测：
+        李四的工单卡在 running、rounds_done=0，最后被 cleanup 悄悄清掉，
+        查询记录里也没有它）。
+
+        因此调用点只有两个：``run_round`` 的 finally（闸门刚放开）和
+        ``_finish`` 从外部被直接调用时（那条路径本来就没持闸门）。
         """
 
         head = self._next_queued()
         if head is None or head.status != "queued":
             return
+        # 闸门还被别人攥着就交给对方收尾时接力，不要在这里硬拉：
+        # 硬拉只会把工单标成假 running。
+        if self._run_gate.locked():
+            return
         try:
             self._start_job(head)
         except Exception:  # noqa: BLE001 - 拉下一个失败不能影响已收尾的工单
             pass
+
 
     def _finish(
         self, job: RelationJob, *, cap_note: str = "", status: str = "complete"

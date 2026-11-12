@@ -193,3 +193,57 @@ def test_blank_owner_is_allowed(env):
     job = _create(mgr, svc, SEED_A, "")
     assert job.owner == ""
     assert mgr.payload(job)["owner"] == ""
+
+
+# -- 收尾时接力的真实路径（踩过的坑）----------------------------------------
+def test_promote_next_survives_held_run_gate(env):
+    """前一个工单在 run_round 内部收尾时，后一个必须真的跑起来。
+
+    这是线上实测踩到的死锁：``_finish()`` 是在 ``run_round()`` 里面被调的，
+    此时线程已经持有 ``_run_gate``（普通 Lock，不可重入）。收尾后
+    ``_promote_next()`` → ``_start_job()`` 先把下一个标成 ``running``、
+    写 ``started_at``，然后调 ``run_round()`` —— 却拿不到 ``_run_gate``
+    直接 return。结果下一个工单留下**假的 running 状态、rounds_done 仍是 0**，
+    而 ``due()`` 只捡 ``queued``/``waiting``，于是它永远卡死：界面上一直
+    "正在查询"，其实一次都没跑过，30 分钟保留期到就被 cleanup 悄悄清掉，
+    查询记录里也没有它。
+
+    直接从外部调 ``_finish()`` 测不出来（那时没持锁），必须走
+    ``run_round()`` 这条真实路径。
+    """
+
+    mgr, svc = env
+    ran: list[str] = []
+
+    # defer_start=True：否则 create() 会同步把第一轮真跑掉（depth=1 数据量小，
+    # 往往直接跑成 complete），等接管 _run_round_locked 时已经没有工单可测了。
+    first = mgr.create(
+        svc, seed=SEED_A, depth=1, min_edge_tao="0", min_total_tao="0",
+        owner="张三", defer_start=True,
+    )
+    second = mgr.create(
+        svc, seed=SEED_B, depth=1, min_edge_tao="0", min_total_tao="0",
+        owner="李四", defer_start=True,
+    )
+
+    def patched(job):
+        ran.append(job.id)
+        job.rounds_done += 1
+        job.total_requests += 1
+        if job.id == first.id:
+            # 第一个工单跑完一轮就没活了 → 走 _finish 收尾 → 接力下一个
+            mgr._finish(job, status="complete")
+            return
+        job.status = "waiting"
+        job.next_round_at = 1e18
+
+    mgr._run_round_locked = patched
+
+    # 走真实入口：内部会持有 _run_gate，再在 _finish 里接力
+    mgr.run_round(first)
+
+    assert first.is_finished
+    assert second.id in ran, "前一个收尾后，第二个没有真正被推进（卡在假 running）"
+    assert second.rounds_done >= 1, "第二个工单 rounds_done 仍为 0，说明只是被标了状态"
+    # 关键：不能留下"running 但没跑"的假活口
+    assert not (second.status == "running" and second.rounds_done == 0)
