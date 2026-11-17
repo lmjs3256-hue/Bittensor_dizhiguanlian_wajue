@@ -446,6 +446,13 @@ class Store:
             row = db.execute("SELECT state_json FROM collector_state WHERE collector=?", (collector,)).fetchone()
             return json.loads(row["state_json"]) if row else None
 
+    def set_collector_state(self, collector: str, state: dict[str, Any]) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO collector_state(collector,state_json,updated_at) VALUES(?,?,?)",
+                (collector, json.dumps(state, ensure_ascii=False, separators=(",", ":")), now_iso()),
+            )
+
     def get_block(self, network: str, height: int) -> dict[str, Any] | None:
         with self.connect() as db:
             row = db.execute("SELECT * FROM chain_blocks WHERE network=? AND height=?", (network, height)).fetchone()

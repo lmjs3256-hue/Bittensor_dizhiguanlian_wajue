@@ -19,6 +19,7 @@ import pytest
 
 from app import collector as collector_module
 from app.collector import RPCCollector
+from app.shared_chain import SharedChainGateway
 
 
 class _FakeSubstrate:
@@ -33,7 +34,7 @@ class _FakeSubstrate:
     async def initialize(self) -> None:
         await asyncio.sleep(0)
 
-    async def init_runtime(self):
+    async def init_runtime(self, **_kwargs):
         # 真实环境里这一步要几十秒，正是它撞上了单块 25 秒超时。
         await asyncio.sleep(self.warmup_delay)
         return object()
@@ -53,17 +54,17 @@ class _FakeSubstrate:
         self.closed = True
 
 
-def _install(monkeypatch, fake_factory):
-    monkeypatch.setattr(collector_module, "AsyncSubstrateInterface", fake_factory)
+def _install(monkeypatch, fake):
+    gateway = SharedChainGateway("wss://example.invalid", client_factory=lambda: fake)
+    monkeypatch.setattr(collector_module, "get_shared_chain", lambda url: gateway)
+    return gateway
 
 
 def test_slow_runtime_warmup_survives_tight_block_timeout(monkeypatch):
     """runtime 预热比单块超时慢，扫描也必须成功。"""
 
-    def factory(url):
-        return _FakeSubstrate(url, warmup_delay=0.35)
-
-    _install(monkeypatch, factory)
+    fake = _FakeSubstrate("wss://example.invalid", warmup_delay=0.35)
+    gateway = _install(monkeypatch, fake)
     collector = RPCCollector(
         "wss://example.invalid",
         timeout_seconds=0.15,  # 故意比预热还短，模拟原来的 bug 条件
@@ -73,9 +74,12 @@ def test_slow_runtime_warmup_survives_tight_block_timeout(monkeypatch):
     async def on_batch(rows, block_number, block_hash):
         return None
 
-    result = asyncio.run(
-        collector.collect_range(start=99, end=100, on_batch=on_batch)
-    )
+    try:
+        result = asyncio.run(
+            collector.collect_range(start=99, end=100, on_batch=on_batch)
+        )
+    finally:
+        gateway.close()
 
     assert result["scanned_blocks"] == 2
     assert result["start_block"] == 99
@@ -87,10 +91,8 @@ def test_slow_runtime_warmup_survives_tight_block_timeout(monkeypatch):
 def test_warmup_timeout_still_applies(monkeypatch):
     """预热超时本身仍然生效，不能无限等下去。"""
 
-    def factory(url):
-        return _FakeSubstrate(url, warmup_delay=5.0)
-
-    _install(monkeypatch, factory)
+    fake = _FakeSubstrate("wss://example.invalid", warmup_delay=5.0)
+    gateway = _install(monkeypatch, fake)
     collector = RPCCollector(
         "wss://example.invalid",
         timeout_seconds=10.0,
@@ -101,23 +103,20 @@ def test_warmup_timeout_still_applies(monkeypatch):
         return None
 
     started = time.monotonic()
-    with pytest.raises(asyncio.TimeoutError):
-        asyncio.run(collector.collect_range(start=100, end=100, on_batch=on_batch))
-    # 确实按 warmup 的 0.2 秒掐断，而不是等满 5 秒。
-    assert time.monotonic() - started < 3.0
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(collector.collect_range(start=100, end=100, on_batch=on_batch))
+        # 确实按 warmup 的 0.2 秒掐断，而不是等满 5 秒。
+        assert time.monotonic() - started < 3.0
+    finally:
+        gateway.close()
 
 
-def test_substrate_closed_even_when_warmup_times_out(monkeypatch):
-    """预热失败也必须关闭连接，避免连接泄漏拖垮后续扫描。"""
+def test_shared_gateway_releases_connection_on_shutdown(monkeypatch):
+    """预热超时取消本次请求，但共享连接由主服务统一关闭，不能泄漏。"""
 
-    holder: dict[str, _FakeSubstrate] = {}
-
-    def factory(url):
-        fake = _FakeSubstrate(url, warmup_delay=5.0)
-        holder["fake"] = fake
-        return fake
-
-    _install(monkeypatch, factory)
+    fake = _FakeSubstrate("wss://example.invalid", warmup_delay=5.0)
+    gateway = _install(monkeypatch, fake)
     collector = RPCCollector(
         "wss://example.invalid", timeout_seconds=5.0, warmup_timeout_seconds=0.1
     )
@@ -127,4 +126,6 @@ def test_substrate_closed_even_when_warmup_times_out(monkeypatch):
 
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(collector.collect_range(start=100, end=100, on_batch=on_batch))
-    assert holder["fake"].closed is True
+    assert gateway.stats()["running"] is True
+    gateway.close()
+    assert fake.closed is True

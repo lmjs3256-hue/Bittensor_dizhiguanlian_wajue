@@ -19,6 +19,7 @@ from .address_monitor import address_event_record, mask_address
 from .github import parse_github_repository
 from .rules import event_fields, get_rule
 from .storage import Store, now_iso
+from .substrate_adapter import AsyncSubstrateAdapter
 
 LOG = logging.getLogger(__name__)
 

@@ -27,6 +27,7 @@ from . import remote_launch
 from . import settings_store
 from . import taostats
 from .config import ROOT_DIR, database_path, settings
+from .event_monitor.default_watch import seed_default_subnet_watch
 from .event_monitor.runtime import EVENT_MONITOR, settings_from_env as event_monitor_settings
 from .db import Database, install_seed_books
 from .inputs import InputError
@@ -34,6 +35,11 @@ from .jobs import RelationJobManager
 from .relation_config import DEFAULT_RELATION_DEPTH, MAX_RELATION_DEPTH
 from .validation import is_valid_ss58
 from .service import LinkService, ScanBusyError
+from .shared_chain import (
+    configure_shared_chain,
+    shared_chain_stats,
+    shutdown_shared_chain,
+)
 from .taostats import (
     TaostatsAuthError,
     TaostatsRateLimitError,
@@ -65,6 +71,7 @@ SUBNET_OWNER_SYNC_CHECK_SECONDS = 60 * 60
 BUILTIN_ADDRESSES_ENABLED = True
 # 本次启动内置名单的写入结果，供 /api/diagnose 显示「新版本真的跑起来了吗」。
 BUILTIN_STARTUP_RESULT: dict[str, Any] | None = None
+DEFAULT_SUBNET_WATCH_RESULT: dict[str, Any] | None = None
 # 地址库自动入库的调度间隔：每 30 秒拿本地索引的新块撞一次地址库。
 # 不消耗任何 Taostats 额度（数据来自 RPC 直采的 transfers 表）。
 # 与 watch.py 的 SWEEP_TICK_SECONDS 同源：前端「距下一轮」倒计时依赖这个值，
@@ -102,6 +109,30 @@ async def _auto_sync_exchanges() -> None:
         print(f"[exchange-sync] 官方交易所名单同步失败：{exc}", file=sys.stderr)
 
 
+def _seed_default_event_subnet_watch() -> dict[str, Any] | None:
+    """把现有 SN1-SN128 地址库一次性加入事件监控。"""
+
+    global DEFAULT_SUBNET_WATCH_RESULT
+    if not EVENT_MONITOR.running or EVENT_MONITOR.context is None:
+        return None
+    try:
+        DEFAULT_SUBNET_WATCH_RESULT = seed_default_subnet_watch(
+            EVENT_MONITOR.context.store,
+            SERVICE.library(),
+        )
+        if DEFAULT_SUBNET_WATCH_RESULT.get("new_books"):
+            print(
+                f"[event-monitor] 默认监控新增 {len(DEFAULT_SUBNET_WATCH_RESULT['new_books'])} 个 "
+                f"SN 地址库、{DEFAULT_SUBNET_WATCH_RESULT.get('added', 0)} 个地址",
+                file=sys.stderr,
+            )
+        return DEFAULT_SUBNET_WATCH_RESULT
+    except Exception as exc:  # noqa: BLE001 - 默认监控失败不影响主服务
+        DEFAULT_SUBNET_WATCH_RESULT = {"seeded": False, "error": str(exc)}
+        print(f"[event-monitor] SN 默认监控地址库写入失败：{exc}", file=sys.stderr)
+        return DEFAULT_SUBNET_WATCH_RESULT
+
+
 async def _auto_sync_subnet_owners() -> None:
     """每周检查一次链上子网项目方；失败只记录状态，不影响服务启动。"""
 
@@ -110,6 +141,7 @@ async def _auto_sync_subnet_owners() -> None:
             SERVICE.auto_sync_subnet_owners,
             min_interval_minutes=SUBNET_OWNER_SYNC_INTERVAL_SECONDS // 60,
         )
+        await asyncio.to_thread(_seed_default_event_subnet_watch)
     except Exception as exc:  # noqa: BLE001 - 后台同步失败不影响服务
         print(f"[subnet-owner-sync] 子网项目方同步失败：{exc}", file=sys.stderr)
 
@@ -126,6 +158,7 @@ async def _subnet_owner_scheduler() -> None:
 async def lifespan(_app: FastAPI):
     global BUILTIN_STARTUP_RESULT, _EVENT_PROXY_CLIENT
     DATABASE.initialize()
+    configure_shared_chain(CONFIG.rpc_url)
     # 外发包自带的预置地址库（app/seed_books/*.txt，文件名即标签组名）：
     # 第一次启动时装进已知地址库，装过就记在 seed_books 表里不再重复导入。
     try:
@@ -178,12 +211,13 @@ async def lifespan(_app: FastAPI):
             )
     if EVENT_MONITOR_ENABLED:
         try:
-            EVENT_MONITOR.start(event_monitor_settings())
+            EVENT_MONITOR.start(event_monitor_settings(chain_rpc=CONFIG.rpc_url))
             print(
                 f"[event-monitor] 事件监控已启动：内部端口 {EVENT_MONITOR.port}，"
                 f"事件库 {EVENT_MONITOR.settings.database if EVENT_MONITOR.settings else ''}",
                 file=sys.stderr,
             )
+            _seed_default_event_subnet_watch()
         except Exception as exc:  # noqa: BLE001 - 事件模块失败不应拖垮地址工具
             print(f"[event-monitor] 事件监控启动失败：{exc}", file=sys.stderr)
     else:
@@ -228,6 +262,7 @@ async def lifespan(_app: FastAPI):
         if proxy_client is not None:
             await proxy_client.aclose()
         EVENT_MONITOR.stop()
+        shutdown_shared_chain()
         DATABASE.engine.dispose()
 
 
@@ -961,6 +996,8 @@ def health(svc: Annotated[LinkService, Depends(service)]):
             "running": EVENT_MONITOR.running,
             "error": EVENT_MONITOR.error,
         },
+        "shared_chain": shared_chain_stats(),
+        "default_subnet_watch": DEFAULT_SUBNET_WATCH_RESULT,
     }
 
 

@@ -4,10 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <script>try { if (new URLSearchParams(location.search).get("embed") === "1") document.documentElement.classList.add("embedded"); } catch (_) {}</script>
+  <script>
+    try {
+      const mode = localStorage.getItem("wallet-link-theme");
+      if (mode === "warm" || (!mode && localStorage.getItem("wallet-link-eye-mode") === "on")) {
+        document.documentElement.dataset.theme = "eye";
+      } else if (mode === "darkgray") {
+        document.documentElement.dataset.theme = "darkgray";
+      }
+      if (new URLSearchParams(location.search).get("embed") === "1") {
+        document.documentElement.classList.add("embedded");
+      }
+    } catch (_) {}
+  </script>
   <title>Wallet Link · Bittensor 事件监控</title>
   <link rel="icon" href="/static/event-monitor/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/event-monitor/styles.css?v=1.0.0">
+  <link rel="stylesheet" href="/static/event-monitor/styles.css?v=1.0.1">
 </head>
 <body>
   <nav class="embedded-nav" aria-label="事件监控内部导航">
@@ -331,6 +343,6 @@
   </dialog>
 
   <div class="toast" id="toast" role="status"></div>
-  <script src="/static/event-monitor/app.js?v=1.0.0" defer></script>
+  <script src="/static/event-monitor/app.js?v=1.0.1" defer></script>
 </body>
 </html>

@@ -9,6 +9,8 @@ from typing import Any
 
 from async_substrate_interface import AsyncSubstrateInterface
 
+from .shared_chain import PRIORITY_NORMAL, get_shared_chain
+
 
 RAO_PER_TAO = Decimal("1000000000")
 SYSTEM_PREFIX = "5EYCAe5"
@@ -355,52 +357,54 @@ class RPCCollector:
         on_batch: Any,
         stop_event: asyncio.Event | None = None,
     ) -> dict[str, Any]:
-        substrate = AsyncSubstrateInterface(self.url)
+        gateway = get_shared_chain(self.url)
         head = 0
         scanned = 0
         transfers = 0
         started = time.monotonic()
-        try:
-            # 预热阶段：连接 + 拉取 runtime 元数据。这一步在冷启动时可能
-            # 要几十秒，必须单独放宽超时，否则读第一块就会撞上 25 秒上限。
-            await asyncio.wait_for(substrate.initialize(), self.warmup_timeout_seconds)
-            await asyncio.wait_for(substrate.init_runtime(), self.warmup_timeout_seconds)
-            warmup_seconds = round(time.monotonic() - started, 2)
-            head = int(await substrate.get_block_number())
-            end = min(end, head)
-            start = max(1, min(start, end + 1))
-            for block_number in range(start, end + 1):
-                if stop_event is not None and stop_event.is_set():
-                    break
-                block = await asyncio.wait_for(
-                    substrate.get_block(block_number=block_number),
-                    self.timeout_seconds,
-                )
-                if block is None:
-                    raise RuntimeError(f"block {block_number} is unavailable")
-                block_hash = str(block["header"]["hash"])
-                events = await asyncio.wait_for(
-                    substrate.get_events(block_hash=block_hash),
-                    self.timeout_seconds,
-                )
-                event_args = {
-                    "events": events,
-                    "block_number": block_number,
-                    "block_hash": block_hash,
-                    "extrinsics": block.get("extrinsics", []),
-                }
-                rows = extract_balance_transfers(**event_args) + extract_stake_transfers(**event_args)
-                await on_batch(rows, block_number, block_hash)
-                scanned += 1
-                transfers += len(rows)
-            return {
-                "head_block": head,
-                "start_block": start if scanned else 0,
-                "end_block": end if scanned else 0,
-                "scanned_blocks": scanned,
-                "transfer_count": transfers,
-                "warmup_seconds": warmup_seconds,
-                "seconds": round(time.monotonic() - started, 2),
+        # 预热阶段：连接 + 拉取 runtime 元数据。事件监控使用同一网关，
+        # 地址自动入库只提交普通优先级任务，事件请求会优先执行。
+        await asyncio.wait_for(
+            gateway.initialize(priority=PRIORITY_NORMAL),
+            self.warmup_timeout_seconds,
+        )
+        await asyncio.wait_for(
+            gateway.init_runtime(priority=PRIORITY_NORMAL),
+            self.warmup_timeout_seconds,
+        )
+        warmup_seconds = round(time.monotonic() - started, 2)
+        head = await asyncio.wait_for(
+            gateway.get_block_number(priority=PRIORITY_NORMAL),
+            self.timeout_seconds,
+        )
+        end = min(end, head)
+        start = max(1, min(start, end + 1))
+        for block_number in range(start, end + 1):
+            if stop_event is not None and stop_event.is_set():
+                break
+            block, events, block_hash = await asyncio.wait_for(
+                gateway.get_block_with_events(
+                    block_number,
+                    priority=PRIORITY_NORMAL,
+                ),
+                self.timeout_seconds,
+            )
+            event_args = {
+                "events": events,
+                "block_number": block_number,
+                "block_hash": block_hash,
+                "extrinsics": block.get("extrinsics", []),
             }
-        finally:
-            await substrate.close()
+            rows = extract_balance_transfers(**event_args) + extract_stake_transfers(**event_args)
+            await on_batch(rows, block_number, block_hash)
+            scanned += 1
+            transfers += len(rows)
+        return {
+            "head_block": head,
+            "start_block": start if scanned else 0,
+            "end_block": end if scanned else 0,
+            "scanned_blocks": scanned,
+            "transfer_count": transfers,
+            "warmup_seconds": warmup_seconds,
+            "seconds": round(time.monotonic() - started, 2),
+        }

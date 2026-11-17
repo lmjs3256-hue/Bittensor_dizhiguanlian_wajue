@@ -3,6 +3,27 @@ const APP_BASE = "/event-monitor";
 const APP_EMBED = new URLSearchParams(location.search).get("embed") === "1";
 if (APP_EMBED) document.documentElement.classList.add("embedded");
 
+function applyWalletTheme() {
+  try {
+    const mode = localStorage.getItem("wallet-link-theme");
+    if (mode === "warm" || (!mode && localStorage.getItem("wallet-link-eye-mode") === "on")) {
+      document.documentElement.dataset.theme = "eye";
+    } else if (mode === "darkgray") {
+      document.documentElement.dataset.theme = "darkgray";
+    } else {
+      delete document.documentElement.dataset.theme;
+    }
+  } catch (_) {
+    delete document.documentElement.dataset.theme;
+  }
+}
+applyWalletTheme();
+window.addEventListener("storage", (event) => {
+  if (event.key === "wallet-link-theme" || event.key === "wallet-link-eye-mode") {
+    applyWalletTheme();
+  }
+});
+
 function routePathname(pathname = location.pathname) {
   if (pathname === APP_BASE) return "/";
   if (pathname.startsWith(`${APP_BASE}/`)) return pathname.slice(APP_BASE.length);

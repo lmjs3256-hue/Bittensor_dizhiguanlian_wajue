@@ -1244,3 +1244,13 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u al
 
 - 迁移默认清空旧监控名单；保留旧名单需显式 `--keep-watchlist`。目标库已存在时必须先确认，再加 `--replace`。
 - 本轮验证：全量 `782 passed`，编译、JS 语法、`pip check`、真实 Finney 区块事件读取、桌面/移动 UI 均通过。详见 `VERIFICATION.md` 与 `docs/事件监控合并说明.md`。
+
+
+## 14. 2026-11-17 事件监控 1.0.1
+
+- 事件页面读取主工具 `wallet-link-theme`，实时同步 system / eye / darkgray。
+- `app/shared_chain.py` 统一事件监控与地址自动入库的 Substrate WebSocket；事件 `PRIORITY_EVENT=0`，地址自动入库 `PRIORITY_NORMAL=100`。
+- `AsyncSubstrateAdapter` 现在是共享网关的同步高优先级门面；不要再让它创建独立 WebSocket。
+- 事件服务首次启动自动从 `../Bittensor_event/data/events.db` 继承子网档案、归档、仓库和交易状态；可用 `WALLET_LINK_EVENT_LEGACY_DB` 指定旧库，用 `WALLET_LINK_EVENT_INHERIT_LEGACY=0` 关闭。
+- `seed_default_subnet_watch()` 会按地址库把 `SN1`–`SN128` 加入事件监控，状态保存在 `collector_state` 的 `watch:default-subnet-books:v1`。不得改成每次启动扫描整库后重新添加，否则会复活用户主动移出的地址。
+- 完整服务实测事件链状态 `connected`；旧库继承与 SN 默认监控结果见 `VERIFICATION.md`。

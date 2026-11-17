@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from ..config import DEFAULT_RPC_URL, ROOT_DIR, event_database_path
+from ..shared_chain import shared_chain_stats
 from .chain import ChainCollector
 from .github import GitHubCollector
+from .legacy_inherit import default_legacy_event_db, inherit_legacy_event_state
 from .log_store import SQLiteLogHandler
 from .rules import load_rules, load_simulation_signals
 from .server import AppContext, EventHub, MonitorHTTPServer, WorkerStatus
@@ -40,6 +42,7 @@ class RuntimeSettings:
     profile_sync_seconds: int
     github_poll_seconds: int
     env_path: Path
+    legacy_db: Path | None
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -70,9 +73,17 @@ def settings_from_env(
     database: Path | None = None,
     chain_enabled: bool | None = None,
     github_enabled: bool | None = None,
+    chain_rpc: str | None = None,
 ) -> RuntimeSettings:
     env_path = ROOT_DIR / ".env"
     load_env_file(env_path)
+    inherit_legacy = _env_bool("WALLET_LINK_EVENT_INHERIT_LEGACY", True)
+    legacy_value = os.getenv("WALLET_LINK_EVENT_LEGACY_DB", "").strip()
+    legacy_db = (
+        Path(legacy_value).expanduser().resolve()
+        if legacy_value
+        else (default_legacy_event_db(ROOT_DIR) if inherit_legacy else None)
+    )
     return RuntimeSettings(
         database=(database or event_database_path()).resolve(),
         rules=CONFIG_DIR / "event_rules.json",
@@ -89,7 +100,7 @@ def settings_from_env(
         simulation_enabled=_env_bool("WALLET_LINK_EVENT_SIMULATION_ENABLED", True),
         demo_enabled=_env_bool("WALLET_LINK_EVENT_DEMO_ENABLED", False),
         chain_rpc=(
-            os.getenv("WALLET_LINK_EVENT_CHAIN_RPC")
+            chain_rpc
             or os.getenv("WALLET_LINK_RPC_URL")
             or DEFAULT_RPC_URL
         ),
@@ -98,6 +109,7 @@ def settings_from_env(
         profile_sync_seconds=int(os.getenv("WALLET_LINK_EVENT_PROFILE_SYNC_SECONDS", "604800")),
         github_poll_seconds=int(os.getenv("WALLET_LINK_EVENT_GITHUB_POLL_SECONDS", "300")),
         env_path=env_path,
+        legacy_db=legacy_db,
     )
 
 
@@ -121,6 +133,7 @@ class EventMonitorRuntime:
         self.port: int | None = None
         self.error: str | None = None
         self.settings: RuntimeSettings | None = None
+        self.legacy_inheritance: dict[str, Any] | None = None
 
     @property
     def running(self) -> bool:
@@ -191,10 +204,24 @@ class EventMonitorRuntime:
                 "network": self.settings.network if self.settings else "",
             },
             "workers": context.status.snapshot() if context else {},
+            "shared_chain": shared_chain_stats(),
+            "legacy_inheritance": self.legacy_inheritance,
         }
 
     def _create_application(self, settings: RuntimeSettings) -> tuple[AppContext, list[tuple[str, Any]]]:
         store = Store(settings.database)
+        if settings.legacy_db is not None and settings.legacy_db != settings.database:
+            try:
+                self.legacy_inheritance = inherit_legacy_event_state(
+                    settings.database,
+                    settings.legacy_db,
+                )
+            except Exception as exc:  # noqa: BLE001 - inheritance must not block startup
+                self.legacy_inheritance = {
+                    "inherited": False,
+                    "source": str(settings.legacy_db),
+                    "error": str(exc),
+                }
         hub = EventHub()
         status = WorkerStatus()
         rules, _catalog = load_rules(settings.rules)

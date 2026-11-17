@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 import app.main as main_module
 from app.db import Database
 from app.service import LinkService
+from app.event_monitor.default_watch import seed_default_subnet_watch
+from app.event_monitor.legacy_inherit import inherit_legacy_event_state
 from app.event_monitor.storage import Store
 from tools.migrate_event_monitor import migrate_event_database
 
@@ -59,7 +61,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.0" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.1" in page.text
 
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
@@ -73,7 +75,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.0"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.1"
 
 
 def test_shared_library_does_not_auto_populate_monitor_list(merged_client):
@@ -224,3 +226,64 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "展开二级勾选" in app_js
     assert "library_book: item.book" in app_js
     assert "按地址库勾选事件监控" in app_js
+
+
+def test_legacy_subnet_profiles_are_inherited_once(tmp_path):
+    source = Store(tmp_path / "legacy.db")
+    source.upsert_subnet_profile_auto(
+        "finney", 55,
+        {"name": "NIOME", "website_url": "https://niome.example"},
+        "0x" + "a" * 64,
+    )
+    source.set_trading_state(
+        network="finney", netuid=55, enabled=True, registration_block=1,
+        block_hash="0x" + "b" * 64, block_number=100,
+    )
+    source.upsert_chain_repository({
+        "network": "finney", "netuid": 55, "owner": "niome", "name": "repo",
+        "html_url": "https://github.com/niome/repo",
+    })
+    target = Store(tmp_path / "event_monitor.db")
+
+    result = inherit_legacy_event_state(target.path, tmp_path / "legacy.db")
+    assert result["inherited"] is True
+    profiles = target.list_subnet_profiles("finney")
+    assert profiles[0]["netuid"] == 55
+    assert profiles[0]["name"] == "NIOME"
+    assert target.list_repositories()[0]["owner"] == "niome"
+
+    second = inherit_legacy_event_state(target.path, tmp_path / "legacy.db")
+    assert second["inherited"] is False
+    assert second["tables"]["subnet_profiles"]["skipped"] is True
+
+
+def test_default_sn1_to_sn128_books_are_seeded_once_without_resurrection(tmp_path):
+    store = Store(tmp_path / "event_monitor.db")
+    items = [
+        {"book": "SN1 Apex", "address": "5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt", "label": "SN1"},
+        {"book": "SN2 DaniLabs", "address": "5DceuTr7XPqw67PNHW9ewzzo2cZ7Cm8HgfjwUqEpd8Mh8QNg", "label": "SN2"},
+        {"book": "SN129 ignored", "address": "5FURtzHeFURtzHeFURtzHeFURtzHeFURtzHeFURt", "label": "SN129"},
+    ]
+    first = seed_default_subnet_watch(store, items)
+    assert first["added"] == 2
+    assert first["book_count"] == 2
+    watched = store.list_watched_addresses("finney")
+    assert {item["library_book"] for item in watched} == {"SN1 Apex", "SN2 DaniLabs"}
+
+    removed = next(item for item in watched if item["library_book"] == "SN1 Apex")
+    assert store.delete_watched_address(removed["address_id"])
+    second = seed_default_subnet_watch(store, items)
+    assert second["added"] == 0
+    assert len(store.list_watched_addresses("finney")) == 1
+
+    third = seed_default_subnet_watch(
+        store,
+        items + [{
+            "book": "SN3 New",
+            "address": "5HCFbwK8wHCFbwK8wHCFbwK8wHCFbwK8wHCFbwK8wHCF",
+            "label": "SN3",
+        }],
+    )
+    assert third["added"] == 1
+    assert "SN3 New" in third["new_books"]
+    assert len(store.list_watched_addresses("finney")) == 2

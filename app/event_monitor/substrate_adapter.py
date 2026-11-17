@@ -1,63 +1,25 @@
-"""Synchronous facade over the project's async Substrate client.
-
-The wallet tool already depends on ``async-substrate-interface`` (cyscale).
-The event collector historically used the sync package, which installs the
-conflicting ``scalecodec`` namespace.  This adapter keeps the collector's
-blocking call shape while using one asynchronous client and one dedicated
-event loop per adapter instance.
-"""
+"""Event-monitor facade over the shared, priority-aware chain gateway."""
 
 from __future__ import annotations
 
-import asyncio
-import threading
 from typing import Any
+
+from ..shared_chain import PRIORITY_EVENT, get_shared_chain
 
 
 class AsyncSubstrateAdapter:
-    def __init__(self, url: str, *, connect_timeout: float = 240.0) -> None:
+    """Synchronous event-side facade using the shared high-priority connection."""
+
+    def __init__(self, url: str) -> None:
         self.url = url
-        self.connect_timeout = connect_timeout
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(
-            target=self._run_loop,
-            name="event-monitor-substrate-loop",
-            daemon=True,
-        )
-        self._thread.start()
-        self._client: Any = None
-        self._closed = False
-        self._init_lock = threading.Lock()
-        self._run(self._connect(), timeout=connect_timeout)
-
-    def _run_loop(self) -> None:
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
-
-    def _run(self, awaitable: Any, *, timeout: float | None = None) -> Any:
-        if self._closed:
-            raise RuntimeError("Substrate adapter is closed")
-        future = asyncio.run_coroutine_threadsafe(awaitable, self._loop)
-        return future.result(timeout)
-
-    async def _connect(self) -> None:
-        from async_substrate_interface import AsyncSubstrateInterface
-
-        self._client = AsyncSubstrateInterface(self.url)
-        await self._client.initialize()
-
-    def _ensure_client(self) -> Any:
-        if self._closed:
-            raise RuntimeError("Substrate adapter is closed")
-        if self._client is None:
-            with self._init_lock:
-                if self._client is None:
-                    self._run(self._connect(), timeout=self.connect_timeout)
-        return self._client
+        self._gateway = get_shared_chain(url)
 
     def rpc_request(self, method: str, params: list[Any] | None = None) -> Any:
-        client = self._ensure_client()
-        return self._run(client.rpc_request(method, params or []))
+        return self._gateway.rpc_request_sync(
+            method,
+            params or [],
+            priority=PRIORITY_EVENT,
+        )
 
     def init_runtime(
         self,
@@ -65,13 +27,11 @@ class AsyncSubstrateAdapter:
         block_id: int | None = None,
         init: bool = False,
     ) -> Any:
-        client = self._ensure_client()
-        return self._run(
-            client.init_runtime(
-                block_hash=block_hash,
-                block_id=block_id,
-                init=init,
-            )
+        return self._gateway.init_runtime_sync(
+            block_hash=block_hash,
+            block_id=block_id,
+            init=init,
+            priority=PRIORITY_EVENT,
         )
 
     def query(
@@ -82,15 +42,13 @@ class AsyncSubstrateAdapter:
         block_hash: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        client = self._ensure_client()
-        return self._run(
-            client.query(
-                module,
-                storage_function,
-                params=params,
-                block_hash=block_hash,
-                **kwargs,
-            )
+        return self._gateway.query_sync(
+            module,
+            storage_function,
+            params=params,
+            block_hash=block_hash,
+            priority=PRIORITY_EVENT,
+            **kwargs,
         )
 
     def query_map(
@@ -101,54 +59,24 @@ class AsyncSubstrateAdapter:
         block_hash: str | None = None,
         **kwargs: Any,
     ) -> list[tuple[Any, Any]]:
-        client = self._ensure_client()
-
-        async def collect() -> list[tuple[Any, Any]]:
-            result = await client.query_map(
-                module,
-                storage_function,
-                params=params,
-                block_hash=block_hash,
-                **kwargs,
-            )
-            pairs: list[tuple[Any, Any]] = []
-            async for key, value in result:
-                pairs.append((key, value))
-            return pairs
-
-        return self._run(collect())
+        return self._gateway.query_map_sync(
+            module,
+            storage_function,
+            params=params,
+            block_hash=block_hash,
+            priority=PRIORITY_EVENT,
+            **kwargs,
+        )
 
     def get_events(self, block_hash: str | None = None) -> Any:
-        client = self._ensure_client()
-        return self._run(client.get_events(block_hash=block_hash))
-
-    async def _shutdown_client(self) -> None:
-        client = self._client
-        if client is not None:
-            try:
-                await client.close()
-            except Exception:
-                pass
-        current = asyncio.current_task()
-        pending = [task for task in asyncio.all_tasks() if task is not current]
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        if not block_hash:
+            raise ValueError("block_hash is required for shared get_events")
+        return self._gateway.get_events_sync(
+            block_hash,
+            priority=PRIORITY_EVENT,
+        )
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            future = asyncio.run_coroutine_threadsafe(self._shutdown_client(), self._loop)
-            future.result(timeout=20)
-        except Exception:
-            pass
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread.is_alive() and self._thread is not threading.current_thread():
-            self._thread.join(timeout=5)
-        try:
-            self._loop.close()
-        except Exception:
-            pass
+        # The shared gateway is owned by the main application lifespan and is
+        # intentionally not closed when an individual collector thread exits.
+        return None
