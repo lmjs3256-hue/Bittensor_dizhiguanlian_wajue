@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Wallet Link 事件监控 · Bittensor 事件监控</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="返回事件首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span><strong>Wallet Link 事件监控</strong><small>Bittensor event monitor</small></span>
+    </a>
+    <div class="top-actions">
+      <a class="button ghost home-button" href="/">主页</a>
+      <details class="info-menu">
+        <summary class="button ghost">系统信息</summary>
+        <div class="menu-popover">
+          <a href="/" data-nav="home">事件流</a>
+          <a href="/profiles" data-nav="profiles">子网档案</a>
+          <a href="/priorities" data-nav="priorities">优先级监控</a>
+          <a href="/addresses" data-nav="addresses">地址库</a>
+          <a href="/records" data-nav="records">事件记录导出</a>
+          <a href="/logs" data-nav="logs">运行日志</a>
+          <a href="/features" data-nav="features">功能状态</a>
+          <a href="/guide" data-nav="guide">使用说明</a>
+          <a href="/changelog" data-nav="changelog">版本更新</a>
+        </div>
+      </details>
+      <a class="button ghost settings-top-button" href="/settings" data-nav="settings">系统设置</a>
+      <button class="button ghost" id="refresh-button" type="button">刷新</button>
+      <div class="live-status" id="live-status"><span></span>正在连接</div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">FINNEY · LIVE EVIDENCE</p>
+        <h1 id="page-title">所有子网，一条可信事件流。</h1>
+        <p class="lede" id="page-subtitle">链上事件先记录、先推送，状态与来源证据随后补全。</p>
+      </div>
+      <div class="pulse-orbit" aria-hidden="true">
+        <span class="orbit-core"></span>
+        <span class="orbit-dot dot-a"></span>
+        <span class="orbit-dot dot-b"></span>
+        <span class="orbit-dot dot-c"></span>
+      </div>
+    </section>
+
+    <section class="metrics" aria-label="系统概况">
+      <article><span>当前视图</span><strong id="event-count">0</strong><small>条已记录事件</small></article>
+      <article><span>最新区块</span><strong id="chain-height">—</strong><small id="chain-lag">等待链上采集</small></article>
+      <article><span>最终确认</span><strong id="finalized-height">—</strong><small>按最终链追踪</small></article>
+      <article><span>待补全</span><strong id="pending-count">0</strong><small>原始记录已保留</small></article>
+    </section>
+
+    <section class="monitor-health" id="monitor-health" aria-label="监控心跳">
+      <article class="health-item" id="chain-health">
+        <span class="health-light" aria-hidden="true"></span>
+        <div><strong>Finney 链上轮询</strong><small id="chain-health-copy">等待首次心跳</small></div>
+        <time id="chain-heartbeat">—</time>
+      </article>
+      <article class="health-item github-health-link" id="github-health">
+        <span class="health-light" aria-hidden="true"></span>
+        <div><strong>GitHub 轮询</strong><small id="github-health-copy">等待首次心跳</small></div>
+        <div class="github-health-actions">
+          <time id="github-heartbeat">—</time>
+          <a class="github-api-button" id="github-api-settings" href="/settings" data-nav="settings" title="查看或修改 GitHub API 设置">API 频次</a>
+        </div>
+      </article>
+      <article class="health-item" id="stream-health">
+        <span class="health-light" aria-hidden="true"></span>
+        <div><strong>实时推送通道</strong><small id="stream-health-copy">正在连接</small></div>
+        <time id="stream-heartbeat">—</time>
+      </article>
+      <article class="health-item" id="event-health">
+        <span class="health-light" aria-hidden="true"></span>
+        <div><strong>事件活动</strong><small id="event-health-copy">等待首个事件</small></div>
+        <time id="event-heartbeat">—</time>
+      </article>
+    </section>
+
+    <aside class="alert-banner" id="alert-banner" role="alert" hidden>
+      <div class="alert-copy-wrap">
+        <strong id="alert-title">系统告警</strong>
+        <span id="alert-copy"></span>
+      </div>
+      <a class="alert-link" href="/logs">查看运行日志</a>
+    </aside>
+    <section class="info-view" id="info-view" hidden></section>
+
+    <section class="workspace">
+      <div class="feed-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow" id="feed-kicker">EVENT STREAM</p>
+            <div class="feed-title-line">
+              <h2 id="feed-title">最新事件</h2>
+              <div class="listening-indicator" id="listening-indicator" data-state="waiting">
+                <span class="listening-wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                <span class="listening-copy">
+                  <strong id="listening-label">正在连接监听</strong>
+                  <small id="listening-detail">等待链上心跳与实时通道</small>
+                </span>
+              </div>
+            </div>
+          </div>
+          <div class="section-actions">
+            <button class="button ghost" id="floating-button" type="button">浮窗监听</button>
+            <button class="button primary" id="simulation-button" type="button">模拟信号</button>
+            <button class="button ghost" id="clear-panel-button" type="button">清空显示</button>
+            <label class="switch">
+              <input id="pause-toggle" type="checkbox">
+              <span class="switch-track"><i></i></span>
+              <span>暂停实时插入 <b id="pending-updates"></b></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="filters">
+          <label class="search">
+            <span aria-hidden="true">⌕</span>
+            <input id="search-input" type="search" placeholder="搜索摘要、事件名或子网">
+          </label>
+          <div class="subnet-query">
+            <span>SN</span>
+            <input id="subnet-filter" type="number" min="0" max="65535" placeholder="子网编号">
+            <button id="subnet-query-button" type="button">查询</button>
+          </div>
+          <select id="type-filter" aria-label="事件类型">
+            <option value="">全部类型</option>
+          </select>
+          <select id="status-filter" aria-label="确认状态">
+            <option value="">全部状态</option>
+            <option value="observed">链上已观察</option>
+            <option value="finalized">已最终确认</option>
+            <option value="retracted">已撤回</option>
+            <option value="simulated">模拟事件</option>
+          </select>
+          <select id="source-filter" aria-label="事件来源">
+            <option value="">全部来源</option>
+            <option value="chain">链上</option>
+            <option value="github">GitHub</option>
+            <option value="address">地址监控</option>
+            <option value="simulation">模拟测试</option>
+          </select>
+        </div>
+
+        <div class="event-list-head" aria-hidden="true">
+          <span>事件 · 红黄绿用于区分相邻记录</span><span>时间</span><span>状态</span>
+        </div>
+        <div class="event-list" id="event-list" aria-live="polite"></div>
+        <nav class="pagination" id="pagination" aria-label="事件流分页">
+          <button class="page-button" id="page-first" type="button">首页</button>
+          <button class="page-button" id="page-prev" type="button">上一页</button>
+          <label class="page-jump">
+            <span>第</span>
+            <input id="page-input" type="number" min="1" value="1" aria-label="跳转页码">
+            <span>/</span>
+            <strong id="page-total">1</strong>
+            <span>页</span>
+          </label>
+          <button class="page-button" id="page-next" type="button">下一页</button>
+          <button class="page-button" id="page-last" type="button">尾页</button>
+          <span class="page-range" id="page-range">0–0 / 0</span>
+        </nav>
+        <div class="empty-state" id="empty-state" hidden>
+          <div class="empty-symbol" aria-hidden="true"><i></i><i></i><i></i></div>
+          <h3 id="empty-title">轮询正常，当前没有匹配事件</h3>
+          <p id="empty-copy">链上心跳会持续更新；没有新事件本身不等于采集中断。</p>
+          <small id="empty-heartbeat">等待轮询状态…</small>
+        </div>
+      </div>
+
+      <aside class="detail-panel" id="detail-panel">
+        <div class="detail-placeholder">
+          <span class="detail-glyph">⌁</span>
+          <p class="eyebrow">EVIDENCE DRAWER</p>
+          <h2>选择一条事件</h2>
+          <p>查看原始数据、解析结果、确认状态和完整补充记录。</p>
+        </div>
+      </aside>
+    </section>
+    <div class="detail-backdrop" id="detail-backdrop" hidden></div>
+  </main>
+
+  <aside class="inline-floating" id="inline-floating" hidden aria-label="页内吸附浮窗">
+    <header class="inline-floating-head" id="inline-floating-head">
+      <div>
+        <strong>最新事件 · 嵌入本页</strong>
+        <small>只随当前网页显示，可拖动标题栏移动，拖动右下角缩放</small>
+      </div>
+      <button type="button" id="inline-floating-close" aria-label="关闭页内浮窗">×</button>
+    </header>
+    <iframe id="inline-floating-frame" title="Wallet Link 事件监控 页内浮窗监听"></iframe>
+  </aside>
+
+  <dialog id="floating-dialog" class="floating-dialog">
+    <form method="dialog" id="floating-form">
+      <div class="dialog-head">
+        <div><p class="eyebrow">FLOATING MONITOR</p><h2>浮窗监听设置</h2></div>
+        <button type="button" class="icon-button" id="floating-close" aria-label="关闭">×</button>
+      </div>
+      <p class="dialog-copy">默认使用浏览器画中画实现跨网页悬浮。若浏览器不支持画中画，会自动改用独立窗口；标准网页无法注入其他网站的页面层。</p>
+      <div class="floating-settings-grid">
+        <fieldset class="floating-mode-grid">
+          <legend>显示方式</legend>
+          <label><input type="radio" name="floating_mode" value="pip" checked><span><strong>跨页悬浮 · 推荐</strong><small>浏览器画中画，可移到其他网页上方观看，置顶能力取决于浏览器</small></span></label>
+          <label><input type="radio" name="floating_mode" value="window"><span><strong>独立窗口</strong><small>可移动和调整大小，窗口层级由操作系统管理</small></span></label>
+          <label><input type="radio" name="floating_mode" value="inline"><span><strong>嵌入本页</strong><small>只在当前 Wallet Link 事件监控 页面内显示，不能覆盖其他网站</small></span></label>
+        </fieldset>
+        <label class="event-font-control">最新事件字号
+          <span class="font-range-line">
+            <input id="event-font-size" name="event_font_size" type="range" min="11" max="18" step="1" value="13">
+            <output id="event-font-size-output">13 px</output>
+          </span>
+          <small>同时应用于首页事件流和浮窗，并保存在当前浏览器。</small>
+        </label>
+      </div>
+      <div class="floating-note">“跨页悬浮”使用 Chrome 画中画并可能保持置顶，请在新标签页查看其他网站；如果必须让当前标签页离开 Wallet Link 事件监控，请改用独立窗口。“嵌入本页”只能存在于当前页面，真正嵌入其他网站内容区域需要浏览器扩展或网站配合。</div>
+      <div class="dialog-actions">
+        <span class="dialog-hint">可随时重新打开本窗口切换模式。</span>
+        <button class="button primary" type="submit">打开浮窗</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="repo-dialog">
+    <form method="dialog" id="repo-form">
+      <div class="dialog-head">
+        <div><p class="eyebrow">MANUAL REVIEW</p><h2>人工关联 GitHub 仓库</h2></div>
+        <button type="button" class="icon-button" id="repo-close" aria-label="关闭">×</button>
+      </div>
+      <p class="dialog-copy">映射会记录审核人和依据。仓库更新只作为补充证据，不自动等同于链上决策。</p>
+      <div class="form-grid">
+        <label>子网编号<input name="netuid" type="number" min="0" max="65535" required placeholder="55"></label>
+        <label>审核人<input name="reviewed_by" required maxlength="80" placeholder="姓名或团队"></label>
+        <label class="wide">GitHub 仓库<input name="repository" required placeholder="owner/repository"></label>
+      </div>
+      <div class="dialog-actions">
+        <span id="repo-error" role="alert"></span>
+        <button class="button primary" type="submit">确认关联</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="simulation-dialog" class="simulation-dialog">
+    <form method="dialog" id="simulation-form">
+      <div class="dialog-head">
+        <div><p class="eyebrow">SIGNAL SIMULATOR</p><h2>发送模拟信号</h2></div>
+        <button type="button" class="icon-button" id="simulation-close" aria-label="关闭">×</button>
+      </div>
+      <p class="dialog-copy">从当前正在监控的信号中选择一项。子网、GitHub 和地址监控事件都由系统生成摘要，模拟记录会明确标注“模拟测试”。</p>
+      <div class="form-grid simulation-grid">
+        <label id="simulation-netuid-field">子网编号<input name="netuid" type="number" min="0" max="65535" required placeholder="78"></label>
+        <label>补全测试
+          <span class="check-line">
+            <input name="test_completion" id="simulation-completion" type="checkbox">
+            <span>延迟更新同一事件</span>
+          </span>
+        </label>
+        <label class="wide" id="simulation-address-field" hidden>地址库测试地址
+          <select name="address_id" id="simulation-address">
+            <option value="">请先在地址库启用地址</option>
+          </select>
+        </label>
+        <label class="wide">监控信号与含义
+          <select name="signal_id" id="simulation-signal" required>
+            <option value="">正在读取信号目录…</option>
+          </select>
+        </label>
+        <label class="completion-delay" hidden>补全延迟（秒）
+          <input name="delay_seconds" type="number" min="1" max="60" value="2">
+        </label>
+        <div class="wide signal-explainer">
+          <span>将推送的首次摘要</span>
+          <strong id="simulation-summary">请选择子网和信号</strong>
+          <small id="simulation-meaning">下拉选项同时显示信号名称与含义。</small>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <span id="simulation-error" role="alert"></span>
+        <div class="dialog-action-group">
+          <button class="button danger" id="delete-simulations" type="button">删除全部模拟记录</button>
+          <button class="button primary" type="submit">发送到事件流</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="profile-dialog" class="profile-dialog">
+    <form method="dialog" id="profile-form">
+      <div class="dialog-head">
+        <div><p class="eyebrow">SUBNET PROFILE</p><h2 id="profile-dialog-title">编辑子网档案</h2></div>
+        <button type="button" class="icon-button" id="profile-close" aria-label="关闭">×</button>
+      </div>
+      <p class="dialog-copy" id="profile-source-summary"></p>
+      <input name="netuid" type="hidden">
+      <div class="form-grid profile-form-grid">
+        <label>子网名称<input name="name" maxlength="160"></label>
+        <label>编辑人<input name="edited_by" required maxlength="80" placeholder="姓名或团队"></label>
+        <label>官网<input name="website_url" type="url" placeholder="https://…"></label>
+        <label>官方 X<input name="x_url" placeholder="https://x.com/… 或 @handle"></label>
+        <label>GitHub 仓库<input name="github_url" placeholder="owner/repo 或完整 URL"></label>
+        <label>Discord<input name="discord_url" type="url" placeholder="https://discord.gg/…"></label>
+        <label class="wide">Logo URL<input name="logo_url" type="url" placeholder="https://…"></label>
+        <label class="wide">描述<textarea name="description" maxlength="4000"></textarea></label>
+        <label class="wide">补充信息<textarea name="additional" maxlength="4000"></textarea></label>
+      </div>
+      <div class="dialog-actions">
+        <span id="profile-error" role="alert"></span>
+        <button class="button primary" type="submit">保存档案</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

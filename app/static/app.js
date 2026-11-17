@@ -968,9 +968,17 @@ function navigate(view, updateHash = true) {
   document.querySelectorAll(".nav").forEach((button) => {
     button.classList.toggle("active", button.dataset.nav === view);
   });
-  ["scan", "history", "library", "method", "release"].forEach((name) => {
+  if (window.innerWidth <= 950) {
+    document.querySelector(".nav.active")?.scrollIntoView({ block: "nearest", inline: "center" });
+  }
+  document.body.classList.toggle("event-view", view === "events");
+  ["scan", "history", "library", "events", "method", "release"].forEach((name) => {
     $(`#view-${name}`).classList.toggle("hidden", name !== view);
   });
+  const eventFrame = $("#event-monitor-frame");
+  if (view === "events" && eventFrame && !eventFrame.getAttribute("src")) {
+    eventFrame.src = eventFrame.dataset.src || "/event-monitor?embed=1";
+  }
   if (updateHash) {
     // 刷新或分享链接时仍停在同一页
     try {
@@ -6730,7 +6738,7 @@ $("#copy-machine").addEventListener("click", async () => {
   applyLicenseStatus(status);
   if (!status.licensed) return; // 未激活时只留激活页，不请求业务接口
   const initialView = String(location.hash || "").replace("#", "");
-  if (["history", "library", "method", "release"].includes(initialView)) {
+  if (["history", "library", "events", "method", "release"].includes(initialView)) {
     navigate(initialView, false);
   }
   loadOverview();

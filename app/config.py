@@ -11,6 +11,22 @@ DEFAULT_RPC_URL = "wss://entrypoint-finney.opentensor.ai:443"
 SYSTEM_PREFIX = "5EYCAe5"
 
 
+def event_database_path() -> Path:
+    """事件流使用独立 SQLite，避免高频写入与地址索引争抢写锁。
+
+    已知地址库仍通过主服务 API 共享；分开的只有事件历史和监控确认表。
+    """
+
+    value = os.getenv("WALLET_LINK_EVENT_DB")
+    if value and value not in {"sqlite://", "sqlite:///:memory:"}:
+        if value.startswith("sqlite:///"):
+            return Path(value[10:])
+        if value.startswith("sqlite://"):
+            raise ValueError("WALLET_LINK_EVENT_DB must be a plain filesystem path")
+        return Path(value)
+    return DEFAULT_DATA_DIR / "event_monitor.db"
+
+
 def database_path() -> Path:
     """Return a local SQLite path; tests can inject an isolated database."""
 

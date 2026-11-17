@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/RaoFoundation/subtensor",
+    "commit": "6bd4d0de1f898838e48b0375b3a2fe375f685ec5",
+    "path": "pallets/subtensor/src/macros/events.rs",
+    "checked_at": "2026-11-10",
+    "finney_runtime_spec_version_observed": 488
+  },
+  "rules": [
+    {
+      "id": "network_registered",
+      "category": "子网注册",
+      "module": "SubtensorModule",
+      "event_name": "NetworkAdded",
+      "netuid_index": 0,
+      "field_indices": {
+        "netuid": 0,
+        "mechanism_id": 1
+      },
+      "summary_template": "子网网络已注册",
+      "confidence": "high",
+      "enrichment": "none"
+    },
+    {
+      "id": "network_registration_queued",
+      "category": "注册排队",
+      "module": "SubtensorModule",
+      "event_name": "NetworkRegistrationQueued",
+      "netuid_index": null,
+      "field_indices": {
+        "coldkey": 0,
+        "hotkey": 1,
+        "mechanism_id": 2,
+        "identity": 3,
+        "lock_amount": 4,
+        "median_alpha_price": 5,
+        "registration_block": 6
+      },
+      "summary_template": "收到子网注册排队信息；子网编号尚未从该事件中确认",
+      "confidence": "high",
+      "enrichment": "none"
+    },
+    {
+      "id": "subnet_identity_set",
+      "category": "身份信息变更",
+      "module": "SubtensorModule",
+      "event_name": "SubnetIdentitySet",
+      "netuid_index": 0,
+      "field_indices": {
+        "netuid": 0
+      },
+      "summary_template": "子网身份信息已设置，正在核验变更内容",
+      "confidence": "high",
+      "enrichment": "identity_state_diff"
+    },
+    {
+      "id": "subnet_identity_removed",
+      "category": "身份信息变更",
+      "module": "SubtensorModule",
+      "event_name": "SubnetIdentityRemoved",
+      "netuid_index": 0,
+      "field_indices": {
+        "netuid": 0
+      },
+      "summary_template": "子网身份信息已移除，正在核验变更内容",
+      "confidence": "high",
+      "enrichment": "identity_state_diff"
+    },
+    {
+      "id": "subnet_owner_hotkey_set",
+      "category": "子网所有者变化",
+      "module": "SubtensorModule",
+      "event_name": "SubnetOwnerHotkeySet",
+      "netuid_index": 0,
+      "field_indices": {
+        "netuid": 0,
+        "owner_hotkey": 1
+      },
+      "summary_template": "子网所有者热键已设置",
+      "confidence": "high",
+      "enrichment": "none"
+    },
+    {
+      "id": "subnet_owner_changed",
+      "category": "子网所有者变化",
+      "module": "SubtensorModule",
+      "event_name": "SubnetOwnerChanged",
+      "netuid_index": 0,
+      "field_indices": {
+        "netuid": 0,
+        "old_coldkey": 1,
+        "new_coldkey": 2
+      },
+      "summary_template": "子网所有者已变更",
+      "confidence": "high",
+      "enrichment": "none"
+    },
+    {
+      "id": "coldkey_swapped",
+      "category": "冷键交换",
+      "module": "SubtensorModule",
+      "event_name": "ColdkeySwapped",
+      "netuid_index": null,
+      "field_indices": {
+        "old_coldkey": 0,
+        "new_coldkey": 1
+      },
+      "summary_template": "检测到冷键交换，正在定位关联子网",
+      "confidence": "high",
+      "enrichment": "coldkey_owner_netuids"
+    },
+    {
+      "id": "dissolve_scheduled",
+      "category": "解散排期",
+      "module": "SubtensorModule",
+      "event_name": "DissolveNetworkScheduled",
+      "netuid_index": 1,
+      "field_indices": {
+        "account": 0,
+        "netuid": 1,
+        "execution_block": 2
+      },
+      "summary_template": "子网解散已排期",
+      "confidence": "high",
+      "enrichment": "none"
+    },
+    {
+      "id": "network_removed",
+      "category": "子网移除",
+      "module": "SubtensorModule",
+      "event_name": "NetworkRemoved",
+      "netuid_index": 0,
+      "field_indices": {
+        "netuid": 0
+      },
+      "summary_template": "子网已从网络中移除",
+      "confidence": "high",
+      "enrichment": "none"
+    }
+  ],
+  "simulation_signals": [
+    {
+      "id": "network_registered",
+      "label": "子网注册",
+      "event_type": "子网注册",
+      "event_name": "SubtensorModule.NetworkAdded",
+      "description": "NetworkAdded：检测到新子网注册并确认子网编号",
+      "summary": "SN{netuid} 已注册",
+      "completed_summary": "SN{netuid} 注册事件已完成确认",
+      "supports_completion": false
+    },
+    {
+      "id": "network_registration_queued",
+      "label": "注册排队",
+      "event_type": "注册排队",
+      "event_name": "SubtensorModule.NetworkRegistrationQueued",
+      "description": "NetworkRegistrationQueued：收到注册排队信号；真实事件可能尚未提供子网编号",
+      "summary": "SN{netuid} 注册排队信号",
+      "completed_summary": "SN{netuid} 注册排队信息已完成核验",
+      "supports_completion": true
+    },
+    {
+      "id": "subnet_name_changed",
+      "label": "子网名称变更",
+      "event_type": "身份信息变更",
+      "event_name": "SubtensorModule.SubnetIdentitySet",
+      "description": "SubnetIdentitySet：比对事件前后身份状态，确认子网名称发生改名",
+      "summary": "SN{netuid} 子网名称变更，正在补全新旧名称",
+      "completed_summary": "SN{netuid} 子网名称变更：旧名 → 新名（模拟）",
+      "supports_completion": true
+    },
+    {
+      "id": "subnet_github_changed",
+      "label": "GitHub 仓库关联变化",
+      "event_type": "身份信息变更",
+      "event_name": "SubtensorModule.SubnetIdentitySet",
+      "description": "SubnetIdentitySet：比对链上身份登记，确认 GitHub 仓库关联发生变化",
+      "summary": "SN{netuid} GitHub 仓库关联变化，正在补全新旧仓库",
+      "completed_summary": "SN{netuid} GitHub 仓库关联变化：旧仓库 → 新仓库（模拟）",
+      "supports_completion": true
+    },
+    {
+      "id": "subnet_identity_set",
+      "label": "身份信息设置",
+      "event_type": "身份信息变更",
+      "event_name": "SubtensorModule.SubnetIdentitySet",
+      "description": "SubnetIdentitySet：子网身份信息被设置，系统继续核验具体变化字段",
+      "summary": "SN{netuid} 身份信息已设置，正在核验变更内容",
+      "completed_summary": "SN{netuid} 身份信息设置已完成核验（模拟）",
+      "supports_completion": true
+    },
+    {
+      "id": "subnet_identity_removed",
+      "label": "身份信息移除",
+      "event_type": "身份信息变更",
+      "event_name": "SubtensorModule.SubnetIdentityRemoved",
+      "description": "SubnetIdentityRemoved：子网已登记的身份资料被移除",
+      "summary": "SN{netuid} 身份信息已移除，正在核验变更内容",
+      "completed_summary": "SN{netuid} 身份信息移除已完成核验（模拟）",
+      "supports_completion": true
+    },
+    {
+      "id": "subnet_owner_hotkey_set",
+      "label": "子网所有者热键设置",
+      "event_type": "子网所有者变化",
+      "event_name": "SubtensorModule.SubnetOwnerHotkeySet",
+      "description": "SubnetOwnerHotkeySet：子网所有者热键被设置或更换",
+      "summary": "SN{netuid} 子网所有者热键已设置",
+      "completed_summary": "SN{netuid} 子网所有者热键设置已确认（模拟）",
+      "supports_completion": false
+    },
+    {
+      "id": "subnet_owner_changed",
+      "label": "子网所有者变化",
+      "event_type": "子网所有者变化",
+      "event_name": "SubtensorModule.SubnetOwnerChanged",
+      "description": "SubnetOwnerChanged：子网所有者账户发生变化",
+      "summary": "SN{netuid} 子网所有者已变更",
+      "completed_summary": "SN{netuid} 子网所有者变更已确认（模拟）",
+      "supports_completion": true
+    },
+    {
+      "id": "coldkey_swapped",
+      "label": "子网冷键交换",
+      "event_type": "冷键交换",
+      "event_name": "SubtensorModule.ColdkeySwapped",
+      "description": "ColdkeySwapped：冷键交换完成；系统根据新旧冷键定位关联子网",
+      "summary": "SN{netuid} 子网冷键交换，正在确认关联关系",
+      "completed_summary": "SN{netuid} 子网冷键交换：旧冷键 → 新冷键（模拟）",
+      "supports_completion": true
+    },
+    {
+      "id": "dissolve_scheduled",
+      "label": "子网解散排期",
+      "event_type": "解散排期",
+      "event_name": "SubtensorModule.DissolveNetworkScheduled",
+      "description": "DissolveNetworkScheduled：子网已进入解散排期",
+      "summary": "SN{netuid} 解散已排期",
+      "completed_summary": "SN{netuid} 解散排期已完成核验（模拟）",
+      "supports_completion": true
+    },
+    {
+      "id": "network_removed",
+      "label": "子网移除",
+      "event_type": "子网移除",
+      "event_name": "SubtensorModule.NetworkRemoved",
+      "description": "NetworkRemoved：子网已从当前网络中移除",
+      "summary": "SN{netuid} 已从网络中移除",
+      "completed_summary": "SN{netuid} 移除事件已完成确认",
+      "supports_completion": false
+    },
+    {
+      "id": "trading_enabled",
+      "label": "交易开放",
+      "event_type": "交易开放",
+      "event_name": "SubtensorModule.SubtokenEnabled",
+      "description": "SubtokenEnabled：状态从 false 变为 true，表示子网交易开关已打开",
+      "summary": "SN{netuid} 已开放交易",
+      "completed_summary": "SN{netuid} 交易开放状态已完成确认",
+      "supports_completion": false
+    },
+    {
+      "id": "github_commit",
+      "label": "GitHub 默认分支提交",
+      "event_type": "GitHub 仓库更新",
+      "event_name": "GitHub.DefaultBranchCommit",
+      "description": "GitHub：关联仓库默认分支出现新提交",
+      "summary": "SN{netuid} GitHub 默认分支有新提交（模拟）",
+      "completed_summary": "SN{netuid} GitHub 默认分支提交详情已补全（模拟）",
+      "supports_completion": true
+    },
+    {
+      "id": "github_release",
+      "label": "GitHub 正式发布",
+      "event_type": "GitHub 发布",
+      "event_name": "GitHub.ReleasePublished",
+      "description": "GitHub：关联仓库发布正式版本",
+      "summary": "SN{netuid} GitHub 正式发布（模拟）",
+      "completed_summary": "SN{netuid} GitHub 发布详情已补全（模拟）",
+      "supports_completion": true
+    },
+    {
+      "id": "address_transfer",
+      "label": "地址监控 · 普通转账",
+      "event_type": "普通转账",
+      "event_name": "Balances.Transfer",
+      "description": "Balances.Transfer：使用所选地址模拟一笔普通 TAO 转账，验证地址来源、摘要和事件流推送",
+      "summary": "地址普通 TAO 转账模拟",
+      "completed_summary": "",
+      "supports_completion": false,
+      "simulation_kind": "address",
+      "netuid_required": false
+    },
+    {
+      "id": "address_stake_added",
+      "label": "地址监控 · 子网质押",
+      "event_type": "质押",
+      "event_name": "SubtensorModule.StakeAdded",
+      "description": "StakeAdded：使用所选冷键模拟子网质押，验证冷键、热键、子网和金额摘要",
+      "summary": "地址子网质押模拟",
+      "completed_summary": "",
+      "supports_completion": false,
+      "simulation_kind": "address",
+      "netuid_required": true
+    },
+    {
+      "id": "address_stake_removed",
+      "label": "地址监控 · 子网解质押",
+      "event_type": "解质押",
+      "event_name": "SubtensorModule.StakeRemoved",
+      "description": "StakeRemoved：使用所选冷键模拟子网解质押，验证冷键、热键、子网和金额摘要",
+      "summary": "地址子网解质押模拟",
+      "completed_summary": "",
+      "supports_completion": false,
+      "simulation_kind": "address",
+      "netuid_required": true
+    }
+  ]
+}

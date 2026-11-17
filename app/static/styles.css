@@ -1285,3 +1285,43 @@ header { align-items:flex-start; }
   .rate-limit-row label, .rate-limit-row input, .rate-limit-row button { flex:1 1 100%; }
   .rate-limit-row input { width:100%; }
 }
+
+
+/* 事件监控：沿用地址挖掘工具的左侧导航，只把事件面板嵌入主内容区。 */
+body.event-view #hero-panel,
+body.event-view .api-key-panel { display:none !important; }
+.event-monitor-panel { width:100%; }
+.event-monitor-frame {
+  display:block;
+  width:100%;
+  height:calc(100vh - 148px);
+  min-height:680px;
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  background:var(--panel);
+  box-shadow:0 18px 50px rgba(28,37,50,.08);
+}
+@media (max-width: 950px) {
+  .event-monitor-frame { height:calc(100vh - 118px); min-height:620px; }
+}
+@media (max-width: 560px) {
+  .event-monitor-frame { height:78vh; min-height:540px; border-radius:12px; }
+}
+
+/* 事件监控移动端：隐藏横向导航滚动条，并压缩重复页头，给事件面板留出空间。 */
+body.event-view header { margin-bottom:12px; }
+body.event-view .header-side { display:none; }
+body.event-view .header-scope,
+body.event-view header .eyebrow { display:none; }
+body.event-view h1 { margin-top:0; font-size:clamp(24px, 5vw, 32px); }
+@media (max-width:950px) {
+  .sidebar {
+    overflow-x:auto;
+    overflow-y:hidden;
+    scrollbar-width:none;
+  }
+  .sidebar::-webkit-scrollbar { display:none; }
+}
+@media (max-width:560px) {
+  body.event-view main { padding-top:14px; }
+}

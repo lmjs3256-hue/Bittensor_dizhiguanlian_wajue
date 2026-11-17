@@ -1,5 +1,29 @@
 # 验证交付记录
 
+## 1.0.0 验证记录（2026-11-17）
+
+**合并范围**：以地址关联挖掘为主界面，左侧栏加入事件监控；共用已知地址资料和访问口令，事件历史使用独立数据库。
+
+| 检查项 | 实测结果 |
+| --- | --- |
+| Python 编译 | `python -m compileall -q app tools tests run.py` 通过 |
+| 全量测试 | **782 passed**，1 条 FastAPI TestClient 弃用警告 |
+| JavaScript 语法 | `node --check` 通过：主 `app.js`、事件 `app.js`、事件浮窗 `floating.js` |
+| 依赖完整性 | `pip check`：No broken requirements found |
+| Finney 异步适配层 | 连接官方 RPC，读取区块 `9,525,776`，`init_runtime` 与 `get_events` 成功，解码 **218** 条事件 |
+| 事件 API 代理 | `/event-api/health`、`/event-api/addresses`、`/event-api/product`、事件页面与浮窗均返回 200 |
+| 分库 | `data/wallet_link.db` 与 `data/event_monitor.db` 独立创建；事件库不建 `address_library`，主库不建 `watched_addresses` |
+| 默认空监控名单 | 已知地址库已有地址时，`GET /event-api/addresses` 仍为空 |
+| 地址库对象选择 | 一级勾选整库；同一两地址地址库中可只勾选一个地址并确认，事件页按库显示 `1 / 1` |
+| 库名搜索 | 输入“测试监控库”只显示对应地址库并展开地址 |
+| 后四位反查 | 输入 `8QNg` 显示其所属“测试监控库”，只展示命中地址并标记“地址后四位命中” |
+| 移出监控边界 | 删除事件监控确认后，共享已知地址库中两条地址仍存在 |
+| 桌面 UI | 1440px：页面无横向溢出，弹窗标题不裁切，按钮和列表不遮挡 |
+| 移动 UI | 390px：主页面 `scrollWidth=375 < 390`；弹窗固定头尾、中间滚动，确认按钮可见；横向导航滚动条隐藏 |
+| 迁移 | 旧事件库迁移保留事件，监控名单按默认策略清空；专项测试通过 |
+
+限制：本轮浏览器验收关闭了链上/GitHub 后台采集，只验证 UI、API、代理和地址库选择；独立链上适配层另用真实 Finney RPC 单次读取验证，不代表长时间采集压力测试。
+
 ## 0.8.45 验证记录（2026-11-11）
 
 **改动**：修 hotkey-swap 假关联；修公网隧道网址获取；远程访问面板加两个启动按钮。

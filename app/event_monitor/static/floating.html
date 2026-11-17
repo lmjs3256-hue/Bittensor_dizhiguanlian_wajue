@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Wallet Link 事件监控 浮窗监听</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/floating.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <strong>Wallet Link 事件监控</strong>
+      <small>浮窗监听</small>
+    </div>
+    <div class="live" id="live" data-state="waiting" aria-live="polite">
+      <span class="live-wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <span><b id="live-copy">连接中</b><small id="live-detail">等待监信心跳</small></span>
+    </div>
+    <button id="toolbar-toggle" class="toolbar-toggle" type="button" aria-expanded="true" aria-controls="floating-toolbar" title="收起工具">⌃</button>
+    <button id="refresh" type="button" aria-label="刷新">↻</button>
+  </header>
+  <section class="toolbar" id="floating-toolbar" aria-label="浮窗控制">
+    <div class="metrics"><span id="count">0 条事件</span><span id="chain">等待链上心跳</span></div>
+    <label class="font-control" for="font-size"><span>字号</span><input id="font-size" type="range" min="11" max="18" step="1" value="13"><output id="font-size-output">13 px</output></label>
+    <div class="panel-actions">
+      <button id="clear-home" type="button">清空首页显示</button>
+      <button id="restore-home" type="button">恢复首页显示</button>
+    </div>
+  </section>
+  <main id="events"></main>
+  <div class="empty" id="empty" hidden>正在等待第一条事件</div>
+  <script src="/floating.js" defer></script>
+</body>
+</html>

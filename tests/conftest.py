@@ -32,6 +32,8 @@ def _license_gate_open(monkeypatch, tmp_path):
     # 启动时自动同步官方交易所/项目方名单对外发网络请求，测试里一律关掉。
     monkeypatch.setattr(main_module, "AUTO_EXCHANGE_SYNC_ENABLED", False)
     monkeypatch.setattr(main_module, "AUTO_SUBNET_OWNER_SYNC_ENABLED", False)
+    # 事件监控会启动链上/GitHub 后台线程；除专门的集成测试外，普通用例一律关闭。
+    monkeypatch.setattr(main_module, "EVENT_MONITOR_ENABLED", False)
     from app import taostats
 
     taostats.clear_api_key()

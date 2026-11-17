@@ -12,9 +12,11 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from . import access as access_mod
@@ -25,6 +27,7 @@ from . import remote_launch
 from . import settings_store
 from . import taostats
 from .config import ROOT_DIR, database_path, settings
+from .event_monitor.runtime import EVENT_MONITOR, settings_from_env as event_monitor_settings
 from .db import Database, install_seed_books
 from .inputs import InputError
 from .jobs import RelationJobManager
@@ -46,6 +49,9 @@ from .watch import SWEEP_TICK_SECONDS, WatchService
 ROOT = Path(__file__).resolve().parent
 CONFIG = settings()
 DATABASE = Database(database_path())
+EVENT_MONITOR_ENABLED = True
+EVENT_MONITOR_STATIC = ROOT / "static" / "event-monitor"
+_EVENT_PROXY_CLIENT: Any | None = None
 VERSION_INFO = read_version_info()
 # 预置地址库只在真实启动时导入；测试里换成临时库后关掉，避免污染用例数据。
 SEED_BOOKS_ENABLED = True
@@ -118,7 +124,7 @@ async def _subnet_owner_scheduler() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global BUILTIN_STARTUP_RESULT
+    global BUILTIN_STARTUP_RESULT, _EVENT_PROXY_CLIENT
     DATABASE.initialize()
     # 外发包自带的预置地址库（app/seed_books/*.txt，文件名即标签组名）：
     # 第一次启动时装进已知地址库，装过就记在 seed_books 表里不再重复导入。
@@ -170,6 +176,22 @@ async def lifespan(_app: FastAPI):
                 f"{'（本次新生成）' if token_created else ''}",
                 file=sys.stderr,
             )
+    if EVENT_MONITOR_ENABLED:
+        try:
+            EVENT_MONITOR.start(event_monitor_settings())
+            print(
+                f"[event-monitor] 事件监控已启动：内部端口 {EVENT_MONITOR.port}，"
+                f"事件库 {EVENT_MONITOR.settings.database if EVENT_MONITOR.settings else ''}",
+                file=sys.stderr,
+            )
+        except Exception as exc:  # noqa: BLE001 - 事件模块失败不应拖垮地址工具
+            print(f"[event-monitor] 事件监控启动失败：{exc}", file=sys.stderr)
+    else:
+        EVENT_MONITOR.stop()
+    _EVENT_PROXY_CLIENT = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
+        trust_env=False,
+    )
     scheduler = asyncio.create_task(_job_scheduler())
     exchange_sync = (
         asyncio.create_task(_auto_sync_exchanges()) if AUTO_EXCHANGE_SYNC_ENABLED else None
@@ -201,6 +223,12 @@ async def lifespan(_app: FastAPI):
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 关闭时不再关心
                 pass
+        proxy_client = _EVENT_PROXY_CLIENT
+        _EVENT_PROXY_CLIENT = None
+        if proxy_client is not None:
+            await proxy_client.aclose()
+        EVENT_MONITOR.stop()
+        DATABASE.engine.dispose()
 
 
 app = FastAPI(
@@ -649,6 +677,107 @@ def home():
     return FileResponse(ROOT / "templates" / "index.html")
 
 
+@app.get("/event-monitor/floating", include_in_schema=False)
+def event_monitor_floating():
+    """事件监控浮窗页面，走主服务的鉴权与许可证中间件。"""
+
+    return FileResponse(
+        EVENT_MONITOR_STATIC / "floating.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/event-monitor", include_in_schema=False)
+@app.get("/event-monitor/{path:path}", include_in_schema=False)
+def event_monitor_page(path: str = ""):
+    """事件监控单页入口；详情页刷新也回到同一 HTML，由前端路由接管。"""
+
+    return FileResponse(
+        EVENT_MONITOR_STATIC / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+_EVENT_PROXY_HOP_HEADERS = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length",
+}
+
+
+@app.api_route(
+    "/event-api/{upstream_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+async def event_monitor_api_proxy(upstream_path: str, request: Request):
+    """把事件监控 API 代理到仅回环可访问的内部 HTTP 服务。
+
+    这样浏览器只看到主服务 origin，访问口令和离线授权中间件无需复制；
+    内部事件服务也不会直接暴露到局域网或公网。
+    """
+
+    if not EVENT_MONITOR.running or not EVENT_MONITOR.port:
+        raise HTTPException(503, "事件监控尚未就绪，请稍后刷新或查看服务日志")
+    client = _EVENT_PROXY_CLIENT
+    if client is None:
+        raise HTTPException(503, "事件监控代理尚未初始化")
+    query = f"?{request.url.query}" if request.url.query else ""
+    target = f"http://127.0.0.1:{EVENT_MONITOR.port}/api/{upstream_path}{query}"
+    body = await request.body()
+    headers = {
+        name: value for name, value in request.headers.items()
+        if name.casefold() not in _EVENT_PROXY_HOP_HEADERS
+        and name.casefold() != "accept-encoding"
+    }
+    upstream_request = client.build_request(
+        request.method,
+        target,
+        headers=headers,
+        content=body,
+    )
+    try:
+        upstream_response = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"事件监控内部服务不可用：{exc}") from exc
+    response_headers = {
+        name: value for name, value in upstream_response.headers.items()
+        if name.casefold() not in _EVENT_PROXY_HOP_HEADERS
+        and name.casefold() not in {"content-encoding"}
+    }
+    return StreamingResponse(
+        upstream_response.aiter_raw(),
+        status_code=upstream_response.status_code,
+        headers=response_headers,
+        background=BackgroundTask(upstream_response.aclose),
+    )
+
+
+@app.get("/api/event-monitor/runtime")
+def event_monitor_runtime_status():
+    """合并服务里事件采集线程和内部端口的状态，便于排障。"""
+
+    return EVENT_MONITOR.health()
+
+
+@app.get("/api/event-monitor/library")
+def event_monitor_shared_library(
+    svc: Annotated[LinkService, Depends(service)],
+):
+    """事件监控选择器读取的唯一地址库来源。
+
+    该接口只提供候选地址；事件监控是否真正开始监控，仍由用户在监控地址页
+    勾选并提交决定，``watched_addresses`` 默认不会自动导入。
+    """
+
+    items = svc.library()
+    books = [item for item in items if str(item.get("book") or "").strip()]
+    return {
+        "items": books,
+        # 未归入命名地址库的单条资料不直接作为监控对象；用户应先建立地址库。
+        "unbooked_count": len(items) - len(books),
+    }
+
+
 # -- 远程访问口令 ----------------------------------------------------------
 class AccessLoginInput(BaseModel):
     """远程设备输入访问口令。"""
@@ -828,6 +957,10 @@ def health(svc: Annotated[LinkService, Depends(service)]):
         "started_at": diagnostics.STARTED_AT.isoformat(timespec="seconds"),
         "validator_snapshot": snapshot["count"],
         "validator_snapshot_mtime": snapshot["mtime"],
+        "event_monitor": {
+            "running": EVENT_MONITOR.running,
+            "error": EVENT_MONITOR.error,
+        },
     }
 
 

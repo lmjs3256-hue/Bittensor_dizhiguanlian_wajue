@@ -1224,3 +1224,23 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u al
   「已确认交易所」。
 - 真实库校正过一次（157 归档 / 82 条变 / 1859 条刷新），备份在
   `data/wallet_link.before-0.9.1-20261111-2242.db`（215MB，确认无用后可删）。
+
+
+## 13. 2026-11-17 事件监控 1.0.0 合并交接
+
+- 主入口仍是地址关联挖掘；左侧栏新增「事件监控」，事件页面通过 iframe 嵌入主内容区并保留主侧栏。
+- 事件 HTTP 服务由 `app/event_monitor/runtime.py` 管理，只绑定 `127.0.0.1` 随机端口；主服务通过 `/event-api/*` 流式代理，访问口令与授权继续由主服务中间件负责。
+- 地址工具数据库为 `data/wallet_link.db`；事件工具数据库为 `data/event_monitor.db`。不要重新合并成一个 SQLite。
+- 事件监控对象是命名地址库：`GET /api/event-monitor/library` 只返回 `book` 非空的地址，并带 `unbooked_count`；前端一级勾选整库，展开二级勾选库内部分地址；搜索优先库名，支持地址后四位反查所属库。
+- `watched_addresses.library_book` 保存来源库；旧事件库启动时自动补列。事件页按来源库分组展示。
+- 事件采集使用 `app/event_monitor/substrate_adapter.py` 复用 `async-substrate-interface`。禁止安装 `substrate-interface` / `scalecodec`，否则与 `cyscale` 命名空间冲突，主工具无法导入。
+- 迁移旧事件库：
+
+```powershell
+.\.venv\Scripts\python.exe tools\migrate_event_monitor.py `
+  G:\Bittensor_event\data\events.db `
+  --target data\event_monitor.db
+```
+
+- 迁移默认清空旧监控名单；保留旧名单需显式 `--keep-watchlist`。目标库已存在时必须先确认，再加 `--replace`。
+- 本轮验证：全量 `782 passed`，编译、JS 语法、`pip check`、真实 Finney 区块事件读取、桌面/移动 UI 均通过。详见 `VERIFICATION.md` 与 `docs/事件监控合并说明.md`。

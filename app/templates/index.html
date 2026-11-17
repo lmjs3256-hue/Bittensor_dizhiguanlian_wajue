@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=0.9.12">
+  <link rel="stylesheet" href="/static/styles.css?v=1.0.0">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -48,6 +48,7 @@
         <button class="nav active" data-nav="scan">地址扫描</button>
         <button class="nav" data-nav="history">查询记录</button>
         <button class="nav" data-nav="library">已知地址库</button>
+        <button class="nav" data-nav="events">事件监控</button>
         <button class="nav" data-nav="method">方法说明</button>
         <button class="nav" data-nav="release">更新日志</button>
       </nav>
@@ -290,6 +291,19 @@
         <div id="library-table" class="table-wrap"></div></section>
       </div>
 
+      <div id="view-events" class="hidden">
+        <section class="event-monitor-panel" aria-label="Bittensor 事件监控">
+          <iframe
+            id="event-monitor-frame"
+            class="event-monitor-frame"
+            data-src="/event-monitor?embed=1"
+            title="Bittensor 事件监控"
+            loading="lazy"
+            referrerpolicy="same-origin"
+          ></iframe>
+        </section>
+      </div>
+
       <div id="view-history" class="hidden">
         <section class="panel history-top">
           <div><span class="label">SCAN HISTORY</span><h2>查询记录</h2><p>每次关联查询结束都会自动保存一份完整结果，中途停止的也保存当前已查到的部分。忘记导出时在这里回看结果、重新导出地址，或把关联地址和发起地址去重补进地址库。最多保留最近 500 条。</p></div>
@@ -382,6 +396,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js?v=0.9.12"></script>
+  <script src="/static/app.js?v=1.0.0"></script>
 </body>
 </html>
