@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 
-PROJECT_OWNER_BOOK = __import__("re").compile(r"^SN\s*(\d+)", __import__("re").IGNORECASE)
+PROJECT_OWNER_BOOK = re.compile(r"^SN\s*(\d+)", re.IGNORECASE)
 PROJECT_OWNER_MIN_NETUID = 1
 PROJECT_OWNER_MAX_NETUID = 127
+MANUAL_NOTE_SEPARATOR = re.compile(r"[,，;；、\n]+")
+TAG_EDGE = "【】[] "
 
 ADDRESS_EVENT_NAMES = {
     ("Balances", "Transfer"),
@@ -51,11 +54,43 @@ def project_owner_tags(watched_addresses: list[dict[str, Any]]) -> list[str]:
     return [f"SN{netuid}项目方" for netuid in netuids]
 
 
+def bracket_tag(value: Any) -> str:
+    """Return one display tag with Chinese square brackets and no duplicates."""
+
+    text = str(value or "").strip()
+    while len(text) >= 2 and text[0] in "【[" and text[-1] in "】]":
+        text = text[1:-1].strip()
+    return f"【{text}】" if text else ""
+
+
+def manual_note_tags(value: Any) -> list[str]:
+    """Split a free-form manual note into stable, display-ready tags."""
+
+    text = str(value or "").strip()
+    if not text:
+        return []
+    tags: list[str] = []
+    seen: set[str] = set()
+    for part in MANUAL_NOTE_SEPARATOR.split(text):
+        clean = part.strip().strip(TAG_EDGE)
+        if not clean:
+            continue
+        tag = bracket_tag(clean)
+        key = re.sub(r"\s+", "", clean).casefold()
+        if tag and key not in seen:
+            seen.add(key)
+            tags.append(tag)
+    return tags
+
+
 def append_project_owner_suffix(summary: str, tags: list[str]) -> str:
     if not tags:
         return summary
-    suffix = f"（{'、'.join(tags)}）"
+    suffix = "".join(bracket_tag(tag) for tag in tags)
     text = str(summary or "").rstrip()
+    legacy_suffix = f"（{'、'.join(tags)}）"
+    if text.endswith(legacy_suffix):
+        text = text[:-len(legacy_suffix)].rstrip()
     return text if text.endswith(suffix) else f"{text}{suffix}"
 
 
@@ -114,6 +149,10 @@ def address_event_record(
     summary = ""
     details: dict[str, Any] = {}
     transfer_amount_rao: int | None = None
+    summary_subnet = ""
+    summary_amount = ""
+    summary_action = ""
+    address_action = "transfer"
 
     if module == "Balances" and event_name == "Transfer":
         sender = _field(values, "from", 0)
@@ -123,10 +162,9 @@ def address_event_record(
         transfer_amount_rao = _integer(amount_value)
         accounts = [("from", str(sender)), ("to", str(recipient))]
         event_type = "普通转账"
-        summary = (
-            f"TAO 转账 · {mask_address(sender)} → {mask_address(recipient)}"
-            f" · {amount} TAO"
-        )
+        summary_subnet = "全链"
+        summary_amount = f"{amount} TAO"
+        address_action = "transfer"
         details = {
             "from": sender,
             "to": recipient,
@@ -141,34 +179,15 @@ def address_event_record(
         alpha_amount = _amount(_field(values, "alpha_amount", 3))
         netuid = _integer(_field(values, "netuid", 4))
         verb = "质押" if event_name == "StakeAdded" else "解质押"
+        summary_subnet = _subnet_label(netuid)
+        summary_amount = f"{display_tao_amount} TAO"
+        summary_action = "买入" if event_name == "StakeAdded" else "卖出"
+        address_action = "buy" if event_name == "StakeAdded" else "sell"
         event_type = (
             "零号子网质押" if netuid == 0 and event_name == "StakeAdded"
             else "零号子网解质押" if netuid == 0
             else verb
         )
-        matched_wallet = next(
-            (
-                item for item in watched_addresses
-                if _same_account(item.get("address"), coldkey)
-                or _same_account(item.get("address"), hotkey)
-            ),
-            None,
-        )
-        masked_wallet = mask_address(
-            matched_wallet.get("address") if matched_wallet else coldkey
-        )
-        wallet_label = str((matched_wallet or {}).get("label") or "").strip()
-        wallet_identity = (
-            f"{wallet_label} · {masked_wallet}"
-            if wallet_label and wallet_label not in {masked_wallet, str(coldkey)}
-            else masked_wallet
-        )
-        subnet = _subnet_label(netuid)
-        if netuid == 0:
-            summary = f"{subnet} · {wallet_identity} · {verb} {display_tao_amount} TAO"
-        else:
-            action = "买入" if event_name == "StakeAdded" else "卖出"
-            summary = f"{subnet} · {wallet_identity} · {action} {display_tao_amount} TAO"
         accounts = [("coldkey", str(coldkey)), ("hotkey", str(hotkey))]
         details = {
             "coldkey": coldkey,
@@ -186,11 +205,9 @@ def address_event_record(
         tao_amount = _amount(_field(values, "amount", 5))
         netuid = destination_netuid
         event_type = "代币转移"
-        summary = (
-            f"{_subnet_label(origin_netuid)} → {_subnet_label(destination_netuid)} 代币转移"
-            f" · {mask_address(origin)} → {mask_address(destination)}"
-            f" · {tao_amount} TAO 等值"
-        )
+        summary_subnet = f"{_subnet_label(origin_netuid)}→{_subnet_label(destination_netuid)}"
+        summary_amount = f"{tao_amount} TAO 等值"
+        address_action = "transfer"
         accounts = [
             ("origin_coldkey", str(origin)),
             ("destination_coldkey", str(destination)),
@@ -214,11 +231,9 @@ def address_event_record(
         tao_amount = _amount(_field(values, "amount", 6))
         netuid = destination_netuid
         event_type = "代币转移"
-        summary = (
-            f"{_subnet_label(origin_netuid)} → {_subnet_label(destination_netuid)} 代币及热键转移"
-            f" · {mask_address(origin)} → {mask_address(destination)}"
-            f" · {tao_amount} TAO 等值"
-        )
+        summary_subnet = f"{_subnet_label(origin_netuid)}→{_subnet_label(destination_netuid)}"
+        summary_amount = f"{tao_amount} TAO 等值"
+        address_action = "transfer"
         accounts = [
             ("origin_coldkey", str(origin)),
             ("destination_coldkey", str(destination)),
@@ -250,7 +265,53 @@ def address_event_record(
         if not matched:
             return None
     owner_tags = project_owner_tags(matched)
-    summary = append_project_owner_suffix(summary, owner_tags)
+    primary = matched[0]
+    primary_address = str(primary.get("address") or "").strip()
+    display_tags: list[str] = []
+    seen_tags: set[str] = set()
+    matched_details: list[dict[str, Any]] = []
+    for item in matched:
+        item_tags: list[str] = []
+        label = str(item.get("label") or "").strip()
+        address = str(item.get("address") or "").strip()
+        if label and label not in {address, mask_address(address)}:
+            label_tag = bracket_tag(label)
+            if label_tag:
+                item_tags.append(label_tag)
+        for owner_tag in project_owner_tags([item]):
+            item_tags.append(bracket_tag(owner_tag))
+        note_tags = manual_note_tags(item.get("manual_note"))
+        item_tags.extend(note_tags)
+        unique_item_tags: list[str] = []
+        item_seen_tags: set[str] = set()
+        for tag in item_tags:
+            compact = re.sub(r"\s+", "", tag).casefold()
+            if not compact or compact in item_seen_tags:
+                continue
+            item_seen_tags.add(compact)
+            unique_item_tags.append(tag)
+            if compact not in seen_tags:
+                seen_tags.add(compact)
+                display_tags.append(tag)
+        matched_details.append({
+            "address": item.get("address"),
+            "masked": mask_address(item.get("address")),
+            "label": label or "未命名地址",
+            "library_book": item.get("library_book") or "",
+            "manual_note": str(item.get("manual_note") or ""),
+            "manual_note_tags": note_tags,
+            "display_tags": unique_item_tags,
+        })
+
+    summary_parts = [summary_subnet]
+    if summary_action:
+        summary_parts.append(f"{summary_action} {summary_amount}")
+    else:
+        summary_parts.append(summary_amount)
+    summary_parts.append(mask_address(primary_address))
+    if display_tags:
+        summary_parts.append("".join(display_tags))
+    summary = " · ".join(part for part in summary_parts if part)
     raw_id = str(raw["raw_id"])
     event_id = hashlib.sha256(f"address:{raw_id}".encode("utf-8")).hexdigest()
     return {
@@ -270,15 +331,15 @@ def address_event_record(
         "details": {
             "address_monitor": True,
             "project_owner_tags": owner_tags,
-            "matched_addresses": [
-                {
-                    "address": item.get("address"),
-                    "masked": mask_address(item.get("address")),
-                    "label": item.get("label") or "未命名地址",
-                    "library_book": item.get("library_book") or "",
-                }
-                for item in matched
+            "address_action": address_action,
+            "summary_subnet": summary_subnet,
+            "summary_amount": summary_amount,
+            "primary_address": primary_address,
+            "manual_note_tags": [
+                tag for item in matched for tag in manual_note_tags(item.get("manual_note"))
             ],
+            "display_tags": display_tags,
+            "matched_addresses": matched_details,
             **details,
         },
         "raw_data": raw.get("raw") or {},

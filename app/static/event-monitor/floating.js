@@ -39,19 +39,44 @@ function esc(value) {
   return node.innerHTML;
 }
 
-const PROJECT_OWNER_SUFFIX = /（SN\d+项目方(?:、SN\d+项目方)*）$/;
+const LEGACY_PROJECT_OWNER_SUFFIX = /（(SN\d+\s*项目方(?:、SN\d+\s*项目方)*)）/g;
+const NOTE_SUFFIX = /((?:【[^】]+】)+)$/;
+
+function compactTag(value) {
+  return String(value || "").replace(/\s+/g, "").toLocaleLowerCase("zh-CN");
+}
 
 function summaryHtml(event) {
-  const summary = String(event.summary || "");
+  let summary = String(event.summary || "").replace(
+    LEGACY_PROJECT_OWNER_SUFFIX,
+    (_, group) => group.split("、").map((tag) => `【${compactTag(tag)}】`).join(""),
+  );
   const tags = Array.isArray(event.details?.project_owner_tags)
     ? event.details.project_owner_tags.filter(Boolean)
     : [];
-  const text = tags.length && !PROJECT_OWNER_SUFFIX.test(summary)
-    ? `${summary}（${tags.join("、")}）`
-    : summary;
-  const match = text.match(PROJECT_OWNER_SUFFIX);
-  if (!match) return esc(text);
-  return `${esc(text.slice(0, -match[0].length))}<span class="project-owner-suffix">${esc(match[0])}</span>`;
+  const compactSummary = compactTag(summary);
+  for (const tag of tags) {
+    const display = `【${compactTag(tag)}】`;
+    if (!compactSummary.includes(compactTag(display))) summary += display;
+  }
+  const match = summary.match(NOTE_SUFFIX);
+  if (!match) return esc(summary);
+  const ownerTags = new Set(tags.map(compactTag));
+  const tagHtml = [...match[1].matchAll(/【([^】]+)】/g)].map((item) => {
+    const tag = `【${item[1]}】`;
+    const className = ownerTags.has(compactTag(item[1])) ? "project-owner-suffix" : "event-note-tag";
+    return `<span class="${className}">${esc(tag)}</span>`;
+  }).join("");
+  return `${esc(summary.slice(0, -match[0].length))}${tagHtml}`;
+}
+
+function addressAction(event) {
+  if (event.source !== "address") return "";
+  const stored = String(event.details?.address_action || "");
+  if (["buy", "sell", "transfer"].includes(stored)) return stored;
+  if (String(event.event_name || "").endsWith("StakeAdded")) return "buy";
+  if (String(event.event_name || "").endsWith("StakeRemoved")) return "sell";
+  return "transfer";
 }
 
 function time(value) {
@@ -154,7 +179,8 @@ async function loadEvents() {
       const source = event.source === "address"
         ? `地址监控${simulated ? " · 模拟" : ""}`
         : event.source === "github" ? "GitHub" : event.source === "simulation" ? "模拟" : "链上";
-      return `<article class="event tone-${tone}${priorityClass}${latest ? " is-latest-event" : ""}" data-latest-until="${latest ? eventTimestamp + 30000 : ""}">
+      const direction = addressAction(event);
+      return `<article class="event tone-${tone}${priorityClass}${direction ? ` address-${direction}` : ""}${latest ? " is-latest-event" : ""}" data-latest-until="${latest ? eventTimestamp + 30000 : ""}">
         <i></i>
         <div class="event-copy"><strong>${summaryHtml(event)}</strong><small>${esc(source)} · ${esc(event.event_type)} · ${esc(event.event_name)}</small></div>
         <time>${esc(time(event.event_at))}</time>

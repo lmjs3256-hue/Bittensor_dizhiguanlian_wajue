@@ -697,33 +697,95 @@ function renderPagination() {
   el.pageLast.disabled = page >= pages;
 }
 
-const PROJECT_OWNER_SUFFIX = /（SN\d+项目方(?:、SN\d+项目方)*）$/;
+const LEGACY_PROJECT_OWNER_SUFFIX = /（(SN\d+\s*项目方(?:、SN\d+\s*项目方)*)）/g;
+const NOTE_SUFFIX = /((?:【[^】]+】)+)$/;
+
+function compactTag(value) {
+  return String(value || "").replace(/\s+/g, "").toLocaleLowerCase("zh-CN");
+}
 
 function eventSummaryText(event) {
-  const summary = String(event.summary || "");
+  let summary = String(event.summary || "").replace(
+    LEGACY_PROJECT_OWNER_SUFFIX,
+    (_, group) => group.split("、").map((tag) => `【${compactTag(tag)}】`).join(""),
+  );
   const tags = Array.isArray(event.details?.project_owner_tags)
     ? event.details.project_owner_tags.filter(Boolean)
     : [];
-  if (!tags.length || PROJECT_OWNER_SUFFIX.test(summary)) return summary;
-  return `${summary}（${tags.join("、")}）`;
+  const compactSummary = compactTag(summary);
+  const missing = tags.filter((tag) => !compactSummary.includes(compactTag(`【${tag}】`)));
+  if (missing.length) summary += missing.map((tag) => `【${compactTag(tag)}】`).join("");
+  return summary;
 }
 
 function renderEventSummary(element, event) {
   const text = eventSummaryText(event);
-  const match = text.match(PROJECT_OWNER_SUFFIX);
+  const match = text.match(NOTE_SUFFIX);
   if (!match) {
     element.textContent = text;
     return;
   }
-  element.append(
-    document.createTextNode(text.slice(0, -match[0].length)),
-    infoElement("span", "project-owner-suffix", match[0]),
+  const ownerTags = new Set(
+    (Array.isArray(event.details?.project_owner_tags) ? event.details.project_owner_tags : [])
+      .map(compactTag),
   );
+  element.append(document.createTextNode(text.slice(0, -match[0].length)));
+  for (const tagMatch of match[0].matchAll(/【([^】]+)】/g)) {
+    const tag = `【${tagMatch[1]}】`;
+    const className = ownerTags.has(compactTag(tagMatch[1]))
+      ? "project-owner-suffix"
+      : "event-note-tag";
+    element.append(infoElement("span", className, tag));
+  }
+}
+
+function eventAddressAction(event) {
+  if (event.source !== "address") return "";
+  const stored = String(event.details?.address_action || "");
+  if (["buy", "sell", "transfer"].includes(stored)) return stored;
+  if (String(event.event_name || "").endsWith("StakeAdded")) return "buy";
+  if (String(event.event_name || "").endsWith("StakeRemoved")) return "sell";
+  return "transfer";
+}
+
+function eventPrimaryAddress(event) {
+  const direct = String(event.details?.primary_address || "").trim();
+  if (direct) return direct;
+  const matched = Array.isArray(event.details?.matched_addresses)
+    ? event.details.matched_addresses
+    : [];
+  return String(matched.find((item) => item?.address)?.address || "").trim();
+}
+
+function renderAddressCopyAction(event) {
+  const wrap = infoElement("div", "event-address-actions");
+  const address = eventPrimaryAddress(event);
+  if (!address) return wrap;
+  const button = infoElement("button", "event-address-copy", "复制");
+  button.type = "button";
+  button.title = `复制完整地址：${address}`;
+  button.setAttribute("aria-label", `复制地址 ${maskAddress(address)}`);
+  button.addEventListener("click", async (clickEvent) => {
+    clickEvent.preventDefault();
+    clickEvent.stopPropagation();
+    try {
+      await copyTextToClipboard(address);
+      showToast(`已复制 ${maskAddress(address)}`);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+  button.addEventListener("keydown", (keyEvent) => keyEvent.stopPropagation());
+  wrap.addEventListener("click", (clickEvent) => clickEvent.stopPropagation());
+  wrap.append(button);
+  return wrap;
 }
 
 function renderEvent(event, index = 0) {
   const row = document.createElement("article");
   const tone = ["red", "yellow", "green"][index % 3];
+  const direction = eventAddressAction(event);
+  const directionClass = direction ? ` address-${direction}` : "";
   const eventTimestamp = new Date(
     event.updated_at || event.last_enriched_at || event.first_seen_at || event.event_at
   ).getTime();
@@ -733,7 +795,7 @@ function renderEvent(event, index = 0) {
   const latest = index === 0 && recent && state.route.kind !== "subnet";
   const priorityLevel = Number(event.priority_level || 0);
   const priorityClass = priorityLevel === 2 ? " priority-critical" : priorityLevel === 1 ? " priority-watch" : "";
-  row.className = `event-row tone-${tone}${priorityClass}${event.event_id === state.selectedId ? " selected" : ""}${latest ? " is-latest-event" : ""}`;
+  row.className = `event-row tone-${tone}${directionClass}${priorityClass}${event.event_id === state.selectedId ? " selected" : ""}${latest ? " is-latest-event" : ""}`;
   if (latest) {
     const remaining = Math.max(0, 30000 - (Date.now() - eventTimestamp));
     setTimeout(() => row.classList.remove("is-latest-event"), remaining);
@@ -771,7 +833,7 @@ function renderEvent(event, index = 0) {
   const badge = document.createElement("span");
   badge.className = `badge ${event.chain_status || event.enrichment_status}`;
   badge.textContent = statusText(event);
-  row.append(main, time, badge);
+  row.append(main, time, badge, renderAddressCopyAction(event));
   row.addEventListener("click", () => selectEvent(event.event_id, true));
   row.addEventListener("keydown", (keyboardEvent) => {
     if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
@@ -2328,6 +2390,33 @@ async function copyTextToClipboard(value) {
   }
 }
 
+function manualNoteTags(value) {
+  const seen = new Set();
+  const tags = [];
+  for (const part of String(value || "").split(/[,，;；、\n]+/)) {
+    const clean = part.trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
+    const key = compactTag(clean);
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    tags.push(`【${clean}】`);
+  }
+  return tags;
+}
+
+function addressDisplayTags(label, manualNote) {
+  const seen = new Set();
+  const tags = [];
+  const cleanLabel = String(label || "").trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
+  for (const tag of [...(cleanLabel ? [`【${cleanLabel}】`] : []), ...manualNoteTags(manualNote)]) {
+    const key = compactTag(tag);
+    if (!seen.has(key)) {
+      seen.add(key);
+      tags.push(tag);
+    }
+  }
+  return tags;
+}
+
 function renderAddressRow(item, reload) {
   const row = infoElement("article", `address-row${item.enabled ? "" : " disabled"}`);
   const identity = infoElement("div", "address-identity");
@@ -2350,22 +2439,53 @@ function renderAddressRow(item, reload) {
     infoElement("strong", "", item.label || "未命名地址"),
     codeLine,
   );
+  const labelEditor = infoElement("div", "address-label-editor");
   const label = infoElement("input", "address-label-input");
   label.value = item.label || "";
   label.maxLength = 120;
-  label.placeholder = "备注";
+  label.placeholder = "地址名称 / 原备注，例如 SN53 项目方";
+  const manualNote = infoElement("input", "address-manual-note-input");
+  manualNote.value = item.manual_note || "";
+  manualNote.maxLength = 240;
+  manualNote.placeholder = "手动备注，例如 回购、官方、出货（逗号分隔）";
+  manualNote.setAttribute("aria-label", "地址手动备注，多个备注可用逗号分隔");
+  const notePreview = infoElement("div", "address-note-preview");
+  const refreshNotePreview = () => {
+    const tags = addressDisplayTags(label.value, manualNote.value);
+    notePreview.replaceChildren(
+      ...(tags.length
+        ? tags.map((tag) => infoElement("span", "address-note-tag", tag))
+        : [infoElement("span", "address-note-empty", "暂无备注标签")]),
+    );
+  };
+  refreshNotePreview();
+  label.addEventListener("input", refreshNotePreview);
+  manualNote.addEventListener("input", refreshNotePreview);
   label.addEventListener("change", async () => {
     try {
       await request(`/event-api/addresses/${item.address_id}`, {
         method: "PUT",
         body: JSON.stringify({ label: label.value.trim() }),
       });
-      showToast("地址备注已保存");
+      showToast("地址原备注已保存");
       await reload();
     } catch (error) {
       showToast(error.message);
     }
   });
+  manualNote.addEventListener("change", async () => {
+    try {
+      await request(`/event-api/addresses/${item.address_id}`, {
+        method: "PUT",
+        body: JSON.stringify({ manual_note: manualNote.value.trim() }),
+      });
+      showToast("地址手动备注已保存；后续新事件使用新备注");
+      await reload();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+  labelEditor.append(label, manualNote, notePreview);
   const threshold = infoElement("div", "address-threshold");
   const thresholdText = infoElement("span");
   thresholdText.className = "address-threshold-copy";
@@ -2449,7 +2569,7 @@ function renderAddressRow(item, reload) {
   });
   const actions = infoElement("div", "address-actions");
   actions.append(toggleLabel, remove);
-  row.append(identity, label, threshold, actions);
+  row.append(identity, labelEditor, threshold, actions);
   return row;
 }
 

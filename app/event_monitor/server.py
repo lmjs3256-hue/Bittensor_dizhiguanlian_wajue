@@ -428,6 +428,7 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                 ))
                 label = str(body.get("label") or "").strip()[:120]
                 library_book = str(body.get("library_book") or body.get("book") or "").strip()[:80]
+                manual_note = str(body.get("manual_note") or "").strip()[:240]
                 network = str(body.get("network") or "finney")
                 if not addresses:
                     raise ValueError("请至少输入一个 SS58 地址")
@@ -443,6 +444,7 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                         watched = self.server.context.store.add_watched_address(
                             network, address, address_label, min_transfer_tao,
                             library_book=library_book,
+                            manual_note=manual_note,
                             clear_exclusion=True,
                         )
                     except ValueError:
@@ -538,12 +540,17 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                     str(body.get("library_book") or body.get("book") or "").strip()[:80]
                     if "library_book" in body or "book" in body else None
                 )
+                manual_note = (
+                    str(body.get("manual_note") or "").strip()[:240]
+                    if "manual_note" in body else None
+                )
                 watched = self.server.context.store.update_watched_address(
                     int(address_match.group(1)),
                     label=label,
                     enabled=enabled,
                     min_transfer_tao=min_transfer_tao,
                     library_book=library_book,
+                    manual_note=manual_note,
                 )
                 if watched is None:
                     self._error(404, "监控地址不存在")

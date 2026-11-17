@@ -23,6 +23,7 @@ def _decode_watched_address(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]
     item["enabled"] = bool(item["enabled"])
     item["min_transfer_tao"] = float(item.get("min_transfer_tao") or 0)
     item["library_book"] = str(item.get("library_book") or "")
+    item["manual_note"] = str(item.get("manual_note") or "")
     return item
 
 
@@ -237,6 +238,7 @@ class Store:
                     label TEXT NOT NULL,
                     min_transfer_tao REAL NOT NULL DEFAULT 0,
                     library_book TEXT NOT NULL DEFAULT '',
+                    manual_note TEXT NOT NULL DEFAULT '',
                     enabled INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -293,6 +295,14 @@ class Store:
             if "library_book" not in address_columns:
                 db.execute(
                     "ALTER TABLE watched_addresses ADD COLUMN library_book TEXT NOT NULL DEFAULT ''"
+                )
+            address_columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(watched_addresses)").fetchall()
+            }
+            if "manual_note" not in address_columns:
+                db.execute(
+                    "ALTER TABLE watched_addresses ADD COLUMN manual_note TEXT NOT NULL DEFAULT ''"
                 )
             self._backfill_event_summary_prefixes(db)
 
@@ -1187,7 +1197,7 @@ class Store:
     def add_watched_address(
         self, network: str, address: str, label: str,
         min_transfer_tao: float = 0, library_book: str = "",
-        *, clear_exclusion: bool = False,
+        manual_note: str = "", *, clear_exclusion: bool = False,
     ) -> dict[str, Any]:
         stamp = now_iso()
         try:
@@ -1205,11 +1215,12 @@ class Store:
                     )
                 cur = db.execute(
                     """INSERT INTO watched_addresses
-                       (network,address,label,min_transfer_tao,library_book,enabled,created_at,updated_at)
-                       VALUES(?,?,?,?,?,?,?,?)""",
+                       (network,address,label,min_transfer_tao,library_book,manual_note,enabled,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
                     (
                         network, address, label, max(0.0, float(min_transfer_tao)),
-                        str(library_book or "").strip()[:80], 1, stamp, stamp,
+                        str(library_book or "").strip()[:80],
+                        str(manual_note or "").strip()[:240], 1, stamp, stamp,
                     ),
                 )
                 row = db.execute(
@@ -1224,7 +1235,8 @@ class Store:
                                label: str | None = None,
                                enabled: bool | None = None,
                                min_transfer_tao: float | None = None,
-                               library_book: str | None = None) -> dict[str, Any] | None:
+                               library_book: str | None = None,
+                               manual_note: str | None = None) -> dict[str, Any] | None:
         updates = {"updated_at": now_iso()}
         if label is not None:
             updates["label"] = label
@@ -1234,6 +1246,8 @@ class Store:
             updates["min_transfer_tao"] = max(0.0, float(min_transfer_tao))
         if library_book is not None:
             updates["library_book"] = str(library_book or "").strip()[:80]
+        if manual_note is not None:
+            updates["manual_note"] = str(manual_note or "").strip()[:240]
         with self.connect() as db:
             current = db.execute(
                 "SELECT address_id FROM watched_addresses WHERE address_id=?",

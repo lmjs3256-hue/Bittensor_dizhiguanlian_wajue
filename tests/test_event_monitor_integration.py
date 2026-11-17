@@ -61,7 +61,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.2" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.3" in page.text
 
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
@@ -75,7 +75,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.2"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.3"
 
 
 def test_shared_library_does_not_auto_populate_monitor_list(merged_client):
@@ -117,6 +117,15 @@ def test_confirming_shared_address_starts_monitoring_but_delete_keeps_library(me
     assert [item["address"] for item in watched] == [ADDRESS]
     assert watched[0]["enabled"] is True
     assert watched[0]["library_book"] == "项目观察库"
+    assert watched[0]["manual_note"] == ""
+
+    updated = client.put(
+        f"/event-api/addresses/{watched[0]['address_id']}",
+        json={"manual_note": "回购、官方"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["address"]["label"] == "项目方观察"
+    assert updated.json()["address"]["manual_note"] == "回购、官方"
 
     removed = client.delete(f"/event-api/addresses/{watched[0]['address_id']}")
     assert removed.status_code == 200
@@ -226,6 +235,16 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "展开二级勾选" in app_js
     assert "library_book: item.book" in app_js
     assert "按地址库勾选事件监控" in app_js
+    assert "address-manual-note-input" in app_js
+    assert "manualNoteTags" in app_js
+    assert "event-address-copy" in app_js
+    assert "address-${direction}" in app_js
+    css = (Path(__file__).resolve().parents[1] / "app" / "static" / "event-monitor" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+    assert ".event-row.address-buy" in css
+    assert ".event-row.address-sell" in css
+    assert ".event-row.address-transfer" in css
 
 
 def test_legacy_subnet_profiles_are_inherited_once(tmp_path):

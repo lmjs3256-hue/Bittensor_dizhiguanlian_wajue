@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -51,6 +52,56 @@ class StoreTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_old_watched_address_schema_gains_manual_note_column(self) -> None:
+        path = Path(self.temp.name) / "old-schema.db"
+        db = sqlite3.connect(path)
+        try:
+            db.execute("""
+                CREATE TABLE watched_addresses (
+                    address_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    network TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    min_transfer_tao REAL NOT NULL DEFAULT 0,
+                    library_book TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(network, address)
+                )
+            """)
+            db.execute(
+                "INSERT INTO watched_addresses(network,address,label,created_at,updated_at) VALUES(?,?,?,?,?)",
+                ("finney", "5ColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ1234", "旧备注", "now", "now"),
+            )
+            db.commit()
+        finally:
+            db.close()
+        migrated = Store(path)
+        items = migrated.list_watched_addresses("finney")
+        self.assertEqual(items[0]["label"], "旧备注")
+        self.assertEqual(items[0]["manual_note"], "")
+        db = sqlite3.connect(path)
+        try:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(watched_addresses)")}
+        finally:
+            db.close()
+        self.assertIn("manual_note", columns)
+
+    def test_watched_address_manual_note_is_separate_and_editable(self) -> None:
+        item = self.store.add_watched_address(
+            "finney",
+            "5ColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ1234",
+            "SN53 项目方",
+            library_book="SN53 NIOME",
+            manual_note="回购、官方",
+        )
+        self.assertEqual(item["label"], "SN53 项目方")
+        self.assertEqual(item["manual_note"], "回购、官方")
+        updated = self.store.update_watched_address(item["address_id"], manual_note="出货")
+        self.assertEqual(updated["label"], "SN53 项目方")
+        self.assertEqual(updated["manual_note"], "出货")
 
     def test_event_is_idempotent_and_updates_same_record(self) -> None:
         event = make_event()
@@ -612,6 +663,59 @@ class ChainShapeTests(unittest.TestCase):
             self.assertEqual(published[0][1], "discovered")
             collector.close()
 
+    def test_address_event_uses_trade_fields_direction_and_manual_note_tags(self) -> None:
+        address = "5ColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ1234"
+        watched = [{
+            "address": address,
+            "label": "SN53 项目方",
+            "library_book": "SN53 NIOME",
+            "manual_note": "回购、官方",
+        }]
+
+        def make_raw(event_name: str, amount: int, netuid: int = 53) -> dict:
+            if event_name == "Transfer":
+                attributes = {
+                    "from": address,
+                    "to": "5OtherKeyABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                    "amount": amount,
+                }
+            else:
+                attributes = [address, "5HotKeyABCDEFGHIJKLMNOPQRSTUVWXYZ5678",
+                              amount, amount * 2, netuid, 0]
+            return {
+                "raw_id": f"finney:test:{event_name}:{amount}",
+                "event_index": 1,
+                "module": "Balances" if event_name == "Transfer" else "SubtensorModule",
+                "event_name": event_name,
+                "raw": {"attributes": attributes},
+            }
+
+        common = {
+            "network": "finney",
+            "watched_addresses": watched,
+            "block_hash": "0x" + "a" * 64,
+            "height": 100,
+            "spec_version": 491,
+            "event_at": "2026-11-18T00:00:00.000Z",
+        }
+        buy = address_event_record(make_raw("StakeAdded", 20_000_000_000), **common)
+        sell = address_event_record(make_raw("StakeRemoved", 5_000_000_000), **common)
+        transfer = address_event_record(make_raw("Transfer", 2_000_000_000), **common)
+
+        self.assertEqual(
+            buy["summary"],
+            "SN53 · 买入 20.00 TAO · 5Col…1234 · 【SN53 项目方】【回购】【官方】",
+        )
+        self.assertEqual(buy["details"]["address_action"], "buy")
+        self.assertEqual(buy["details"]["manual_note_tags"], ["【回购】", "【官方】"])
+        self.assertIn("卖出 5.00 TAO", sell["summary"])
+        self.assertEqual(sell["details"]["address_action"], "sell")
+        self.assertEqual(
+            transfer["summary"],
+            "全链 · 2 TAO · 5Col…1234 · 【SN53 项目方】【回购】【官方】",
+        )
+        self.assertEqual(transfer["details"]["address_action"], "transfer")
+
     def test_project_owner_transfer_gets_prominent_source_suffix(self) -> None:
         coldkey = "5ColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ1234"
         raw = {
@@ -640,7 +744,7 @@ class ChainShapeTests(unittest.TestCase):
             spec_version=491,
             event_at="2026-11-18T00:00:00.000Z",
         )
-        self.assertTrue(event["summary"].endswith("（SN46项目方）"))
+        self.assertIn("【SN46 项目方】", event["summary"])
         self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
 
     def test_project_owner_token_transfer_gets_source_suffix(self) -> None:
@@ -674,8 +778,8 @@ class ChainShapeTests(unittest.TestCase):
             spec_version=491,
             event_at="2026-11-18T00:00:00.000Z",
         )
-        self.assertTrue(event["summary"].startswith("SN46 → SN78 代币转移"))
-        self.assertTrue(event["summary"].endswith("（SN46项目方）"))
+        self.assertTrue(event["summary"].startswith("SN46→SN78 · 1 TAO 等值 · "))
+        self.assertIn("【SN46 项目方】", event["summary"])
         self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
 
     def test_non_project_owner_keeps_original_subnet_prefix_only(self) -> None:
@@ -736,7 +840,7 @@ class ChainShapeTests(unittest.TestCase):
             event_at="2026-11-18T00:00:00.000Z",
         )
         swap = next(item for item in mapped if item["event_name"].endswith("ColdkeySwapped"))
-        self.assertTrue(swap["summary"].endswith("（SN46项目方）"))
+        self.assertTrue(swap["summary"].endswith("【SN46项目方】"))
         self.assertEqual(swap["details"]["project_owner_tags"], ["SN46项目方"])
 
     def test_address_monitor_masks_addresses_and_builds_concise_events(self) -> None:
@@ -772,7 +876,7 @@ class ChainShapeTests(unittest.TestCase):
         self.assertEqual(event["event_type"], "零号子网质押")
         self.assertEqual(
             event["summary"],
-            f"SN0 · 团队钱包 · {mask_address(watched[0]['address'])} · 质押 1.25 TAO",
+            f"SN0 · 买入 1.25 TAO · {mask_address(watched[0]['address'])} · 【团队钱包】",
         )
         self.assertIn(mask_address(watched[0]["address"]), event["summary"])
         self.assertNotIn("5HotKey", event["summary"])
@@ -811,7 +915,7 @@ class ChainShapeTests(unittest.TestCase):
         self.assertIsNone(address_event_record(transfer(500_000_000), **common))
         event = address_event_record(transfer(1_000_000_000), **common)
         self.assertIsNotNone(event)
-        self.assertTrue(event["summary"].startswith("TAO 转账 · "))
+        self.assertTrue(event["summary"].startswith("全链 · 1 TAO · "))
         self.assertNotIn("SN不适用", event["summary"])
         self.assertIn("1 TAO", event["summary"])
 
@@ -1276,7 +1380,7 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(simulated_address["event_type"], "解质押")
                 self.assertEqual(
                     simulated_address["summary"],
-                    f"SN78 · Browser Test · {watched['masked']} · 卖出 1.00 TAO（SN46项目方）",
+                    f"SN78 · 卖出 1.00 TAO · {watched['masked']} · 【Browser Test】【SN46项目方】",
                 )
                 self.assertEqual(
                     simulated_address["details"]["project_owner_tags"],

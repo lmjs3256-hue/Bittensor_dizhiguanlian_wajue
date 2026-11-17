@@ -1064,9 +1064,10 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <li><strong>导出全部</strong>：导出地址库里的所有地址，不受上方「地址库筛选」影响。</li>
 <li><strong>导出选中 (N)</strong>：只导出你在列表里<strong>勾选</strong>的那几条。按钮上的 N 跟着勾选数量实时变化，没勾选时按钮是灰的（避免像以前那样点了一下其实导出的是整库）。文件名会带 <code>-selected-N</code> 便于区分。</li>
 </ul>
-<h3 id="事件监控按地址库勾选默认空名单">事件监控：按地址库勾选与默认 SN 监控（1.0.1）</h3>
+<h3 id="事件监控按地址库勾选地址备注与复制103">事件监控：按地址库勾选、地址备注与复制（1.0.3）</h3>
 <p>左侧栏的 <strong>事件监控</strong> 是合并进来的 Bittensor 链上/GitHub 事件流。它和地址扫描共用主服务、访问口令和同一份已知地址资料，但事件监控名单<strong>默认是空的</strong>，不会因为已知地址库里已有地址就自动开始监控。</p>
 <p>事件监控的对象是<strong>命名地址库</strong>，不是散落的单条地址。只想监控一个地址时，先在左侧“已知地址库”建立一个只含该地址的地址库，再回来勾选。</p>
+<p>操作步骤：</p>
 <ol>
 <li>点左侧 <strong>事件监控</strong>；</li>
 <li>点上方的 <strong>监控地址</strong>；</li>
@@ -1075,12 +1076,13 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <li>一级勾选整个地址库；只想监控库内部分地址时，点“展开二级勾选”；</li>
 <li>点 <strong>确认加入监控</strong>。</li>
 </ol>
+<p>几点说明：</p>
 <ul>
 <li>一级勾选是整库监控；二级勾选用于库内只监控个别地址。</li>
 <li>未归入命名地址库的散地址不会直接作为事件监控候选，界面会提示数量；需要监控时先为主工具建立地址库。</li>
 <li>事件监控页按来源地址库分组显示，组标题会显示“已启用 / 总数”。</li>
 <li>首次升级会把现有 <code>SN1</code>–<code>SN128</code> 命名地址库自动加入监控；之后不会重新加回你手动移出的地址。</li>
-<li>其中 <code>SN1</code>–<code>SN127</code> 被视为对应子网的项目方地址库。项目方地址发生转账、质押/解质押、代币转移或冷键交换时，事件末尾会用醒目颜色显示 <code>（SNx项目方）</code>。</li>
+<li>其中 <code>SN1</code>–<code>SN127</code> 被视为对应子网的项目方地址库。项目方地址发生转账、质押/解质押、代币转移或冷键交换时，事件末尾会用醒目颜色显示 <code>【SNx项目方】</code>。</li>
 <li>其他非项目方地址库仍按原规则，只在事件前方显示交易发生在哪个子网，不追加项目方尾注。</li>
 <li>已确认监控的地址库会跟随主地址库自动入库：例如 SN1 已监控 1 个地址，之后自动入库又加入多个 SN1 地址，这些新地址会自动补进事件监控。未确认监控的库不会自动开启。</li>
 <li>主动从事件监控移出的地址会记住排除状态，自动入库不会把它重新加回；如需恢复，在事件监控中手动重新添加即可。</li>
@@ -1088,6 +1090,10 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <li>事件监控和地址自动入库共用主链连接；事件请求优先，地址历史补扫不会把事件流长期挤住。</li>
 <li>首次启动会自动继承旧 <code>Bittensor_event</code> 的 128 个子网档案、归档、GitHub 仓库映射和交易状态。</li>
 <li>事件监控页的 <strong>移出监控</strong> 只停止监控，不会删除主工具已知地址库里的地址。</li>
+<li>地址交易行按“子网/范围 · 成交金额 · 地址 · 备注”显示：买入为绿色，卖出为红色，普通转账为白色字配深色底。</li>
+<li>每个监控地址有“原备注”和“手动备注”两个字段。原备注例如 <code>SN53 项目方</code> 不会被手动备注覆盖；手动备注可填 <code>回购</code>、<code>官方</code>、<code>出货</code>，多个用逗号分隔，显示时统一加上 <code>【】</code>。</li>
+<li>事件行末尾的 <strong>复制</strong> 按钮只复制该事件的完整主监控地址，不会复制掩码或整行文字。</li>
+<li>当前 <code>SubtensorModule</code> runtime 没有每个子网的官方回购地址字段。工具只把链上可验证的 <code>SubnetOwner</code> / <code>SubnetOwnerHotkey</code> 作为项目方身份线索；回购或出货必须由公开证据确认后手工备注，不能仅凭“项目方地址”自动推断。</li>
 <li>事件历史保存在 <code>data\event_monitor.db</code>，地址扫描保存在 <code>data\wallet_link.db</code>，分开是为了避免高频事件写入和地址索引争抢数据库写锁。</li>
 <li>旧 <code>Bittensor_event\data\events.db</code> 可在服务停止后用 <code>tools\migrate_event_monitor.py</code> 迁移；迁移会保留事件历史，但默认清空旧监控名单，要求重新按地址库勾选确认。</li>
 </ul>
