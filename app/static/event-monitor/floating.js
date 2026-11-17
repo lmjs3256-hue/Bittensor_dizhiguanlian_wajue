@@ -41,12 +41,41 @@ function esc(value) {
 
 const LEGACY_PROJECT_OWNER_SUFFIX = /（(SN\d+\s*项目方(?:、SN\d+\s*项目方)*)）/g;
 const NOTE_SUFFIX = /((?:【[^】]+】)+)$/;
+const TRAILING_NOTE_TAGS = /\s*(?:(?:【[^】]+】)|(?:（SN\d+\s*项目方(?:、SN\d+\s*项目方)*）))+\s*$/;
 
 function compactTag(value) {
   return String(value || "").replace(/\s+/g, "").toLocaleLowerCase("zh-CN");
 }
 
+function manualTags(value) {
+  return String(value || "").split(/[,，;；、\n]+/).map((part) => {
+    const clean = part.trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
+    return clean ? `【${clean}】` : "";
+  }).filter(Boolean);
+}
+
+function addressSummaryHtml(event) {
+  const matched = Array.isArray(event.details?.matched_addresses)
+    ? event.details.matched_addresses
+    : [];
+  const primary = String(event.details?.primary_address || matched[0]?.address || "");
+  const item = matched.find((entry) => String(entry?.address || "") === primary) || matched[0] || {};
+  const label = String(item.label || "").trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
+  const labelHtml = label && label !== "未命名地址"
+    ? `<span class="project-owner-suffix">${esc(`【${label}】`)}</span>`
+    : "";
+  const notes = Array.isArray(item.manual_note_tags) && item.manual_note_tags.length
+    ? item.manual_note_tags
+    : manualTags(item.manual_note);
+  const noteHtml = notes.length
+    ? notes.map((tag) => `<span class="event-note-tag">${esc(tag)}</span>`).join("")
+    : '<span class="event-note-placeholder">【手动备注】</span>';
+  const base = String(event.summary || "").replace(TRAILING_NOTE_TAGS, "").replace(/\s*·\s*$/, "").trim();
+  return `${esc(base)} · ${labelHtml}${noteHtml}`;
+}
+
 function summaryHtml(event) {
+  if (event.source === "address") return addressSummaryHtml(event);
   let summary = String(event.summary || "").replace(
     LEGACY_PROJECT_OWNER_SUFFIX,
     (_, group) => group.split("、").map((tag) => `【${compactTag(tag)}】`).join(""),

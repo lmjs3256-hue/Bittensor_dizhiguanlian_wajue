@@ -294,6 +294,7 @@ def address_event_record(
                 seen_tags.add(compact)
                 display_tags.append(tag)
         matched_details.append({
+            "address_id": item.get("address_id"),
             "address": item.get("address"),
             "masked": mask_address(item.get("address")),
             "label": label or "未命名地址",
@@ -309,8 +310,8 @@ def address_event_record(
     else:
         summary_parts.append(summary_amount)
     summary_parts.append(mask_address(primary_address))
-    if display_tags:
-        summary_parts.append("".join(display_tags))
+    # 地址标签（项目方、手动备注）只作为结构化 UI 标签展示，不再拼进持久化摘要，
+    # 避免旧前端重复追加尾注，也便于后续修改备注时实时刷新历史事件。
     summary = " · ".join(part for part in summary_parts if part)
     raw_id = str(raw["raw_id"])
     event_id = hashlib.sha256(f"address:{raw_id}".encode("utf-8")).hexdigest()

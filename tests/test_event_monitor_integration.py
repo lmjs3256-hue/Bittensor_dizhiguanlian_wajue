@@ -61,7 +61,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.3" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.4" in page.text
 
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
@@ -75,7 +75,53 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.3"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.4"
+
+
+def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
+    client, _ = merged_client
+    created = client.post(
+        "/event-api/addresses",
+        json={
+            "network": "finney",
+            "addresses": [ADDRESS],
+            "label": "SN53 项目方",
+            "library_book": "SN53 NIOME",
+            "manual_note": "回购",
+        },
+    )
+    assert created.status_code == 201
+    address_id = created.json()["address"]["address_id"]
+
+    simulated = client.post(
+        "/event-api/simulation/events",
+        json={
+            "netuid": 53,
+            "signal_id": "address_stake_removed",
+            "address_id": address_id,
+        },
+    )
+    assert simulated.status_code == 202, simulated.text
+    event_id = simulated.json()["event"]["event_id"]
+    assert "【" not in simulated.json()["event"]["summary"]
+
+    updated = client.put(
+        f"/event-api/addresses/{address_id}",
+        json={"manual_note": "官方、出货"},
+    )
+    assert updated.status_code == 200
+
+    listed = client.get("/event-api/events", params={"source": "address", "limit": 10}).json()
+    event = next(item for item in listed["events"] if item["event_id"] == event_id)
+    matched = event["details"]["matched_addresses"][0]
+    assert event["summary"] == simulated.json()["event"]["summary"]
+    assert matched["manual_note"] == "官方、出货"
+    assert matched["manual_note_tags"] == ["【官方】", "【出货】"]
+    assert "【SN53 项目方】" in matched["display_tags"]
+
+    detail = client.get(f"/event-api/events/{event_id}").json()["event"]
+    assert detail["details"]["matched_addresses"][0]["manual_note"] == "官方、出货"
+    assert detail["summary"] == simulated.json()["event"]["summary"]
 
 
 def test_shared_library_does_not_auto_populate_monitor_list(merged_client):
@@ -238,6 +284,8 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "address-manual-note-input" in app_js
     assert "manualNoteTags" in app_js
     assert "event-address-copy" in app_js
+    assert "event-note-placeholder" in app_js
+    assert "openManualNoteEditor" in app_js
     assert "address-${direction}" in app_js
     css = (Path(__file__).resolve().parents[1] / "app" / "static" / "event-monitor" / "styles.css").read_text(
         encoding="utf-8"
@@ -245,6 +293,8 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert ".event-row.address-buy" in css
     assert ".event-row.address-sell" in css
     assert ".event-row.address-transfer" in css
+    assert ".event-note-placeholder" in css
+    assert ".detail-backdrop { backdrop-filter: none; }" in css
 
 
 def test_legacy_subnet_profiles_are_inherited_once(tmp_path):

@@ -702,18 +702,16 @@ class ChainShapeTests(unittest.TestCase):
         sell = address_event_record(make_raw("StakeRemoved", 5_000_000_000), **common)
         transfer = address_event_record(make_raw("Transfer", 2_000_000_000), **common)
 
-        self.assertEqual(
-            buy["summary"],
-            "SN53 · 买入 20.00 TAO · 5Col…1234 · 【SN53 项目方】【回购】【官方】",
-        )
+        self.assertEqual(buy["summary"], "SN53 · 买入 20.00 TAO · 5Col…1234")
         self.assertEqual(buy["details"]["address_action"], "buy")
         self.assertEqual(buy["details"]["manual_note_tags"], ["【回购】", "【官方】"])
+        self.assertEqual(
+            buy["details"]["display_tags"],
+            ["【SN53 项目方】", "【回购】", "【官方】"],
+        )
         self.assertIn("卖出 5.00 TAO", sell["summary"])
         self.assertEqual(sell["details"]["address_action"], "sell")
-        self.assertEqual(
-            transfer["summary"],
-            "全链 · 2 TAO · 5Col…1234 · 【SN53 项目方】【回购】【官方】",
-        )
+        self.assertEqual(transfer["summary"], "全链 · 2 TAO · 5Col…1234")
         self.assertEqual(transfer["details"]["address_action"], "transfer")
 
     def test_project_owner_transfer_gets_prominent_source_suffix(self) -> None:
@@ -744,7 +742,8 @@ class ChainShapeTests(unittest.TestCase):
             spec_version=491,
             event_at="2026-11-18T00:00:00.000Z",
         )
-        self.assertIn("【SN46 项目方】", event["summary"])
+        self.assertEqual(event["summary"], "全链 · 1 TAO · 5Col…1234")
+        self.assertIn("【SN46 项目方】", event["details"]["display_tags"])
         self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
 
     def test_project_owner_token_transfer_gets_source_suffix(self) -> None:
@@ -778,8 +777,8 @@ class ChainShapeTests(unittest.TestCase):
             spec_version=491,
             event_at="2026-11-18T00:00:00.000Z",
         )
-        self.assertTrue(event["summary"].startswith("SN46→SN78 · 1 TAO 等值 · "))
-        self.assertIn("【SN46 项目方】", event["summary"])
+        self.assertEqual(event["summary"], "SN46→SN78 · 1 TAO 等值 · 5Col…1234")
+        self.assertIn("【SN46 项目方】", event["details"]["display_tags"])
         self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
 
     def test_non_project_owner_keeps_original_subnet_prefix_only(self) -> None:
@@ -876,7 +875,7 @@ class ChainShapeTests(unittest.TestCase):
         self.assertEqual(event["event_type"], "零号子网质押")
         self.assertEqual(
             event["summary"],
-            f"SN0 · 买入 1.25 TAO · {mask_address(watched[0]['address'])} · 【团队钱包】",
+            f"SN0 · 买入 1.25 TAO · {mask_address(watched[0]['address'])}",
         )
         self.assertIn(mask_address(watched[0]["address"]), event["summary"])
         self.assertNotIn("5HotKey", event["summary"])
@@ -1380,7 +1379,7 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(simulated_address["event_type"], "解质押")
                 self.assertEqual(
                     simulated_address["summary"],
-                    f"SN78 · 卖出 1.00 TAO · {watched['masked']} · 【Browser Test】【SN46项目方】",
+                    f"SN78 · 卖出 1.00 TAO · {watched['masked']}",
                 )
                 self.assertEqual(
                     simulated_address["details"]["project_owner_tags"],

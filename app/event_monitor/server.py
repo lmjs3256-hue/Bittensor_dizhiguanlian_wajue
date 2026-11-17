@@ -18,7 +18,13 @@ from typing import Any
 
 from ..validation import is_valid_ss58 as is_valid_ss58_address
 
-from .address_monitor import address_event_record, mask_address as _mask_address
+from .address_monitor import (
+    address_event_record,
+    bracket_tag,
+    manual_note_tags,
+    mask_address as _mask_address,
+    project_owner_tags,
+)
 from .github import parse_github_repository
 from .storage import Store, now_iso
 from .subnet_exports import build_subnet_archive, build_subnet_document, normalize_format
@@ -29,6 +35,61 @@ PROFILE_FIELDS = (
     "name", "github_url", "website_url", "x_url", "discord_url",
     "description", "logo_url", "additional",
 )
+
+
+def _unique_tags(values: list[str]) -> list[str]:
+    tags: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        tag = bracket_tag(value)
+        key = re.sub(r"\s+", "", tag).casefold()
+        if tag and key not in seen:
+            seen.add(key)
+            tags.append(tag)
+    return tags
+
+
+def _annotate_address_event(
+    event: dict[str, Any],
+    watched_by_address: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """用当前地址资料刷新事件中的标签，但保留原始摘要作为证据快照。"""
+
+    if event.get("source") != "address":
+        return event
+    details = dict(event.get("details") or {})
+    matched = []
+    all_manual_tags: list[str] = []
+    all_display_tags: list[str] = []
+    for original in details.get("matched_addresses") or []:
+        if not isinstance(original, dict):
+            continue
+        item = dict(original)
+        address = str(item.get("address") or "").strip()
+        current = watched_by_address.get(address)
+        if current:
+            item["address_id"] = current.get("address_id")
+            item["label"] = current.get("label") or item.get("label") or "未命名地址"
+            item["library_book"] = current.get("library_book") or item.get("library_book") or ""
+            item["manual_note"] = str(current.get("manual_note") or "")
+        manual_tags = manual_note_tags(item.get("manual_note"))
+        item["manual_note_tags"] = manual_tags
+        owner_tags = project_owner_tags([item])
+        label = str(item.get("label") or "").strip()
+        label_tag = "" if label in {"", "未命名地址"} else bracket_tag(label)
+        item["display_tags"] = _unique_tags([
+            label_tag,
+            *[bracket_tag(tag) for tag in owner_tags],
+            *manual_tags,
+        ])
+        matched.append(item)
+        all_manual_tags.extend(manual_tags)
+        all_display_tags.extend(item["display_tags"])
+    details["matched_addresses"] = matched
+    details["manual_note_tags"] = _unique_tags(all_manual_tags)
+    details["display_tags"] = _unique_tags(all_display_tags)
+    event["details"] = details
+    return event
 
 
 class EventHub:
@@ -277,17 +338,25 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                 )}
                 limit = _integer(_first(query, "limit"), 100)
                 offset = _integer(_first(query, "offset"), 0)
+                events = self.server.context.store.list_events(
+                    filters,
+                    ascending=_first(query, "order") == "asc",
+                    limit=limit,
+                    offset=offset,
+                )
+                network = filters.get("network") or "finney"
+                watched = self.server.context.store.list_watched_addresses(network)
+                watched_by_address = {
+                    str(item.get("address") or ""): item for item in watched
+                }
+                events = [
+                    _annotate_address_event(event, watched_by_address)
+                    for event in events
+                ]
                 self._json({
-                    "events": self.server.context.store.list_events(
-                        filters,
-                        ascending=_first(query, "order") == "asc",
-                        limit=limit,
-                        offset=offset,
-                    ),
+                    "events": events,
                     "total": self.server.context.store.count_events(filters),
-                    "event_types": self.server.context.store.list_event_types(
-                        filters.get("network") or "finney"
-                    ),
+                    "event_types": self.server.context.store.list_event_types(network),
                 })
                 return
             if path == "/api/subnet-event-records":
@@ -350,6 +419,13 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                 if not event:
                     self._error(404, "事件不存在")
                     return
+                watched = self.server.context.store.list_watched_addresses(
+                    str(event.get("network") or "finney")
+                )
+                event = _annotate_address_event(
+                    event,
+                    {str(item.get("address") or ""): item for item in watched},
+                )
                 self._json({
                     "event": event,
                     "history": self.server.context.store.event_history(event["event_id"]),

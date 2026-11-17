@@ -1257,3 +1257,77 @@ body {
   background: color-mix(in srgb, var(--blue) 9%, transparent);
   font-size: .9em;
 }
+
+
+/* 地址标签与手动备注占位符。 */
+.event-copy strong > .event-note-tag,
+.event-copy strong > .event-note-placeholder,
+.detail-summary > .event-note-tag,
+.detail-summary > .event-note-placeholder {
+  font: inherit;
+  line-height: 1.35;
+  cursor: pointer;
+}
+.event-copy strong > .event-note-tag,
+.detail-summary > .event-note-tag {
+  margin-left: .3em;
+}
+.event-note-tag-editable:hover {
+  border-color: color-mix(in srgb, var(--blue) 52%, transparent) !important;
+  background: color-mix(in srgb, var(--blue) 15%, transparent) !important;
+}
+.event-note-placeholder {
+  display: inline-block;
+  margin-left: .3em;
+  padding: .08em .38em;
+  border: 1px dashed color-mix(in srgb, var(--blue) 42%, var(--line));
+  border-radius: .36em;
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 5%, transparent);
+  font-size: .88em;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.event-note-placeholder:hover {
+  border-style: solid;
+  background: color-mix(in srgb, var(--blue) 13%, transparent);
+}
+.detail-summary > .event-note-placeholder { font-size: .78em; vertical-align: .08em; }
+
+/* 详情抽屉必须保持清晰；遮罩不再使用会污染 iframe 合成结果的 backdrop-filter。 */
+.detail-panel {
+  background: var(--bg);
+  backdrop-filter: none;
+}
+.detail-backdrop { backdrop-filter: none; }
+
+/* 事件流内直接编辑地址手动备注。 */
+.manual-note-dialog { width: min(520px, calc(100% - 28px)); }
+.manual-note-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 14px 0 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.manual-note-meta code { color: var(--mint); font: 10px var(--mono); }
+.manual-note-input {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 11px 12px;
+  outline: 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.manual-note-input:focus {
+  border-color: color-mix(in srgb, var(--mint) 42%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mint) 9%, transparent);
+}
+.manual-note-dialog .dialog-error { min-height: 18px; }

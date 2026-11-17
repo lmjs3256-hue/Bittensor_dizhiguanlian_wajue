@@ -699,12 +699,64 @@ function renderPagination() {
 
 const LEGACY_PROJECT_OWNER_SUFFIX = /（(SN\d+\s*项目方(?:、SN\d+\s*项目方)*)）/g;
 const NOTE_SUFFIX = /((?:【[^】]+】)+)$/;
+const TRAILING_NOTE_TAGS = /\s*(?:(?:【[^】]+】)|(?:（SN\d+\s*项目方(?:、SN\d+\s*项目方)*）))+\s*$/;
 
 function compactTag(value) {
   return String(value || "").replace(/\s+/g, "").toLocaleLowerCase("zh-CN");
 }
 
+function stripAddressEventTags(summary) {
+  return String(summary || "").replace(TRAILING_NOTE_TAGS, "").replace(/\s*·\s*$/, "").trim();
+}
+
+function eventPrimaryAddress(event) {
+  const direct = String(event.details?.primary_address || "").trim();
+  if (direct) return direct;
+  const matched = Array.isArray(event.details?.matched_addresses)
+    ? event.details.matched_addresses
+    : [];
+  return String(matched.find((item) => item?.address)?.address || "").trim();
+}
+
+function addressEventNoteDetails(event) {
+  const matched = Array.isArray(event.details?.matched_addresses)
+    ? event.details.matched_addresses
+    : [];
+  const primaryAddress = eventPrimaryAddress(event);
+  const item = matched.find((entry) => String(entry?.address || "") === primaryAddress) || matched[0] || {};
+  const label = String(item.label || "").trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
+  const labelTag = label && label !== "未命名地址" ? `【${label}】` : "";
+  const manualTags = Array.isArray(item.manual_note_tags)
+    ? item.manual_note_tags.filter(Boolean).map((tag) => {
+      const clean = String(tag).trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
+      return clean ? `【${clean}】` : "";
+    }).filter(Boolean)
+    : manualNoteTags(item.manual_note);
+  const seen = new Set();
+  const tags = [];
+  for (const tag of [labelTag, ...manualTags]) {
+    const key = compactTag(tag);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      tags.push(tag);
+    }
+  }
+  return {
+    base: stripAddressEventTags(event.summary),
+    labelTag,
+    manualTags,
+    tags,
+    address: primaryAddress,
+    addressId: Number(item.address_id || 0) || null,
+  };
+}
+
 function eventSummaryText(event) {
+  if (event.source === "address") {
+    const note = addressEventNoteDetails(event);
+    const tags = note.tags.length ? note.tags : ["【手动备注】"];
+    return [note.base, " · ", tags.join("")].filter(Boolean).join("");
+  }
   let summary = String(event.summary || "").replace(
     LEGACY_PROJECT_OWNER_SUFFIX,
     (_, group) => group.split("、").map((tag) => `【${compactTag(tag)}】`).join(""),
@@ -718,7 +770,46 @@ function eventSummaryText(event) {
   return summary;
 }
 
+function appendEditableManualTag(element, event, tag) {
+  const button = infoElement("button", "event-note-tag event-note-tag-editable", tag);
+  button.type = "button";
+  button.title = "点击编辑该地址的手动备注";
+  button.setAttribute("aria-label", `编辑手动备注 ${tag}`);
+  button.addEventListener("click", (clickEvent) => {
+    clickEvent.preventDefault();
+    clickEvent.stopPropagation();
+    openManualNoteEditor(event);
+  });
+  button.addEventListener("keydown", (keyEvent) => keyEvent.stopPropagation());
+  element.append(button);
+}
+
 function renderEventSummary(element, event) {
+  if (event.source === "address") {
+    const note = addressEventNoteDetails(event);
+    element.append(document.createTextNode(note.base));
+    element.append(document.createTextNode(" · "));
+    if (note.labelTag) {
+      element.append(infoElement("span", "project-owner-suffix", note.labelTag));
+    }
+    if (note.manualTags.length) {
+      for (const tag of note.manualTags) appendEditableManualTag(element, event, tag);
+    } else {
+      const placeholder = infoElement("button", "event-note-placeholder", "【手动备注】");
+      placeholder.type = "button";
+      placeholder.title = "点击添加手动备注，例如 回购、官方、出货";
+      placeholder.setAttribute("aria-label", "为该地址添加手动备注");
+      placeholder.addEventListener("click", (clickEvent) => {
+        clickEvent.preventDefault();
+        clickEvent.stopPropagation();
+        openManualNoteEditor(event);
+      });
+      placeholder.addEventListener("keydown", (keyEvent) => keyEvent.stopPropagation());
+      element.append(placeholder);
+    }
+    return;
+  }
+
   const text = eventSummaryText(event);
   const match = text.match(NOTE_SUFFIX);
   if (!match) {
@@ -748,14 +839,6 @@ function eventAddressAction(event) {
   return "transfer";
 }
 
-function eventPrimaryAddress(event) {
-  const direct = String(event.details?.primary_address || "").trim();
-  if (direct) return direct;
-  const matched = Array.isArray(event.details?.matched_addresses)
-    ? event.details.matched_addresses
-    : [];
-  return String(matched.find((item) => item?.address)?.address || "").trim();
-}
 
 function renderAddressCopyAction(event) {
   const wrap = infoElement("div", "event-address-actions");
@@ -2388,6 +2471,104 @@ async function copyTextToClipboard(value) {
     helper.remove();
     if (!copied) throw new Error("浏览器未允许复制");
   }
+}
+
+async function openManualNoteEditor(event) {
+  const address = eventPrimaryAddress(event);
+  if (!address) {
+    showToast("该事件没有可编辑的主监控地址");
+    return;
+  }
+
+  let watched = state.watchedAddresses.find((item) => String(item.address) === address);
+  if (!watched) {
+    try {
+      const data = await request("/event-api/addresses");
+      state.watchedAddresses = data.addresses || [];
+      watched = state.watchedAddresses.find((item) => String(item.address) === address);
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }
+  }
+  if (!watched?.address_id) {
+    showToast("该地址已不在事件监控中，无法编辑手动备注");
+    return;
+  }
+
+  const dialog = infoElement("dialog", "manual-note-dialog");
+  const head = infoElement("div", "dialog-head");
+  const title = infoElement("div");
+  title.append(
+    infoElement("p", "eyebrow", "ADDRESS NOTE"),
+    infoElement("h2", "", "编辑手动备注"),
+  );
+  const close = infoElement("button", "icon-button", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", "关闭");
+  head.append(title, close);
+
+  const copy = infoElement(
+    "p",
+    "dialog-copy",
+    "原备注会保留；这里填写回购、官方、出货等补充标签。多个备注用逗号、顿号或分号分隔。",
+  );
+  const meta = infoElement("div", "manual-note-meta");
+  meta.append(
+    infoElement("span", "", `原备注：【${String(watched.label || "未命名地址").replace(/^[【\[]+|[】\]]+$/g, "")}】`),
+    infoElement("code", "", maskAddress(address)),
+  );
+  const input = infoElement("textarea", "manual-note-input");
+  input.rows = 3;
+  input.maxLength = 240;
+  input.value = watched.manual_note || "";
+  input.placeholder = "例如：回购、官方、出货";
+  const error = infoElement("p", "dialog-error");
+  error.setAttribute("role", "alert");
+  const actions = infoElement("div", "dialog-actions");
+  const cancel = infoElement("button", "button ghost", "取消");
+  cancel.type = "button";
+  const save = infoElement("button", "button primary", "保存备注");
+  save.type = "button";
+  actions.append(error, cancel, save);
+  dialog.append(head, copy, meta, input, actions);
+  document.body.append(dialog);
+
+  const closeDialog = () => dialog.close();
+  close.addEventListener("click", closeDialog);
+  cancel.addEventListener("click", closeDialog);
+  dialog.addEventListener("close", () => dialog.remove());
+  save.addEventListener("click", async () => {
+    const value = input.value.trim();
+    save.disabled = true;
+    save.textContent = "保存中";
+    error.textContent = "";
+    try {
+      await request(`/event-api/addresses/${watched.address_id}`, {
+        method: "PUT",
+        body: JSON.stringify({ manual_note: value }),
+      });
+      watched.manual_note = value;
+      dialog.close();
+      const selectedId = state.selectedId;
+      await loadEvents(state.currentPage);
+      if (selectedId) await selectEvent(selectedId);
+      showToast(value ? "手动备注已保存" : "手动备注已清空");
+    } catch (cause) {
+      error.textContent = cause.message;
+      save.disabled = false;
+      save.textContent = "保存备注";
+    }
+  });
+  input.addEventListener("keydown", (keyEvent) => {
+    if ((keyEvent.ctrlKey || keyEvent.metaKey) && keyEvent.key === "Enter") {
+      keyEvent.preventDefault();
+      save.click();
+    }
+  });
+  dialog.showModal();
+  input.focus();
+  input.select();
 }
 
 function manualNoteTags(value) {
