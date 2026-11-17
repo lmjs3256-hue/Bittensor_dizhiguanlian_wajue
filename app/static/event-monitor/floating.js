@@ -27,6 +27,8 @@ let statusErrorAt = null;
 let worker = null;
 let details = {};
 let channel = null;
+let currentEvents = [];
+let watchedAddresses = [];
 try {
   if ("BroadcastChannel" in window) channel = new BroadcastChannel("subnet-pulse-ui");
 } catch {
@@ -67,11 +69,139 @@ function addressSummaryHtml(event) {
   const notes = Array.isArray(item.manual_note_tags) && item.manual_note_tags.length
     ? item.manual_note_tags
     : manualTags(item.manual_note);
+  const eventId = esc(event.event_id);
   const noteHtml = notes.length
-    ? notes.map((tag) => `<span class="event-note-tag">${esc(tag)}</span>`).join("")
-    : '<span class="event-note-placeholder">【手动备注】</span>';
+    ? notes.map((tag) => `<button type="button" class="event-note-tag event-note-tag-editable" data-note-event-id="${eventId}" title="点击编辑手动备注">${esc(tag)}</button>`).join("")
+    : `<button type="button" class="event-note-placeholder" data-note-event-id="${eventId}" title="点击添加手动备注">【手动备注】</button>`;
   const base = String(event.summary || "").replace(TRAILING_NOTE_TAGS, "").replace(/\s*·\s*$/, "").trim();
   return `${esc(base)} · ${labelHtml}${noteHtml}`;
+}
+
+function showToast(message) {
+  document.querySelector(".floating-toast")?.remove();
+  const toast = document.createElement("div");
+  toast.className = "floating-toast";
+  toast.textContent = message;
+  document.body.append(toast);
+  setTimeout(() => toast.remove(), 2600);
+}
+
+async function findWatchedAddress(address) {
+  let item = watchedAddresses.find((entry) => String(entry.address) === address);
+  if (item) return item;
+  const response = await fetch("/event-api/addresses", { cache: "no-store" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `地址接口返回 ${response.status}`);
+  watchedAddresses = data.addresses || [];
+  return watchedAddresses.find((entry) => String(entry.address) === address) || null;
+}
+
+async function openNoteEditor(event) {
+  const matched = Array.isArray(event.details?.matched_addresses)
+    ? event.details.matched_addresses
+    : [];
+  const primary = String(event.details?.primary_address || matched[0]?.address || "").trim();
+  if (!primary) {
+    showToast("该事件没有可编辑的主监控地址");
+    return;
+  }
+
+  let watched;
+  try {
+    watched = await findWatchedAddress(primary);
+  } catch (error) {
+    showToast(error.message);
+    return;
+  }
+  if (!watched?.address_id) {
+    showToast("该地址已不在事件监控中，无法编辑手动备注");
+    return;
+  }
+
+  const dialog = document.createElement("dialog");
+  dialog.className = "note-dialog";
+  const head = document.createElement("div");
+  head.className = "note-dialog-head";
+  const titleWrap = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = "编辑手动备注";
+  const subtitle = document.createElement("small");
+  subtitle.textContent = "原备注保留；多个备注可用逗号分隔";
+  titleWrap.append(title, subtitle);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "note-dialog-close";
+  close.textContent = "×";
+  close.setAttribute("aria-label", "关闭");
+  head.append(titleWrap, close);
+
+  const meta = document.createElement("div");
+  meta.className = "note-dialog-meta";
+  const original = document.createElement("span");
+  original.textContent = `原备注：【${String(watched.label || "未命名地址").replace(/^[【\[]+|[】\]]+$/g, "")}】`;
+  const address = document.createElement("code");
+  address.textContent = primary;
+  meta.append(original, address);
+
+  const input = document.createElement("textarea");
+  input.className = "note-dialog-input";
+  input.rows = 3;
+  input.maxLength = 240;
+  input.value = watched.manual_note || "";
+  input.placeholder = "例如：回购、官方、出货";
+
+  const error = document.createElement("p");
+  error.className = "note-dialog-error";
+  error.setAttribute("role", "alert");
+  const actions = document.createElement("div");
+  actions.className = "note-dialog-actions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "取消";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "primary";
+  save.textContent = "保存备注";
+  actions.append(error, cancel, save);
+  dialog.append(head, meta, input, actions);
+  document.body.append(dialog);
+
+  const closeDialog = () => dialog.close();
+  close.addEventListener("click", closeDialog);
+  cancel.addEventListener("click", closeDialog);
+  dialog.addEventListener("close", () => dialog.remove());
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    save.textContent = "保存中";
+    error.textContent = "";
+    try {
+      const value = input.value.trim();
+      const response = await fetch(`/event-api/addresses/${watched.address_id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manual_note: value }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `保存失败 (${response.status})`);
+      watched.manual_note = value;
+      dialog.close();
+      await loadEvents();
+      showToast(value ? "手动备注已保存" : "手动备注已清空");
+    } catch (cause) {
+      error.textContent = cause.message;
+      save.disabled = false;
+      save.textContent = "保存备注";
+    }
+  });
+  input.addEventListener("keydown", (keyEvent) => {
+    if ((keyEvent.ctrlKey || keyEvent.metaKey) && keyEvent.key === "Enter") {
+      keyEvent.preventDefault();
+      save.click();
+    }
+  });
+  dialog.showModal();
+  input.focus();
+  input.select();
 }
 
 function summaryHtml(event) {
@@ -197,8 +327,9 @@ async function loadEvents() {
     if (!response.ok) throw new Error(`事件接口返回 ${response.status}`);
     const data = await response.json();
     if (panelCleared) return;
+    currentEvents = data.events || [];
     count.textContent = `${Number(data.total || 0).toLocaleString("zh-CN")} 条事件`;
-    list.innerHTML = (data.events || []).map((event, index) => {
+    list.innerHTML = currentEvents.map((event, index) => {
       const tone = ["red", "yellow", "green"][index % 3];
       const eventTimestamp = new Date(event.updated_at || event.last_enriched_at || event.first_seen_at || event.event_at).getTime();
       const latest = index === 0 && Number.isFinite(eventTimestamp) && Date.now() - eventTimestamp >= 0 && Date.now() - eventTimestamp <= 30000;
@@ -319,6 +450,13 @@ function applyCompact(value, options = {}) {
     try { localStorage.setItem(UI_KEYS.floatingCompact, compact ? "true" : "false"); } catch {}
   }
 }
+
+list.addEventListener("click", (clickEvent) => {
+  const button = clickEvent.target.closest?.("[data-note-event-id]");
+  if (!button) return;
+  const event = currentEvents.find((item) => item.event_id === button.dataset.noteEventId);
+  if (event) openNoteEditor(event);
+});
 
 toolbarToggle.addEventListener("click", () => {
   applyCompact(!document.body.classList.contains("floating-compact"));
