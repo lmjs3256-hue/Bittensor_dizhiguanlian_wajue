@@ -1,11 +1,21 @@
 {
   "product": {
     "name": "Wallet Link · 事件监控",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "released_at": "2026-11-18",
     "status": "合并稳定版"
   },
   "releases": [
+    {
+      "version": "1.0.6",
+      "date": "2026-11-18",
+      "title": "起始地址画像接口修复",
+      "changes": [
+        "修复 Taostats 旧账户接口下线导致注册日期、余额长期为未获取的问题。",
+        "切换到当前 /v1/accounts/{address} 账户详情接口。",
+        "注册日期恢复后，日均频次重新正常计算。"
+      ]
+    },
     {
       "version": "1.0.5",
       "date": "2026-11-18",

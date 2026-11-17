@@ -19,7 +19,7 @@ API_URL = "https://api.taostats.io/v1/transfers"
 VALIDATORS_ACTIVE_URL = "https://api.taostats.io/v1/validators/active"
 EXCHANGE_ADDRESSES_URL = "https://api.taostats.io/v1/exchange-addresses"
 STAKE_EVENTS_URL = "https://api.taostats.io/v1/subnets/stake-events"
-ACCOUNT_LATEST_URL = "https://api.taostats.io/api/account/latest/v1"
+ACCOUNT_DETAIL_URL = "https://api.taostats.io/v1/accounts"
 # 每把 key 每分钟允许的本地请求数。
 #
 # **不是固定 5，也不做"自动识别套餐"**——Taostats 没提供任何接口能让本地查询
@@ -110,7 +110,7 @@ class TransferPage:
 class AccountProfile:
     """起始地址的账户画像：注册日期 + 余额构成。
 
-    Taostats 的 ``/api/account/latest/v1`` 一次返回这些字段，比逐个查区块
+    Taostats 的 ``/v1/accounts/{address}`` 一次返回这些字段，比逐个查区块
     便宜得多；拿不到时各字段留 None，界面显示「未获取」，绝不猜。
     """
 
@@ -1046,7 +1046,7 @@ def get_stake_transfer_page(address: str, page: int = 1) -> TransferPage:
 def get_account_profile(address: str) -> AccountProfile:
     """取账户画像（注册日期 + 余额构成）。
 
-    只读一次 ``/api/account/latest/v1``，走本地缓存；未配置 key、限流、
+    只读一次 ``/v1/accounts/{address}``，走本地缓存；未配置 key、限流、
     网络失败都按「拿不到」处理（抛 TaostatsError 子类），由调用方降级为
     「未获取」，不影响主查询。
     """
@@ -1064,9 +1064,8 @@ def get_account_profile(address: str) -> AccountProfile:
         raise TaostatsAuthError("未配置 Taostats API key。")
     try:
         response = _request_get(
-            ACCOUNT_LATEST_URL,
+            f"{ACCOUNT_DETAIL_URL}/{address}",
             api_key=api_key,
-            params={"network": "finney", "address": address},
         )
     except httpx.HTTPError as exc:
         raise TaostatsUnavailableError(

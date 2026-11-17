@@ -141,7 +141,7 @@
 **需求：质押解质押是不是只能本地索引？API 查要调几次？扫描开始优先查起始地址信息，查到先显示左栏，关联继续扫描，结束再汇总**
 
 - **问题一：质押/解质押只能本地索引吗？** 不是。本地索引只有 `stake_transfer`（子网 stake 转移）边，**没有** `stake` / `unstake` 操作事件，数不出质押次数；真实次数必须走 Taostats `GET /v1/subnets/stake-events?coldkey=<地址>&action=all` 的 `pagination.total_items`。0.8.0 的实现只在 `data_source="taostats"` 时走 API，选本地索引会退回转账笔数——**这是个口径错误**，已改成不分数据源、只要配了 key 就走 API。
-- **问题二：API 要调几次？** 画像固定 **2 次**：`/api/account/latest/v1`（注册日期 + 余额构成）1 次，`/v1/subnets/stake-events`（质押总量，`limit=1` 只读分页）1 次。都要 5 分钟缓存，命中则为 0 次。关联扫描本身另算（单轮 5 次、分轮每轮 5 次）。
+- **问题二：API 要调几次？** 画像固定 **2 次**：`/v1/accounts/{address}`（注册日期 + 余额构成）1 次，`/v1/subnets/stake-events`（质押总量，`limit=1` 只读分页）1 次。都要 5 分钟缓存，命中则为 0 次。关联扫描本身另算（单轮 5 次、分轮每轮 5 次）。
 - 新增接口 `POST /api/seed-profile`（`{seed, data_source}` → `{seed, seed_profile, api_requests, warnings}`），只查画像不跑关联；新增 `RelationInput.prefetched_requests` / `RelationJobInput.prefetched_requests`（0–10）。
 - 预算扣减：`RelationContext.prefetched_requests` → `relations()` 的爬取预算改为 `5 - validator_requests - prefetched_requests`；分轮作业只在 `rounds_done == 0` 时扣（后续轮次已隔 62 秒）。
 - **实测（真实 key，本机 5 次/分钟限速，地址 `5CQBKc8nXsmgDyR4L8daUY1Xq2evTNhLaNNJoAsp68hWjMQ4`）**：

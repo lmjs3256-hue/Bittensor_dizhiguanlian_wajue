@@ -1,5 +1,25 @@
 # 变更记录
 
+## 1.0.6 · 起始地址画像接口修复 · 2026-11-18
+
+### 根因
+
+- 旧代码使用 Taostats `/api/account/latest/v1`。实测该接口当前返回 `HTTP 410` 和 `This endpoint has been retired`。
+- 注册日期和余额都由这个接口提供，接口下线后二者同时为空；日均频次又依赖注册日期，因此也一直无法计算。
+
+### 修复
+
+- 切换到 Taostats 当前 `/v1/accounts/{address}` 账户详情接口。
+- 继续解析 `created_on_date`、`created_on_network`、`balance_free`、`balance_staked`、`balance_reserved`、`balance_total` 和 `rank`。
+- 画像请求用量统计端点同步改为 `/v1/accounts`。
+- 真实公开地址端到端验证：注册日期、质押次数、日均频次、总余额、可用余额、质押余额均返回，且无警告。
+
+### 测试
+
+- 新增账户详情新接口、响应字段解析和缓存回归测试。
+- 更新旧接口用量统计断言。
+- 全量 **797 passed**；Python 编译、JavaScript 语法、JSON 与 `pip check` 通过。
+
 ## 1.0.5 · 浮窗手动备注 · 2026-11-18
 
 ### 浮窗监听

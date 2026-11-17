@@ -4311,7 +4311,7 @@ class LinkService:
     ) -> dict[str, Any]:
         """汇总起始地址的四个画像指标，全部来自真实数据源。
 
-        - **注册日期**：Taostats ``/api/account/latest/v1`` 的 ``created_on_date``。
+        - **注册日期**：Taostats ``/v1/accounts/{address}`` 的 ``created_on_date``。
         - **余额**：同一接口的 ``balance_total``（自由 + 质押 + 预留），
           比只读 RPC 的可用余额更完整；RPC 余额仍作为兜底。
         - **质押操作次数**：``/v1/subnets/stake-events`` 的 ``action=all`` 的
@@ -4322,7 +4322,7 @@ class LinkService:
         每个字段都可能为 None（未配置 key / 限流 / 网络失败），界面显示
         「未获取」；任何异常都不会打断主查询。
 
-        请求成本固定 **2 次**（``account/latest`` 1 次 + ``stake-events`` 1 次，
+        请求成本固定 **2 次**（``/v1/accounts/{address}`` 1 次 + ``stake-events`` 1 次，
         都只读分页总量、不翻页），走 5 分钟缓存；命中缓存不计入
         ``api_requests``，也不重复写用量统计。
         """
@@ -4355,7 +4355,7 @@ class LinkService:
             else:
                 if account is not None and not account.from_cache:
                     profile["api_requests"] += 1
-                    self._record_api_use("/api/account/latest/v1", success=True)
+                    self._record_api_use("/v1/accounts", success=True)
         if account is not None:
             profile.update(
                 registered_on=account.created_on_date,

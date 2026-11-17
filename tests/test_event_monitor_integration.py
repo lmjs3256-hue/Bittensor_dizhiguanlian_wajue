@@ -61,7 +61,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.5" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.6" in page.text
 
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
@@ -75,7 +75,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.5"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.6"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):

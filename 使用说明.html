@@ -482,6 +482,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <p>想看的数据没出来（显示「未获取」），通常是这三种情况：</p>
 <ul>
 <li><strong>没配 Taostats API key</strong>：注册日期、交易次数、总余额都来自 Taostats。副行会写「需要 Taostats API key」。</li>
+<li><strong>账户资料接口已更新</strong>：Taostats 旧 <code>/api/account/latest/v1</code> 已下线并返回 410；1.0.6 起改用 <code>/v1/accounts/{address}</code>，注册日期、日均频次和余额会恢复显示。</li>
 <li><strong>额度用完了</strong>：Taostats 有 5 次/分钟的本地保护限速。等一分钟重查一次即可，结果会缓存在内存里 5 分钟。画像本身固定占 <strong>2 次</strong>请求（注册日期+余额 1 次、质押总量 1 次），这 2 次会从当轮 5 次额度里扣掉，所以一次完整扫描最多是「2 次画像 + 3 次关联」；画像命中 5 分钟缓存时不占额度。</li>
 <li><strong>用的是本地索引模式</strong>：本地库里只有子网 stake 转移边，没有质押/解质押的操作事件，所以质押次数仍然走 API 取真实值（只要你配了 key）。只有<strong>完全没配 key</strong> 时才会降级成「本地索引内的转账笔数」并标注「本地索引无质押事件，改为转账笔数」——这时日均频次也不显示，因为两种口径不同，除出来的数字是假的。</li>
 </ul>
@@ -1064,7 +1065,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <li><strong>导出全部</strong>：导出地址库里的所有地址，不受上方「地址库筛选」影响。</li>
 <li><strong>导出选中 (N)</strong>：只导出你在列表里<strong>勾选</strong>的那几条。按钮上的 N 跟着勾选数量实时变化，没勾选时按钮是灰的（避免像以前那样点了一下其实导出的是整库）。文件名会带 <code>-selected-N</code> 便于区分。</li>
 </ul>
-<h3 id="事件监控按地址库勾选地址备注与详情105">事件监控：按地址库勾选、地址备注与详情（1.0.5）</h3>
+<h3 id="事件监控按地址库勾选地址备注与详情106">事件监控：按地址库勾选、地址备注与详情（1.0.6）</h3>
 <p>左侧栏的 <strong>事件监控</strong> 是合并进来的 Bittensor 链上/GitHub 事件流。它和地址扫描共用主服务、访问口令和同一份已知地址资料，但事件监控名单<strong>默认是空的</strong>，不会因为已知地址库里已有地址就自动开始监控。</p>
 <p>事件监控的对象是<strong>命名地址库</strong>，不是散落的单条地址。只想监控一个地址时，先在左侧“已知地址库”建立一个只含该地址的地址库，再回来勾选。</p>
 <p>操作步骤：</p>

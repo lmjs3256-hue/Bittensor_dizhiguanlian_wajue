@@ -615,11 +615,11 @@ Set-Location G:\bittensor-wallet-link-intel
 
 - **需求原话**：「扫描结果位置的起始地址字体放大一点，颜色突出显示。后面加上地址注册日期，历史交易次数，日均交易频次，余额。」
 - **数据源（都实测过，别再猜）**：
-  - `GET https://api.taostats.io/api/account/latest/v1?network=finney&address=…` —— 一次返回 `created_on_date`、`created_on_network`、`balance_free/staked/staked_alpha_as_tao/reserved/total`（都是 **rao 字符串**）、`rank`。这是拿注册日期的唯一现成来源，不用逐块回溯。注意这个端点在 `/api/` 下，和转账用的 `/v1/transfers` 不是同一套前缀。
+  - `GET https://api.taostats.io/v1/accounts/{address}` —— 地址放在路径中，一次返回 `created_on_date`、`created_on_network`、`balance_free/staked/staked_alpha_as_tao/reserved/total`（都是 **rao 字符串**）、`rank`。这是拿注册日期的唯一现成来源，不用逐块回溯。旧的 `/api/account/latest/v1` 已下线并返回 410。
   - **历史交易次数** 不用单独接口：转账分页响应里的 `pagination.total_items` 就是该地址的全量笔数。`get_transfer_total()` 用 `limit=1` 只取 1 条数据换这个数字，一次请求搞定。
   - 余额仍保留 RPC 兜底（`seed_balance_tao`），但界面优先显示 Taostats 的 `balance_total`（含质押），因为 RPC 只给自由余额。
 - **新增代码**：
-  - `taostats.AccountProfile`（frozen dataclass）+ `get_account_profile()` + `get_transfer_total()` + `_rao_to_tao_text()`；`ACCOUNT_LATEST_URL` 常量；`_profile_cache` 走同一个 `CACHE_TTL_SECONDS` 和 `_reserve_request()`。
+  - `taostats.AccountProfile`（frozen dataclass）+ `get_account_profile()` + `get_transfer_total()` + `_rao_to_tao_text()`；`ACCOUNT_DETAIL_URL` 常量；`_profile_cache` 走同一个 `CACHE_TTL_SECONDS` 和 `_reserve_request()`。
   - `LinkService._seed_profile(seed, *, transfer_rows, data_source, include, warnings)`：**纯汇总**，四项指标任何一个失败都只 append warning，不抛异常。`include=False`（停止续查）直接返回空画像，不发请求。
   - 结果字典新增 `seed_profile`，字段见 `_seed_profile` 的初始 dict（`registered_on` / `registered_on_network` / `balance_*` / `transfer_count` / `active_days` / `daily_frequency` / `transfer_count_scope` / `source`）。
 - **两个易错点**：
@@ -639,7 +639,7 @@ Set-Location G:\bittensor-wallet-link-intel
   - 只捕 `httpx.TransportError`（SSL EOF / 连接重置 / 读超时），最多 3 次，退避 `TRANSIENT_RETRY_BACKOFF_SECONDS * (attempt+1)` = 1.2s、2.4s；
   - **HTTP 状态码不重试**——401/403 走 `TaostatsAuthError`、429 走 `TaostatsRateLimitError`、其余 ≥400 走 `TaostatsUnavailableError`，逻辑与原来完全一致，避免把限流当网络抖动反复打；
   - 重试**不额外调 `_reserve_request()`**，只在进入前占一次本地 5 次/分钟额度——失败的请求没有消耗上游配额，重复占用会把本地额度烧光。
-- **五处请求全部改用它**：验证者名单、交易所名单、转账分页（`API_URL`）、质押转账（`STAKE_EVENTS_URL`）、账户资料（`ACCOUNT_LATEST_URL`）。grep 一下确认文件里只剩 `_request_get` 内部那一处 `httpx.get`。
+- **五处请求全部改用它**：验证者名单、交易所名单、转账分页（`API_URL`）、质押转账（`STAKE_EVENTS_URL`）、账户资料（`ACCOUNT_DETAIL_URL`）。grep 一下确认文件里只剩 `_request_get` 内部那一处 `httpx.get`。
 - **测试要注意**：`tests/test_taostats.py` 是通过 `monkeypatch.setattr(taostats.httpx, "get", ...)` 打桩的，所以 `_request_get` 内部必须写成 `httpx.get(...)`（模块属性），不能改成 `from httpx import get`。重试里用了 `time.sleep`，测试同时打了 `taostats.time.sleep` 的桩以免真的等 3.6 秒。
 - **实测**：修复后同一接口 200，`official_total=1196`、`inserted=0/updated=0/skipped=1196`（已经全在库里，属正常幂等），`synced_at=2026-11-06T12:13:53Z`。
 - **验收**：`pytest -q` = **230 passed**（新增 2 条重试用例）。
@@ -707,7 +707,7 @@ Set-Location G:\bittensor-wallet-link-intel
 
 - **用户的两个问题，答案记这里**：
   1. **质押/解质押不是只能本地索引**——恰恰相反，**本地索引里根本没有**。本地库只有 `stake_transfer` 边（子网 stake 在 coldkey 之间的转移），没有 `stake` / `unstake` 操作事件，所以拿本地数据数出来的永远不是质押次数。真实次数只能走 `GET /v1/subnets/stake-events?coldkey=<地址>&action=all` 的 `pagination.total_items`。
-  2. **API 调用次数：固定 2 次**。`/api/account/latest/v1`（注册日期 + 余额构成）1 次，`/v1/subnets/stake-events?limit=1`（只读分页总量、不翻页）1 次。都吃 5 分钟缓存，命中即 0 次。
+  2. **API 调用次数：固定 2 次**。`/v1/accounts/{address}`（注册日期 + 余额构成）1 次，`/v1/subnets/stake-events?limit=1`（只读分页总量、不翻页）1 次。都吃 5 分钟缓存，命中即 0 次。
 - **0.8.0 留下的口径 bug（本轮修掉）**：`_seed_profile` 里原写 `if data_source == "taostats" and taostats_is_configured()`，选本地索引时直接跳过 API，退回「本地索引转账笔数」。更糟的是**配了 key 但被限流**时也会退回，于是「本地转账 1 笔」被显示成「质押 1 次 / 日均 0.0 次/天」，看起来像这个地址从没质押过。现在：只要配了 key 就调 API；失败就如实「未获取」；只有**完全没配 key** 才退回本地笔数并标注口径，且此时**不算日均频次**（两种口径相除是假数字）。
 - **新流程（用户要求的「先显示左栏、再继续扫描」）**：
   - 新增 `POST /api/seed-profile`（`SeedProfileInput{seed, data_source}`）→ `{seed, seed_profile, api_requests, warnings}`。服务层是 `LinkService.seed_profile_snapshot()`，只查画像不跑关联，2.6 秒返回。

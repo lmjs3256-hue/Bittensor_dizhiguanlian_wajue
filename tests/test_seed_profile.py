@@ -3,6 +3,7 @@
 
 from datetime import date, timedelta
 
+import httpx
 import pytest
 
 from app import service as service_module
@@ -220,6 +221,41 @@ def _stake_response(total_items, status=200):
     )
 
 
+def test_account_profile_uses_current_account_detail_endpoint(monkeypatch):
+    monkeypatch.setenv("TAOSTATS_API_KEY", "test-key")
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return httpx.Response(
+            200,
+            json={"data": [{
+                "created_on_date": "2024-07-13",
+                "created_on_network": "finney",
+                "balance_free": "159780324",
+                "balance_staked": "1657617810066",
+                "balance_staked_alpha_as_tao": "1657617810066",
+                "balance_reserved": "0",
+                "balance_total": "1657777590390",
+                "rank": 732,
+            }]},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(fake_get))
+
+    profile = taostats.get_account_profile(SEED)
+    cached = taostats.get_account_profile(SEED)
+
+    assert calls[0][0] == f"https://api.taostats.io/v1/accounts/{SEED}"
+    assert calls[0][1]["params"] is None
+    assert calls[0][1]["headers"]["Authorization"] == "test-key"
+    assert profile.created_on_date == "2024-07-13"
+    assert profile.balance_total_tao == "1657.77759039"
+    assert cached.from_cache is True
+    assert len(calls) == 1
+
+
 def test_stake_event_total_requests_action_all_with_limit_one(monkeypatch):
     """必须用 action=all + limit=1：一次请求拿到 stake+unstake 的真实总量。"""
 
@@ -382,6 +418,6 @@ def test_profile_records_api_usage(monkeypatch):
     )
 
     assert recorded == [
-        ("/api/account/latest/v1", True),
+        ("/v1/accounts", True),
         ("/v1/subnets/stake-events", True),
     ]
