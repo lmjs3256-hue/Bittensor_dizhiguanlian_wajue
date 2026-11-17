@@ -7,7 +7,7 @@ import app.main as main_module
 import app.service as service_module
 from app import settings_store
 from app.collector import merge_subnet_owner_maps
-from app.db import Database
+from app.db import AddressBook, AddressLibrary, Database
 from app.service import LinkService, SUBNET_OWNER_SOURCE
 
 
@@ -100,6 +100,13 @@ def test_deregistered_subnet_is_archived_and_hidden(monkeypatch):
             archived = service.subnet_owner_entries(include_archived=True)
             assert archived[0]["active"] is False
             assert archived[0]["archived_at"]
+            with database.session() as db:
+                assert db.query(AddressLibrary).filter(
+                    AddressLibrary.source == SUBNET_OWNER_SOURCE
+                ).count() == 0
+                assert db.query(AddressBook).filter(
+                    AddressBook.name.like("SN55 %")
+                ).count() == 0
         finally:
             database.engine.dispose()
 
@@ -123,6 +130,12 @@ def test_reregistered_netuid_replaces_name_and_owner_and_hides_old_book(monkeypa
             assert rows[0]["address"] == OWNER_B
             assert rows[0]["book"] == "SN55 New Project"
             assert [book["name"] for book in service.address_books()] == ["SN55 New Project"]
+            with database.session() as db:
+                project_rows = db.query(AddressLibrary).filter(
+                    AddressLibrary.source == SUBNET_OWNER_SOURCE
+                ).all()
+                assert [row.address for row in project_rows] == [OWNER_B]
+                assert [row.book for row in project_rows] == ["SN55 New Project"]
         finally:
             database.engine.dispose()
 
@@ -145,6 +158,49 @@ def test_same_owner_reregistration_reuses_owner_row_without_conflict(monkeypatch
             assert [book["name"] for book in service.address_books()] == ["SN55 New Project"]
         finally:
             database.engine.dispose()
+
+
+def test_fast_reregistration_without_observed_archive_removes_old_owner(monkeypatch):
+    """两次同步之间完成注销+重注册时，旧 owner 也必须物理移出 SN 库。"""
+
+    patch_registry(monkeypatch, registry(netuid=113, name="SN113", owner=OWNER_A))
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.sync_subnet_owner_addresses()
+            patch_registry(monkeypatch, registry(netuid=113, name="SN113", owner=OWNER_B))
+            result = service.sync_subnet_owner_addresses()
+
+            assert result["updated"] == 1
+            item = result["updated_items"][0]
+            assert item["netuid"] == 113
+            assert item["old_name"] == item["name"] == "SN113"
+            assert item["old_address"] == OWNER_A
+            assert item["address"] == OWNER_B
+
+            with database.session() as db:
+                rows = db.query(AddressLibrary).filter(
+                    AddressLibrary.source == SUBNET_OWNER_SOURCE
+                ).all()
+                assert [(row.address, row.book) for row in rows] == [
+                    (OWNER_B, "SN113 SN113")
+                ]
+                assert db.query(AddressBook).filter(
+                    AddressBook.name.like("SN113 %")
+                ).count() == 1
+        finally:
+            database.engine.dispose()
+
+
+def test_sync_toast_names_updated_subnet_and_old_new_owner():
+    from pathlib import Path
+
+    js = (
+        Path(__file__).resolve().parents[1] / "app" / "static" / "app.js"
+    ).read_text(encoding="utf-8")
+    assert "function describeSubnetOwnerChanges" in js
+    assert "old_address" in js
+    assert "更新 ${data.updated} 个：" in js
 
 
 def test_auto_sync_respects_weekly_interval(monkeypatch):

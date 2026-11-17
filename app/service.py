@@ -3181,6 +3181,14 @@ class LinkService:
                     )
                 else:
                     registry_row.note = f"子网 {name}（SN{netuid}）· 项目方 {owner}"
+                # 同编号快速重注册时可能没有观察到中间归档态；这里显式清掉
+                # 旧名称/旧项目方地址，保证旧记录不再留在 SN<编号> 地址库。
+                self._remove_stale_subnet_owner_rows(
+                    db,
+                    netuid,
+                    keep_book=book_name,
+                    keep_address=owner,
+                )
 
             for netuid, state in state_rows.items():
                 if netuid in active_netuids or not state.active:
@@ -3188,6 +3196,7 @@ class LinkService:
                 state.active = False
                 state.archived_at = synced_at
                 state.synced_at = synced_at
+                self._remove_stale_subnet_owner_rows(db, netuid)
                 archived.append(
                     {"netuid": netuid, "name": state.name, "address": state.owner_address}
                 )
@@ -3294,6 +3303,50 @@ class LinkService:
     def _subnet_owner_book_name(netuid: int, name: str) -> str:
         clean = " ".join(str(name or "").split()) or f"SN{netuid}"
         return f"SN{int(netuid)} {clean}"[:BOOK_NAME_MAX_LENGTH]
+
+    def _remove_stale_subnet_owner_rows(
+        self,
+        db,
+        netuid: int,
+        *,
+        keep_book: str = "",
+        keep_address: str = "",
+    ) -> None:
+        """物理移除同一 NETUID 旧项目方地址，避免继续产生无效关联。
+
+        只处理本工具维护的 ``SUBNET_OWNER_SOURCE`` 记录，不碰用户手工分类或
+        其他地址库里的同地址记录。旧库清空后，只删除带“项目方”标记的台账，
+        并清理该库的自动入库候选和库间统计。
+        """
+
+        prefix = f"SN{int(netuid)} "
+        rows = db.scalars(
+            select(AddressLibrary).where(
+                AddressLibrary.source == SUBNET_OWNER_SOURCE,
+                AddressLibrary.book.like(f"{prefix}%"),
+            )
+        ).all()
+        stale_books: set[str] = set()
+        for row in rows:
+            if keep_address and row.address == keep_address and row.book == keep_book:
+                continue
+            stale_books.add(row.book or "")
+            db.delete(row)
+        db.flush()
+        for book_name in stale_books:
+            if not book_name or book_name == keep_book:
+                continue
+            remaining = db.scalar(
+                select(func.count(AddressLibrary.id)).where(
+                    AddressLibrary.book == book_name
+                )
+            ) or 0
+            registry = db.scalar(
+                select(AddressBook).where(AddressBook.name == book_name)
+            )
+            if not remaining and registry is not None and "项目方" in (registry.note or ""):
+                db.delete(registry)
+            self._drop_watch_book_refs(db, book_name)
 
     def subnet_owner_entries(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
         """返回项目方地址台账；默认只显示当前活跃子网。"""

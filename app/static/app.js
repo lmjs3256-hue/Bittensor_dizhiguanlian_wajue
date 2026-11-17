@@ -5233,6 +5233,25 @@ function describeSubnetOwnerItems(items, limit = 6) {
   return `${shown.join("、")}${rest > 0 ? ` 等 ${list.length} 个` : ""}`;
 }
 
+function describeSubnetOwnerChanges(items, limit = 20) {
+  const list = (items || []).filter((item) => item && Number.isFinite(Number(item.netuid)));
+  const shown = list.slice(0, limit);
+  const text = shown.map((item) => {
+    const head = `SN${item.netuid} ${item.name || "未命名"}`;
+    const changes = [];
+    if (item.old_name && item.old_name !== item.name) {
+      changes.push(`名称 ${item.old_name} → ${item.name || "未命名"}`);
+    }
+    if (item.old_address && item.old_address !== item.address) {
+      changes.push(`项目方 ${shortAddr(item.old_address)} → ${shortAddr(item.address)}`);
+    } else if (item.address) {
+      changes.push(`项目方 ${shortAddr(item.address)}`);
+    }
+    return `${head}（${changes.join("；")}）`;
+  }).join("、");
+  return `${text}${list.length > shown.length ? ` 等 ${list.length} 个` : ""}`;
+}
+
 async function refreshSubnetOwnerSyncStatus() {
   const label = $("#subnet-owner-sync-status");
   try {
@@ -5257,9 +5276,15 @@ async function syncSubnetOwnerLibrary() {
     const data = await api("/api/library/import-subnet-owners", { method: "POST" });
     await loadLibrary();
     const parts = [];
-    if (data.inserted) parts.push(`新增 ${data.inserted} 个子网项目方`);
-    if (data.updated) parts.push(`更新 ${data.updated} 个子网`);
-    if (data.restored) parts.push(`恢复 ${data.restored} 个重新注册子网`);
+    if (data.inserted) {
+      parts.push(`新增 ${data.inserted} 个：${describeSubnetOwnerChanges(data.inserted_items, 6)}`);
+    }
+    if (data.updated) {
+      parts.push(`更新 ${data.updated} 个：${describeSubnetOwnerChanges(data.updated_items)}`);
+    }
+    if (data.restored) {
+      parts.push(`重新注册 ${data.restored} 个：${describeSubnetOwnerChanges(data.restored_items)}`);
+    }
     if (data.archived) {
       const names = describeSubnetOwnerItems(data.archived_items);
       parts.push(`归档 ${data.archived} 个已注销子网${names ? `：${names}` : ""}`);
