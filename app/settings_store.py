@@ -360,6 +360,8 @@ DEFAULT_WATCH_CONFIG: dict[str, Any] = {
     "auto_import": True,
     # 本地索引流水线：拿本地索引的新块去撞地址库，命中即入库，零 API。
     "sweep_enabled": True,
+    # 未达阈值候选最多保留多少天；避免几年前的零星往来与新转账一起凑门槛。
+    "candidate_window_days": 30,
 }
 
 
@@ -374,6 +376,12 @@ def load_watch_config() -> dict[str, Any]:
         config["threshold_tao"] = max(0.0, float(config["threshold_tao"]))
     except (TypeError, ValueError):
         return dict(DEFAULT_WATCH_CONFIG)
+    try:
+        config["candidate_window_days"] = max(
+            1, min(365, int(config["candidate_window_days"]))
+        )
+    except (TypeError, ValueError):
+        config["candidate_window_days"] = DEFAULT_WATCH_CONFIG["candidate_window_days"]
     config["auto_import"] = bool(config["auto_import"])
     config["sweep_enabled"] = bool(config["sweep_enabled"])
     return config

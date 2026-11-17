@@ -23,6 +23,7 @@ from sqlalchemy import (
     select,
     text,
 )
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -320,6 +321,11 @@ class WatchSweepState(Base):
     __tablename__ = "watch_sweep_state"
     key: Mapped[str] = mapped_column(String(40), primary_key=True)
     last_block: Mapped[int] = mapped_column(Integer, default=0)
+    # 同一区块可能有多条事件；只记 block 会在 SWEEP_MAX_ROWS 截断时
+    # 跳过该区块剩余事件。默认 MAX 表示升级前已处理到该区块末尾。
+    last_event_index: Mapped[int] = mapped_column(
+        Integer, default=2_147_483_647, nullable=False
+    )
     last_sweep_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -540,6 +546,19 @@ class Database:
                         "VARCHAR(64) NOT NULL DEFAULT ''"
                     )
                 )
+            sweep_columns = {
+                row[1]
+                for row in connection.execute(text("PRAGMA table_info(watch_sweep_state)"))
+            }
+            if sweep_columns and "last_event_index" not in sweep_columns:
+                # 旧库已按区块游标运行过。用 MAX 跳到区块末尾，避免升级后
+                # 把最后一整块重复累计；后续新块改用区块+事件复合游标。
+                connection.execute(
+                    text(
+                        "ALTER TABLE watch_sweep_state ADD COLUMN "
+                        "last_event_index INTEGER NOT NULL DEFAULT 2147483647"
+                    )
+                )
             # 0.8.45：查询记录加 owner（多人共用主机时按人隔离"查询记录"）。
             # 老数据一律空串 = 对所有人可见，不会因为升级后忽然"记录全没了"。
             archive_columns = {
@@ -735,27 +754,35 @@ class Database:
         if not records:
             return 0
         inserted = 0
+        created_at = utcnow()
+        values = [
+            {
+                "event_key": row["event_key"],
+                "tx_hash": row.get("tx_hash", ""),
+                "block_number": row["block_number"],
+                "block_hash": row.get("block_hash", ""),
+                "event_index": row.get("event_index", 0),
+                "from_address": row["from_address"],
+                "to_address": row["to_address"],
+                "amount_rao": row["amount_rao"],
+                "amount_tao": row["amount_tao"],
+                "timestamp": row.get("timestamp", ""),
+                "edge_type": row.get("edge_type", "tao_transfer"),
+                "netuid": row.get("netuid"),
+                "hotkey": row.get("hotkey", ""),
+                "created_at": created_at,
+            }
+            for row in records
+        ]
         with self.session() as db:
-            for row in records:
-                entity = Transfer(
-                    event_key=row["event_key"],
-                    tx_hash=row["tx_hash"],
-                    block_number=row["block_number"],
-                    block_hash=row["block_hash"],
-                    event_index=row["event_index"],
-                    from_address=row["from_address"],
-                    to_address=row["to_address"],
-                    amount_rao=row["amount_rao"],
-                    amount_tao=row["amount_tao"],
-                    timestamp=row.get("timestamp", ""),
-                    edge_type=row.get("edge_type", "tao_transfer"),
-                    netuid=row.get("netuid"),
-                    hotkey=row.get("hotkey", ""),
+            for index in range(0, len(values), 500):
+                chunk = values[index : index + 500]
+                result = db.execute(
+                    sqlite_insert(Transfer)
+                    .values(chunk)
+                    .on_conflict_do_nothing()
                 )
-                if db.query(Transfer.id).filter(Transfer.event_key == entity.event_key).first():
-                    continue
-                db.add(entity)
-                inserted += 1
+                inserted += max(0, int(result.rowcount or 0))
             db.commit()
         return inserted
 

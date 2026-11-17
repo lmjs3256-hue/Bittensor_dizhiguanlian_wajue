@@ -341,8 +341,13 @@ def test_auto_import_off_is_respected(database, service, config):
     _transfer(database, 1, OWNER, PARTNER, "99", 1001)
     result = service.sweep_local_index(config)
 
-    assert result.get("skipped") is True
+    # 关闭只停止写候选/入库，游标仍要前进，避免重新开启后回灌旧转账。
+    assert result.get("reason") == "auto_import_off"
+    assert result["scanned"] == 1
+    assert result["last_block"] == 1001
     assert not _in_library(database, PARTNER)
+    with database.session() as session:
+        assert session.query(WatchCandidate).count() == 0
 
 
 # -- 状态接口 ---------------------------------------------------------------

@@ -264,8 +264,9 @@ def test_status_reports_import_counts(database, config):
     status = service.status()
     assert status["imported"] == 1
     assert status["revoked"] == 0
-    # 候选行留着（累计金额是判断依据），不再是「待入库」，但也不必清零。
-    assert status["pending_candidates"] >= 1
+    # 候选行保留作审计和改判依据，但已经入库的不能再算「待达标」。
+    assert status["pending_candidates"] == 0
+    assert all(item["address"] != NEW_ADDRESS for item in status["top_candidates"])
     assert status["config"]["threshold_tao"] == 30.0
     assert status["sweep"]["initialized"] is True
     # 旧链路的字段不能再出现，前端已经不再读它们。

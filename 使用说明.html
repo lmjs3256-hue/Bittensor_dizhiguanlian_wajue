@@ -902,12 +902,17 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <p><strong>判定规则</strong></p>
 <ul>
 <li>触发条件：<strong>单笔 ≥ 阈值</strong> 或 <strong>与该地址的累计 ≥ 阈值</strong>，任一满足即入库。阈值默认 <strong>30 TAO</strong>，可改。</li>
-<li>归属地址库：同一个新地址被多个库触发时，<strong>按累计转账金额最多的那个库入库</strong>；金额相同比笔数。</li>
+<li><strong>逐层传播</strong>：A→B 让 B 入库后，B 后面的 B→C、C→D 会立即使用本轮新已知地址继续判断；只要事件按时间顺序出现，多级关系可在同一轮、同一批次内连续入库，不用等下一轮。</li>
+<li><strong>扫描后立刻处理</strong>：本地索引每提交完一批新块就马上触发一次巡检；30 秒定时器仍保留，作为没有新扫描时的兜底节拍。</li>
+<li>历史转账不回扫：只从启用后的游标往后看。已经发生在地址入库之前的旧关系不会因为后来入库而补扫。</li>
+<li>归属地址库：同一个新地址被多个库触发时，<strong>按累计转账金额最多的那个库入库</strong>；金额相同比较转账与 stake 总笔数，再比较最近区块。</li>
+<li>复合游标：处理进度同时记录“区块号 + 事件序号”。即使单轮 4,000 行截断在某个区块中间，下一轮也会从同一区块剩余事件继续，不会漏掉。</li>
+<li>候选保留：未达阈值的累计默认只保留 <strong>30 天</strong>，超过后自动清理；可在面板改成 1～365 天。</li>
 <li>只处理新块：第一次启用时从「当前已经采到哪一块」开始往后看，<strong>不回扫历史</strong>。几周前的旧转账不会一次性灌进地址库——真需要时去扫描那个地址，自然会把关联挖出来。</li>
 <li>不作为触发源：交易所、验证者、<strong>公共地址</strong>、「系统」分类的地址。它们的对手方是噪音，放进来会把库撑爆。</li>
 <li>两边都在库：不重复入库，但会记一笔「库对往来」（关联结果里给同档对手方加分用）。</li>
 </ul>
-<p><strong>参数</strong>（只有这三个）</p>
+<p><strong>参数</strong>（四个）</p>
 <table>
 <thead>
 <tr>
@@ -923,6 +928,11 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <td>单笔或累计达到就算一条新地址</td>
 </tr>
 <tr>
+<td>候选保留天数</td>
+<td>30</td>
+<td>未达阈值候选最多累计多少天，超时清理</td>
+</tr>
+<tr>
 <td>自动入库</td>
 <td>开</td>
 <td>关掉后流水线照常推进游标，只是不往地址库写</td>
@@ -930,7 +940,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <tr>
 <td>本地索引流水线</td>
 <td>开</td>
-<td>关掉就整条停；重新打开从游标处继续，关掉期间攒的新块会补上</td>
+<td>关掉就整条停；重新打开从复合游标处继续，关掉期间攒的新块会补上</td>
 </tr>
 </tbody>
 </table>
@@ -957,7 +967,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </tr>
 </tbody>
 </table>
-<p>下面还有「已处理 N 笔 / 命中库里地址 N 条 / 已入库 N 个 / 处理到区块 N」，以及<strong>落后多少块</strong>——超过 200 块会标黄并提示预计补齐时间。</p>
+<p>下面还有「已处理 N 笔 / 命中库里地址 N 条 / 已入库 N 个 / 处理到区块 N」，以及<strong>落后多少块</strong>——超过 200 块会标黄并提示预计补齐时间。面板里的“待达标候选”只统计尚未进入地址库的地址；候选过期清理会自动执行。</p>
 <p><strong>怎么确认它真在跑</strong></p>
 <p>流水线 30 秒一轮、单轮常常不到 1 秒，光看累计数字会误以为它停了。面板上有三处一直在动的东西：</p>
 <table>

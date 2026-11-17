@@ -18,14 +18,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 
 from . import settings_store
 from .db import (
+    AddressBook,
     AddressLibrary,
     AutoImportLog,
     BookPairStat,
@@ -42,8 +43,10 @@ from .validation import is_valid_ss58
 # Subtensor 的系统地址前缀（与 relation 里的默认 policy 保持一致）。
 SYSTEM_PREFIX = "5EYCAe5"
 # 自动入库记录的来源标记；也是「这条是不是自动来的」的判断依据。
-AUTO_SOURCE = "auto-watch:taostats"
+AUTO_SOURCE = "auto-watch:local-index"
+AUTO_REVIEWED_SOURCE = "auto-watch:reviewed"
 AUTO_CATEGORY = "其他"
+CURSOR_END_EVENT_INDEX = 2_147_483_647
 # 不处理的分类：交易所、验证者、公共地址、系统（它们要么是噪音源，要么会
 # 把整库灌爆）。公共地址（PUBLIC）与交易所同性质——它和成千上万个不相关钱包
 # 都有往来，顺着它扩散等于用噪音换库容量。service.py 的 SYSTEM_CATEGORIES
@@ -132,6 +135,29 @@ def _category_names(row: AddressLibrary) -> list[str]:
     return names
 
 
+def _auto_row_manually_changed(row: AddressLibrary, log: AutoImportLog) -> bool:
+    """自动记录是否已被人工改过库、分类、标签或系统角色。"""
+
+    categories = {name for name in _category_names(row) if name}
+    return bool(
+        (row.book or "") != (log.book or "")
+        or row.category != AUTO_CATEGORY
+        or categories != {AUTO_CATEGORY}
+        or (row.label or "").strip()
+        or row.exchange_confirmed
+        or row.exchange_rejected
+    )
+
+
+def _is_auto_owned(row: AddressLibrary | None) -> bool:
+    """是否为尚未被人工接管、仍允许自动改判的自动入库记录。"""
+
+    if row is None:
+        return False
+    source = str(row.source or "")
+    return source.startswith("auto-watch") and source != AUTO_REVIEWED_SOURCE
+
+
 class WatchService:
     """巡检引擎。所有方法都是同步的，调用方负责放进线程里跑。"""
 
@@ -158,7 +184,45 @@ class WatchService:
         allowed = set(settings_store.DEFAULT_WATCH_CONFIG)
         clean = {key: value for key, value in (values or {}).items() if key in allowed}
         settings_store.save_watch_config(clean)
-        return self.config()
+        config = self.config()
+        if config.get("auto_import", True):
+            # 阈值调低后，已有候选可能已经达标；不等下一笔转账，立即重检。
+            self._recheck_pending_candidates(config)
+        return config
+
+    def _recheck_pending_candidates(self, config: dict[str, Any]) -> int:
+        """按当前阈值重检已有候选，返回因此新入库的地址数。"""
+
+        threshold = Decimal(str(config["threshold_tao"]))
+        imported = 0
+        with self.database.session() as db:
+            library = db.scalars(select(AddressLibrary)).all()
+            by_address = {row.address: row for row in library}
+            valid_books = {row.book for row in library if row.book}
+            valid_books.update(db.scalars(select(AddressBook.name)).all())
+            candidates = db.scalars(
+                select(WatchCandidate).order_by(
+                    WatchCandidate.cumulative_tao.desc(),
+                    WatchCandidate.id.asc(),
+                )
+            ).all()
+            seen: set[str] = set()
+            for candidate in candidates:
+                if candidate.address in seen:
+                    continue
+                if candidate.address in by_address:
+                    continue
+                if candidate.book and candidate.book not in valid_books:
+                    continue
+                seen.add(candidate.address)
+                created, row = self._import_candidate(
+                    db, candidate, threshold, valid_books=valid_books
+                )
+                if created:
+                    imported += 1
+                if row is not None:
+                    by_address[row.address] = row
+        return imported
 
     def status(self) -> dict[str, Any]:
         """地址库自动入库的现状。
@@ -170,7 +234,12 @@ class WatchService:
 
         config = self.config()
         with self.database.session() as db:
-            pending = db.scalar(select(func.count(WatchCandidate.id))) or 0
+            not_in_library = ~select(AddressLibrary.id).where(
+                AddressLibrary.address == WatchCandidate.address
+            ).exists()
+            pending = db.scalar(
+                select(func.count(WatchCandidate.id)).where(not_in_library)
+            ) or 0
             imported = db.scalar(
                 select(func.count(AutoImportLog.id)).where(AutoImportLog.status == "active")
             ) or 0
@@ -179,6 +248,7 @@ class WatchService:
             ) or 0
             candidates = db.scalars(
                 select(WatchCandidate)
+                .where(not_in_library)
                 .order_by(WatchCandidate.cumulative_tao.desc())
                 .limit(5)
             ).all()
@@ -288,37 +358,7 @@ class WatchService:
             log = db.get(AutoImportLog, int(log_id))
             if log is None:
                 raise ValueError("入库日志不存在")
-            already = log.status == "revoked"
-            log.status = "revoked"
-            log.revoked_at = utcnow()
-            removed = False
-            row = db.scalar(
-                select(AddressLibrary).where(AddressLibrary.address == log.address)
-            )
-            # 只删「自动来的、没被人工改过分类」的记录；人工动过的保留，只拉黑。
-            #
-            # 例外：自动入库之后用户又写了备注的，不能整行删——那会把人工写的
-            # 角色说明一起抹掉（撤回只是"不再自动收它"，不是"忘掉我写过什么"）。
-            # 这种情况改成"转成仅备注记录"：清 book、清自动入库的 note 与来源，
-            # 保留人工备注，界面上归到「仅备注（未归入地址库）」组。
-            if row is not None and str(row.source or "").startswith("auto-watch"):
-                if not row.exchange_confirmed and not row.exchange_rejected:
-                    if _has_manual_note(row):
-                        row.book = ""
-                        row.note = _manual_note_part(row)
-                        row.source = NOTE_ONLY_SOURCE
-                        removed = True
-                    else:
-                        db.delete(row)
-                        removed = True
-            return {
-                "ok": True,
-                "already": already,
-                "removed": removed,
-                # 调用方（「撤回并标为交易所/验证者/公共地址」）要拿它继续下结论，
-                # 否则还得再查一次库，撤完就查不到地址了。
-                "address": log.address,
-            }
+            return self._revoke_log(db, log)
 
     def revoke_address(self, address: str) -> dict[str, Any]:
         """按地址撤回：把该地址所有自动入库记录标成已撤回。"""
@@ -332,10 +372,46 @@ class WatchService:
                     AutoImportLog.address == address, AutoImportLog.status == "active"
                 )
             ).all()
-            for row in rows:
-                row.status = "revoked"
-                row.revoked_at = utcnow()
-            return {"ok": True, "revoked": len(rows)}
+            results = [self._revoke_log(db, row) for row in rows]
+            return {
+                "ok": True,
+                "revoked": len(results),
+                "removed": sum(1 for item in results if item["removed"]),
+                "address": address,
+            }
+
+    def _revoke_log(self, db, log: AutoImportLog) -> dict[str, Any]:
+        """在同一事务里撤回一条日志，并保护所有人工修改。"""
+
+        already = log.status == "revoked"
+        log.status = "revoked"
+        log.revoked_at = utcnow()
+        removed = False
+        row = db.scalar(
+            select(AddressLibrary).where(AddressLibrary.address == log.address)
+        )
+        # 只处理仍由自动入库持有的记录。人工改过库/分类/标签/角色的记录
+        # 转成 reviewed 来源，停止自动改判，但绝不删除人工整理结果。
+        if _is_auto_owned(row) and row is not None:
+            manually_changed = _auto_row_manually_changed(row, log)
+            if _has_manual_note(row) and not manually_changed:
+                row.book = ""
+                row.note = _manual_note_part(row)
+                row.source = NOTE_ONLY_SOURCE
+                removed = True
+            elif manually_changed:
+                row.source = AUTO_REVIEWED_SOURCE
+            else:
+                db.delete(row)
+                removed = True
+        return {
+            "ok": True,
+            "already": already,
+            "removed": removed,
+            # 调用方（「撤回并标为交易所/验证者/公共地址」）要拿它继续下结论，
+            # 否则还得再查一次库，撤完就查不到地址了。
+            "address": log.address,
+        }
 
     def sweep_local_index(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """拿本地索引里「新入库的块」去和地址库做交集，命中就直接自动入库。
@@ -373,8 +449,6 @@ class WatchService:
         try:
             if not config.get("sweep_enabled", True):
                 result = {"skipped": True, "reason": "sweep_disabled", "inserted": 0}
-            elif not config.get("auto_import", True):
-                result = {"skipped": True, "reason": "auto_import_off", "inserted": 0}
             else:
                 # 「正在跑」的可见性：调度器每 30 秒调一次，一次可能处理几千行。
                 # 界面靠这两个字段判断它是真在动，还是被关掉了/卡住了。
@@ -395,6 +469,7 @@ class WatchService:
         """``sweep_local_index`` 的实际实现（外面那层只管开关与运行状态）。"""
 
         threshold = Decimal(str(config["threshold_tao"]))
+        auto_import = bool(config.get("auto_import", True))
         with self.database.session() as db:
             state = db.get(WatchSweepState, SWEEP_KEY)
             if state is None:
@@ -411,7 +486,11 @@ class WatchService:
                 cursor = db.scalar(select(func.max(Transfer.block_number))) or 0
                 for row in db.query(ChainCursor).all():
                     cursor = max(int(cursor), int(row.last_block or 0))
-                state = WatchSweepState(key=SWEEP_KEY, last_block=int(cursor))
+                state = WatchSweepState(
+                    key=SWEEP_KEY,
+                    last_block=int(cursor),
+                    last_event_index=CURSOR_END_EVENT_INDEX,
+                )
                 db.add(state)
                 db.flush()
                 result = {
@@ -425,6 +504,21 @@ class WatchService:
                 return result
 
             since = int(state.last_block or 0)
+            since_event = int(
+                state.last_event_index
+                if state.last_event_index is not None
+                else CURSOR_END_EVENT_INDEX
+            )
+            window_days = max(1, int(config.get("candidate_window_days", 30)))
+            cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+            expired_candidates = db.execute(
+                delete(WatchCandidate).where(
+                    WatchCandidate.updated_at < cutoff,
+                    ~select(AddressLibrary.id)
+                    .where(AddressLibrary.address == WatchCandidate.address)
+                    .exists(),
+                )
+            ).rowcount or 0
             # 一次最多处理这么多块：调用方是 30 秒一次的调度器，宁可少而稳，
             # 也别让一次扫描把 SQLite 锁住几十秒（巡检/查询都要用同一个库）。
             rows = db.execute(
@@ -433,10 +527,17 @@ class WatchService:
                     Transfer.to_address,
                     Transfer.amount_tao,
                     Transfer.block_number,
+                    Transfer.event_index,
                     Transfer.edge_type,
                     Transfer.tx_hash,
                 )
-                .where(Transfer.block_number > since)
+                .where(
+                    or_(
+                        Transfer.block_number > since,
+                        (Transfer.block_number == since)
+                        & (Transfer.event_index > since_event),
+                    )
+                )
                 .order_by(Transfer.block_number.asc(), Transfer.event_index.asc())
                 .limit(SWEEP_MAX_ROWS)
             ).all()
@@ -445,23 +546,45 @@ class WatchService:
                     "scanned": 0,
                     "hits": 0,
                     "inserted": 0,
+                    "expired_candidates": int(expired_candidates),
                     "last_block": since,
+                    "last_event_index": since_event,
+                }
+
+            if not auto_import:
+                # 明确语义：关闭自动入库仍推进游标，只是不产生候选和写入。
+                # 这样重新开启时不会把关闭期间积累的历史一次性灌进地址库。
+                last = rows[-1]
+                state.last_block = int(last.block_number)
+                state.last_event_index = int(last.event_index)
+                state.last_sweep_at = utcnow()
+                state.scanned_total = int(state.scanned_total or 0) + len(rows)
+                return {
+                    "scanned": len(rows),
+                    "hits": 0,
+                    "inserted": 0,
+                    "last_block": int(last.block_number),
+                    "last_event_index": int(last.event_index),
+                    "reason": "auto_import_off",
                 }
 
             library = db.scalars(select(AddressLibrary)).all()
             by_address = {row.address: row for row in library}
+            valid_books = {row.book for row in library if row.book}
+            valid_books.update(db.scalars(select(AddressBook.name)).all())
+            candidate_map = {
+                (row.address, row.book or ""): row
+                for row in db.scalars(select(WatchCandidate)).all()
+            }
             revoked = set(
                 db.scalars(
                     select(AutoImportLog.address).where(AutoImportLog.status == "revoked")
                 ).all()
             )
-            pair_counter = self._counterparty_map(db)
 
             inserted = 0
             hits = 0
-            max_block = since
             for row in rows:
-                max_block = max(max_block, int(row.block_number))
                 # 库与库之间的往来统计：关联结果靠它给「同档对手方」加分。
                 # 原来只有逐地址 API 巡检会写这张表，0.9.0 删掉那条链路后
                 # 这里必须自己记，否则 table 永远停在旧数据上、加分失效。
@@ -490,8 +613,16 @@ class WatchService:
                         continue
                     if _categories(owner_row) & SKIP_CATEGORIES:
                         continue  # 交易所/验证者/公共地址不作为触发源
-                    if partner in by_address or partner in revoked:
+                    if partner in revoked:
                         continue
+                    partner_row = by_address.get(partner)
+                    if partner_row is not None:
+                        # 已在库的自动地址仍要观察新往来，才能跨轮改判到累计
+                        # 金额更高的库；人工/系统地址则保持原结论不动。
+                        if not _is_auto_owned(partner_row):
+                            continue
+                        if (owner_row.book or "") == (partner_row.book or ""):
+                            continue
                     hits += 1
                     kind = "stake" if str(row.edge_type or "").startswith("stake") else "tao"
                     edge = {
@@ -501,14 +632,28 @@ class WatchService:
                         "tx": str(row.tx_hash or ""),
                         "kind": kind,
                     }
-                    if self._accumulate(
-                        db, partner, owner_row.book or "", edge, threshold, owner
-                    ):
+                    imported, related_row = self._accumulate(
+                        db,
+                        partner,
+                        owner_row.book or "",
+                        edge,
+                        threshold,
+                        owner,
+                        candidate_map=candidate_map,
+                        valid_books=valid_books,
+                    )
+                    if imported:
                         inserted += 1
+                    if related_row is not None:
+                        # 本轮刚入库的地址立刻进入已知集合，后续 B→C、C→D
+                        # 事件可在同一批内继续逐层传播，不用等下一轮。
+                        by_address[related_row.address] = related_row
                     # 一侧已经记过账就别再从另一侧重复累计同一笔。
                     break
 
-            state.last_block = max(int(state.last_block or 0), max_block)
+            last = rows[-1]
+            state.last_block = int(last.block_number)
+            state.last_event_index = int(last.event_index)
             state.last_sweep_at = utcnow()
             state.scanned_total = int(state.scanned_total or 0) + len(rows)
             state.hits_total = int(state.hits_total or 0) + hits
@@ -517,7 +662,9 @@ class WatchService:
             "scanned": len(rows),
             "hits": hits,
             "inserted": inserted,
-            "last_block": max_block,
+                "expired_candidates": int(expired_candidates),
+            "last_block": int(last.block_number),
+            "last_event_index": int(last.event_index),
         }
 
     def sweep_status(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -564,6 +711,7 @@ class WatchService:
                     **base,
                     "initialized": False,
                     "last_block": 0,
+                    "last_event_index": CURSOR_END_EVENT_INDEX,
                     "lag_blocks": 0,
                     "scanned_total": 0,
                     "hits_total": 0,
@@ -575,19 +723,17 @@ class WatchService:
                 **base,
                 "initialized": True,
                 "last_block": last,
+                "last_event_index": int(
+                    state.last_event_index
+                    if state.last_event_index is not None
+                    else CURSOR_END_EVENT_INDEX
+                ),
                 "lag_blocks": max(int(newest) - last, 0),
                 "scanned_total": int(state.scanned_total or 0),
                 "hits_total": int(state.hits_total or 0),
                 "inserted_total": int(state.inserted_total or 0),
                 "last_sweep_at": iso_utc(state.last_sweep_at),
             }
-
-    @staticmethod
-    def _counterparty_map(db) -> dict[str, tuple[str, str]]:
-        """地址 → (所属地址库, 来源)，用于判断是否已在库、是否为自动入库。"""
-
-        rows = db.scalars(select(AddressLibrary)).all()
-        return {row.address: ((row.book or ""), (row.source or "")) for row in rows}
 
     # -- 候选累计与入库 ---------------------------------------------------
     def _accumulate(
@@ -598,24 +744,25 @@ class WatchService:
         edge: dict[str, Any],
         threshold: Decimal,
         trigger_address: str,
-    ) -> bool:
-        """累计一条新转账；达到阈值就入库。返回是否新入库。"""
+        *,
+        candidate_map: dict[tuple[str, str], WatchCandidate],
+        valid_books: set[str],
+    ) -> tuple[bool, AddressLibrary | None]:
+        """累计一条新转账；返回 ``(是否新入库, 本次涉及地址行)``。"""
 
-        candidate = db.scalar(
-            select(WatchCandidate).where(
-                WatchCandidate.address == partner, WatchCandidate.book == book
-            )
-        )
+        key = (partner, book or "")
+        candidate = candidate_map.get(key)
         if candidate is None:
             candidate = WatchCandidate(
                 address=partner,
-                book=book,
+                book=book or "",
                 cumulative_tao=Decimal("0"),
                 first_block=edge["block"],
                 last_block=edge["block"],
                 trigger_address=trigger_address,
             )
             db.add(candidate)
+            candidate_map[key] = candidate
         elif not candidate.trigger_address:
             candidate.trigger_address = trigger_address
         candidate.cumulative_tao = Decimal(candidate.cumulative_tao or 0) + edge["amount"]
@@ -629,26 +776,46 @@ class WatchService:
         db.flush()
         total = Decimal(candidate.cumulative_tao or 0)
         if total < threshold:
-            return False
-        return self._import_candidate(db, candidate, threshold)
+            return False, None
+        return self._import_candidate(
+            db, candidate, threshold, valid_books=valid_books
+        )
 
-    def _import_candidate(self, db, candidate: WatchCandidate, threshold: Decimal) -> bool:
+    def _import_candidate(
+        self,
+        db,
+        candidate: WatchCandidate,
+        threshold: Decimal,
+        *,
+        valid_books: set[str],
+    ) -> tuple[bool, AddressLibrary | None]:
         address = candidate.address
         existing = db.scalar(select(AddressLibrary).where(AddressLibrary.address == address))
         all_rows = db.scalars(
             select(WatchCandidate).where(WatchCandidate.address == address)
         ).all()
+        all_rows = [
+            row
+            for row in all_rows
+            if not row.book or row.book in valid_books
+        ]
         ranked = sorted(
             all_rows,
-            key=lambda row: (Decimal(row.cumulative_tao or 0), int(row.tx_count or 0)),
+            key=lambda row: (
+                Decimal(row.cumulative_tao or 0),
+                int(row.tx_count or 0) + int(row.stake_count or 0),
+                int(row.last_block or 0),
+            ),
             reverse=True,
         )
+        if not ranked:
+            return False, None
         best = ranked[0]
         best_total = Decimal(best.cumulative_tao or 0)
         if existing is not None:
             # 已在库：人工记录一律不动；自动入库的记录允许「累计金额更高的库」改判。
-            if not str(existing.source or "").startswith("auto-watch"):
-                return False
+            if not _is_auto_owned(existing):
+                return False, None
             if best.book and best.book != (existing.book or "") and best_total >= threshold:
                 old_book = existing.book or "未归属"
                 existing.book = best.book
@@ -672,9 +839,9 @@ class WatchService:
                         f"{log.reason}；改判：{best.book} 累计 {best_total.normalize():f} TAO"
                         f" 已超过 {old_book}"
                     )
-            return False
+            return False, existing
         if best_total < threshold:
-            return False
+            return False, None
         others = [row for row in ranked[1:] if Decimal(row.cumulative_tao or 0) > 0]
         reason_parts = [
             f"由 {best.book or '未归属'} 库的 {best.trigger_address} 触发",
@@ -692,17 +859,16 @@ class WatchService:
             f"自动入库 · 与 {best.book or '未归属'} 库累计 {best_total.normalize():f} TAO"
             f"（{best.tx_count + best.stake_count} 笔）"
         )
-        db.add(
-            AddressLibrary(
-                address=address,
-                label="",
-                category=AUTO_CATEGORY,
-                note=note,
-                source=AUTO_SOURCE,
-                book=best.book or "",
-                categories=_encode_categories([AUTO_CATEGORY]),
-            )
+        imported_row = AddressLibrary(
+            address=address,
+            label="",
+            category=AUTO_CATEGORY,
+            note=note,
+            source=AUTO_SOURCE,
+            book=best.book or "",
+            categories=_encode_categories([AUTO_CATEGORY]),
         )
+        db.add(imported_row)
         db.add(
             AutoImportLog(
                 address=address,
@@ -720,7 +886,8 @@ class WatchService:
                 status="active",
             )
         )
-        return True
+        db.flush()
+        return True, imported_row
 
     @staticmethod
     def _kind(row: WatchCandidate) -> str:

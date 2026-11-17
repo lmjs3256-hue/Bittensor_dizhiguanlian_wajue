@@ -4979,6 +4979,8 @@ function fillWatchConfig(config) {
   if (!config) return;
   const threshold = $("#watch-threshold");
   if (threshold) threshold.value = config.threshold_tao ?? 30;
+  const windowDays = $("#watch-window-days");
+  if (windowDays) windowDays.value = config.candidate_window_days ?? 30;
   const autoImport = $("#watch-auto-import");
   if (autoImport) autoImport.checked = config.auto_import !== false;
   const sweep = $("#watch-sweep");
@@ -5003,6 +5005,7 @@ async function loadWatchStatus() {
 async function saveWatchConfig() {
   const payload = {
     threshold_tao: Number($("#watch-threshold")?.value || 30),
+    candidate_window_days: Number($("#watch-window-days")?.value || 30),
     auto_import: Boolean($("#watch-auto-import")?.checked),
     sweep_enabled: Boolean($("#watch-sweep")?.checked),
   };
@@ -5012,6 +5015,7 @@ async function saveWatchConfig() {
     scheduleWatchPolling(3000);
     toast(
       `设置已保存：阈值 ${payload.threshold_tao} TAO，` +
+        `候选保留 ${payload.candidate_window_days} 天，` +
         `${payload.auto_import ? "开启" : "关闭"}自动入库，` +
         `${payload.sweep_enabled ? "开启" : "关闭"}本地索引流水线。`,
     );

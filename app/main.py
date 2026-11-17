@@ -214,6 +214,8 @@ JOBS = RelationJobManager()
 WATCH = WatchService(DATABASE)
 # 定期本地索引扫描的并发保护（真正的互斥在数据库扫描锁里）。
 LOCAL_SCAN_LOCK = asyncio.Lock()
+# 30 秒巡检与“本地扫描完成后立即巡检”共用一把锁，避免同一进程并发累计。
+WATCH_SWEEP_LOCK = asyncio.Lock()
 
 # 勾了「使用 Taostats 历史索引」但没有 key 时直接报错，不再静默退回本地索引：
 # 以前那种回退会返回 0 个关联地址，用户只看到一张空表，以为是工具坏了。
@@ -345,7 +347,10 @@ async def _watch_scheduler() -> None:
     while True:
         await asyncio.sleep(WATCH_TICK_SECONDS)
         try:
-            await asyncio.to_thread(WATCH.sweep_local_index)
+            if WATCH_SWEEP_LOCK.locked():
+                continue
+            async with WATCH_SWEEP_LOCK:
+                await asyncio.to_thread(WATCH.sweep_local_index)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 流水线失败不能拖垮服务
@@ -369,6 +374,10 @@ async def _local_scan_scheduler() -> None:
                 )
                 if result.get("status") == "busy":
                     continue
+                # 新块刚提交就立即撞一次地址库，不等自动入库调度器下一拍。
+                if not WATCH_SWEEP_LOCK.locked():
+                    async with WATCH_SWEEP_LOCK:
+                        await asyncio.to_thread(WATCH.sweep_local_index)
         except asyncio.CancelledError:
             raise
         except ScanBusyError:
@@ -500,13 +509,14 @@ class ScanThresholdInput(BaseModel):
 
 
 class WatchConfigInput(BaseModel):
-    """地址库自动入库设置：阈值、自动入库开关、本地索引流水线开关。
+    """地址库自动入库设置：阈值、候选保留期、自动入库和流水线开关。
 
     0.9.0 起逐地址问 API 的巡检已移除，所以这里不再有开关/间隔/每日预算/
     每轮推进量/是否含代币转移——那些都只对「问 API」有意义。
     """
 
     threshold_tao: float | None = Field(default=None, ge=0, le=1_000_000)
+    candidate_window_days: int | None = Field(default=None, ge=1, le=365)
     auto_import: bool | None = None
     # 本地索引流水线开关（零 API 的那条采集链路）。
     sweep_enabled: bool | None = None

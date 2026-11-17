@@ -13,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 
 from .collector import RPCCollector, query_account_balances, query_subnet_owners
 from .crawl import CrawlState, TaostatsCrawl
@@ -1716,7 +1716,138 @@ class LinkService:
                 row.book = new
                 if row.label == old:
                     row.label = new
+            self._rewrite_watch_book_refs(db, {old: new})
             return {"renamed": len(rows), "name": new}
+
+    def _rewrite_watch_book_refs(self, db, mapping: dict[str, str]) -> None:
+        """把候选、日志和库间统计里的旧库名迁移到新库名。"""
+
+        source_names = {old for old in mapping if old}
+        target_by_source = {old: new for old, new in mapping.items() if old and new}
+        if not target_by_source:
+            return
+
+        affected_addresses = {
+            row.address
+            for row in db.scalars(
+                select(WatchCandidate).where(WatchCandidate.book.in_(source_names))
+            ).all()
+        }
+        for address in affected_addresses:
+            rows = db.scalars(
+                select(WatchCandidate).where(WatchCandidate.address == address)
+            ).all()
+            grouped: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                target = target_by_source.get(row.book or "", row.book or "")
+                bucket = grouped.setdefault(
+                    target,
+                    {
+                        "cumulative_tao": Decimal("0"),
+                        "tx_count": 0,
+                        "stake_count": 0,
+                        "first_block": 0,
+                        "last_block": 0,
+                        "trigger_address": "",
+                        "trigger_amount": Decimal("-1"),
+                        "created_at": row.created_at,
+                        "updated_at": row.updated_at,
+                    },
+                )
+                amount = Decimal(row.cumulative_tao or 0)
+                bucket["cumulative_tao"] += amount
+                bucket["tx_count"] += int(row.tx_count or 0)
+                bucket["stake_count"] += int(row.stake_count or 0)
+                first = int(row.first_block or 0)
+                if first and (not bucket["first_block"] or first < bucket["first_block"]):
+                    bucket["first_block"] = first
+                bucket["last_block"] = max(bucket["last_block"], int(row.last_block or 0))
+                if amount > bucket["trigger_amount"]:
+                    bucket["trigger_amount"] = amount
+                    bucket["trigger_address"] = row.trigger_address or ""
+                if row.created_at and (
+                    bucket["created_at"] is None or row.created_at < bucket["created_at"]
+                ):
+                    bucket["created_at"] = row.created_at
+                if row.updated_at and (
+                    bucket["updated_at"] is None or row.updated_at > bucket["updated_at"]
+                ):
+                    bucket["updated_at"] = row.updated_at
+            for row in rows:
+                db.delete(row)
+            db.flush()
+            for target, bucket in grouped.items():
+                db.add(
+                    WatchCandidate(
+                        address=address,
+                        book=target,
+                        cumulative_tao=bucket["cumulative_tao"],
+                        tx_count=bucket["tx_count"],
+                        stake_count=bucket["stake_count"],
+                        first_block=bucket["first_block"],
+                        last_block=bucket["last_block"],
+                        trigger_address=bucket["trigger_address"],
+                        created_at=bucket["created_at"] or utcnow(),
+                        updated_at=bucket["updated_at"] or utcnow(),
+                    )
+                )
+
+        for old, new in target_by_source.items():
+            db.execute(
+                update(AutoImportLog)
+                .where(AutoImportLog.book == old)
+                .values(book=new)
+            )
+            db.execute(
+                update(AutoImportLog)
+                .where(AutoImportLog.trigger_book == old)
+                .values(trigger_book=new)
+            )
+
+        pair_rows = db.scalars(select(BookPairStat)).all()
+        pair_groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in pair_rows:
+            left = target_by_source.get(row.book_a or "", row.book_a or "")
+            right = target_by_source.get(row.book_b or "", row.book_b or "")
+            if not left or not right or left == right:
+                continue
+            key = tuple(sorted((left, right)))
+            bucket = pair_groups.setdefault(
+                key, {"total_tao": Decimal("0"), "tx_count": 0, "updated_at": row.updated_at}
+            )
+            bucket["total_tao"] += Decimal(row.total_tao or 0)
+            bucket["tx_count"] += int(row.tx_count or 0)
+            if row.updated_at and (
+                bucket["updated_at"] is None or row.updated_at > bucket["updated_at"]
+            ):
+                bucket["updated_at"] = row.updated_at
+        for row in pair_rows:
+            db.delete(row)
+        db.flush()
+        for (left, right), bucket in pair_groups.items():
+            db.add(
+                BookPairStat(
+                    book_a=left,
+                    book_b=right,
+                    total_tao=bucket["total_tao"],
+                    tx_count=bucket["tx_count"],
+                    updated_at=bucket["updated_at"] or utcnow(),
+                )
+            )
+
+    @staticmethod
+    def _drop_watch_book_refs(db, book_name: str) -> None:
+        """解散库时丢弃该库的待入库候选与库间统计；历史日志保留审计。"""
+
+        db.execute(delete(WatchCandidate).where(WatchCandidate.book == book_name))
+        db.execute(
+            delete(BookPairStat).where(
+                or_(
+                    BookPairStat.book_a == book_name,
+                    BookPairStat.book_b == book_name,
+                )
+            )
+        )
 
     def merge_address_groups(
         self,
@@ -1817,6 +1948,10 @@ class LinkService:
             ).all():
                 row.book = target
                 row.label = target
+
+            self._rewrite_watch_book_refs(
+                db, {name: target for name in source_books if name != target}
+            )
 
             _record_import_batch(
                 db,
@@ -3998,6 +4133,7 @@ class LinkService:
             ]
             for row in rows:
                 db.delete(row)
+            self._drop_watch_book_refs(db, book_name)
             if registry is not None:
                 db.delete(registry)
             if snapshots:
