@@ -37,6 +37,7 @@ from .validation import is_valid_ss58
 from .service import LinkService, ScanBusyError
 from .shared_chain import (
     configure_shared_chain,
+    reset_shared_chain,
     shared_chain_stats,
     shutdown_shared_chain,
 )
@@ -852,6 +853,28 @@ async def event_monitor_api_proxy(upstream_path: str, request: Request):
         headers=response_headers,
         background=BackgroundTask(upstream_response.aclose),
     )
+
+
+@app.post("/api/event-monitor/chain/reset")
+def reset_event_monitor_chain():
+    """Force the shared Finney WebSocket and event chain collector to reconnect."""
+
+    if not EVENT_MONITOR.running:
+        raise HTTPException(503, "事件监控尚未就绪，请稍后重试")
+    collector = EVENT_MONITOR.force_chain_reconnect()
+    try:
+        shared = reset_shared_chain(
+            CONFIG.rpc_url,
+            reason="event monitor manual reset",
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"主链连接复位失败：{exc}") from exc
+    return {
+        "ok": True,
+        "collector": collector,
+        "shared_chain": shared,
+        "message": "主链连接已复位，采集器将重新建立连接",
+    }
 
 
 @app.get("/api/event-monitor/runtime")

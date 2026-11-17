@@ -152,6 +152,7 @@ const el = {
   chainHealth: document.querySelector("#chain-health"),
   chainHealthCopy: document.querySelector("#chain-health-copy"),
   chainHeartbeat: document.querySelector("#chain-heartbeat"),
+  chainReset: document.querySelector("#chain-reset-button"),
   githubHealth: document.querySelector("#github-health"),
   githubHealthCopy: document.querySelector("#github-health-copy"),
   githubHeartbeat: document.querySelector("#github-heartbeat"),
@@ -2943,6 +2944,27 @@ el.pause.addEventListener("change", () => {
   if (!state.paused) flushPending();
   render();
 });
+el.chainReset.addEventListener("click", async () => {
+  const previous = el.chainReset.textContent;
+  el.chainReset.disabled = true;
+  el.chainReset.textContent = "复位中";
+  el.chainHealthCopy.textContent = "正在取消旧请求并重新连接主链…";
+  try {
+    const result = await request("/api/event-monitor/chain/reset", { method: "POST" });
+    showToast(result.message || "主链连接已复位");
+    await loadStatus();
+    setTimeout(() => loadStatus().catch(() => {}), 2500);
+  } catch (error) {
+    showToast(error.message);
+    await loadStatus().catch(() => {});
+  } finally {
+    if (el.chainReset.isConnected) {
+      el.chainReset.disabled = false;
+      el.chainReset.textContent = previous;
+    }
+  }
+});
+
 el.refresh.addEventListener("click", async () => {
   try {
     await Promise.all([loadEvents(state.currentPage), loadStatus(), loadProduct()]);

@@ -61,7 +61,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.6" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.7" in page.text
 
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
@@ -75,7 +75,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.6"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.7"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
@@ -122,6 +122,27 @@ def test_address_event_api_uses_current_manual_note_without_rewriting_summary(me
     detail = client.get(f"/event-api/events/{event_id}").json()["event"]
     assert detail["details"]["matched_addresses"][0]["manual_note"] == "官方、出货"
     assert detail["summary"] == simulated.json()["event"]["summary"]
+
+
+def test_event_monitor_chain_reset_endpoint(merged_client, monkeypatch):
+    client, _ = merged_client
+    monkeypatch.setattr(
+        main_module.EVENT_MONITOR,
+        "force_chain_reconnect",
+        lambda: {"reset": True, "state": "connecting"},
+    )
+    monkeypatch.setattr(
+        main_module,
+        "reset_shared_chain",
+        lambda *_args, **_kwargs: {"running": True, "resets": 1},
+    )
+
+    response = client.post("/api/event-monitor/chain/reset")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert body["collector"]["state"] == "connecting"
+    assert body["shared_chain"]["resets"] == 1
 
 
 def test_shared_library_does_not_auto_populate_monitor_list(merged_client):
@@ -286,6 +307,8 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "event-address-copy" in app_js
     assert "event-note-placeholder" in app_js
     assert "openManualNoteEditor" in app_js
+    assert "chain-reset-button" in app_js
+    assert "/api/event-monitor/chain/reset" in app_js
     assert "address-${direction}" in app_js
     css = (Path(__file__).resolve().parents[1] / "app" / "static" / "event-monitor" / "styles.css").read_text(
         encoding="utf-8"
@@ -295,6 +318,7 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert ".event-row.address-transfer" in css
     assert ".event-note-placeholder" in css
     assert ".detail-backdrop { backdrop-filter: none; }" in css
+    assert ".chain-reset-button" in css
 
     floating_js = (Path(__file__).resolve().parents[1] / "app" / "static" / "event-monitor" / "floating.js").read_text(
         encoding="utf-8"

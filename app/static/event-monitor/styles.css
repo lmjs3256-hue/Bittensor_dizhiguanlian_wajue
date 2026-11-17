@@ -1331,3 +1331,12 @@ body {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--mint) 9%, transparent);
 }
 .manual-note-dialog .dialog-error { min-height: 18px; }
+
+.chain-health-actions { min-width: 74px; display: grid; justify-items: end; gap: 5px; }
+.chain-reset-button {
+  min-height: 25px; padding: 0 8px; border: 1px solid rgba(180,35,24,.22); border-radius: 6px;
+  color: var(--red); background: rgba(180,35,24,.055); font: 8px/1.35 var(--mono); cursor: pointer;
+  white-space: nowrap;
+}
+.chain-reset-button:hover:not(:disabled) { border-color: rgba(180,35,24,.44); background: rgba(180,35,24,.10); }
+.chain-reset-button:disabled { opacity: .5; cursor: default; }

@@ -161,6 +161,30 @@ class ChainCollector:
         self._connection_generation += 1
         self.status("chain", "connected", {"network": self.network, "endpoint": self.url})
 
+    def force_reconnect(self) -> dict[str, Any]:
+        """Drop this collector's adapter handle so the run loop reconnects."""
+
+        previous = self.substrate
+        self.substrate = None
+        self._connection_generation += 1
+        try:
+            if previous is not None:
+                previous.close()
+        except Exception:
+            pass
+        stamp = now_iso()
+        self.status("chain", "connecting", {
+            "network": self.network,
+            "endpoint": self.url,
+            "manual_reset": True,
+            "updated_at": stamp,
+        })
+        return {
+            "state": "connecting",
+            "connection_generation": self._connection_generation,
+            "updated_at": stamp,
+        }
+
     def rpc(self, method: str, params: list[Any] | None = None) -> Any:
         if self.substrate is None:
             raise RuntimeError("chain connection is not initialized")

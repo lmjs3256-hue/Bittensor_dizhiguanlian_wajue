@@ -208,6 +208,18 @@ class EventMonitorRuntime:
             "legacy_inheritance": self.legacy_inheritance,
         }
 
+    def force_chain_reconnect(self) -> dict[str, Any]:
+        """Ask the chain collector to reconnect after a shared-gateway reset."""
+
+        with self._lock:
+            for name, worker in self._workers:
+                if name != "chain":
+                    continue
+                reconnect = getattr(worker, "force_reconnect", None)
+                if callable(reconnect):
+                    return {"reset": True, **reconnect()}
+            return {"reset": False, "state": "unavailable"}
+
     def _create_application(self, settings: RuntimeSettings) -> tuple[AppContext, list[tuple[str, Any]]]:
         store = Store(settings.database)
         if settings.legacy_db is not None and settings.legacy_db != settings.database:

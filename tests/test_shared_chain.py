@@ -117,3 +117,60 @@ def test_event_adapter_uses_shared_gateway_event_priority(monkeypatch):
     assert adapter.rpc_request("chain_getHeader", []) == {"result": "0x1"}
     assert gateway.calls == [("chain_getHeader", PRIORITY_EVENT)]
     adapter.close()
+
+
+def test_event_timeout_resets_gateway_and_allows_reconnect():
+    started = threading.Event()
+
+    class Client:
+        init_count = 0
+
+        async def initialize(self):
+            type(self).init_count += 1
+
+        async def close(self):
+            return None
+
+    async def hang(_client):
+        started.set()
+        await asyncio.Event().wait()
+
+    gateway = SharedChainGateway("fake://chain", client_factory=Client)
+    try:
+        with pytest.raises(TimeoutError, match="timed out"):
+            gateway.run_sync(PRIORITY_EVENT, hang, timeout=0.08)
+        assert started.is_set()
+        stats = gateway.stats()
+        assert stats["timeouts"] == 1
+        assert stats["resets"] == 1
+        assert gateway.run_sync(PRIORITY_EVENT, lambda _client: 7, timeout=2) == 7
+        assert Client.init_count >= 2
+    finally:
+        gateway.close()
+
+
+def test_manual_reset_releases_pending_event_future():
+    started = threading.Event()
+
+    class Client:
+        async def initialize(self):
+            return None
+
+        async def close(self):
+            return None
+
+    async def hang(_client):
+        started.set()
+        await asyncio.Event().wait()
+
+    gateway = SharedChainGateway("fake://chain", client_factory=Client)
+    try:
+        pending = gateway.submit(PRIORITY_EVENT, hang)
+        assert started.wait(timeout=2)
+        stats = gateway.reset(reason="test reset", timeout=3)
+        assert stats["resets"] == 1
+        with pytest.raises(RuntimeError, match="shared chain"):
+            pending.result(timeout=2)
+        assert gateway.run_sync(PRIORITY_EVENT, lambda _client: "ok", timeout=2) == "ok"
+    finally:
+        gateway.close()

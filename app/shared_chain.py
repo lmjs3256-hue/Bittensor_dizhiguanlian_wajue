@@ -12,6 +12,8 @@ from typing import Any, Callable
 
 PRIORITY_EVENT = 0
 PRIORITY_NORMAL = 100
+DEFAULT_EVENT_TIMEOUT_SECONDS = 30.0
+DEFAULT_NORMAL_TIMEOUT_SECONDS = 120.0
 
 
 @dataclass(order=True)
@@ -44,7 +46,15 @@ class SharedChainGateway:
         self._closed = False
         self._sequence = 0
         self._lock = threading.Lock()
-        self._counters = {"event": 0, "normal": 0, "errors": 0}
+        self._reset_lock = threading.Lock()
+        self._current_item: _WorkItem | None = None
+        self._counters = {
+            "event": 0,
+            "normal": 0,
+            "errors": 0,
+            "timeouts": 0,
+            "resets": 0,
+        }
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._run_loop,
@@ -87,6 +97,7 @@ class SharedChainGateway:
             item = await self._queue.get()
             if item.future.cancelled():
                 continue
+            self._current_item = item
             try:
                 client = await self._ensure_client()
                 result = item.operation(client)
@@ -94,11 +105,18 @@ class SharedChainGateway:
                     result = await result
                 if not item.future.done():
                     item.future.set_result(result)
+            except asyncio.CancelledError:
+                if not item.future.done():
+                    item.future.set_exception(RuntimeError("shared chain operation cancelled"))
+                raise
             except Exception as exc:  # noqa: BLE001 - propagated to the caller
                 with self._lock:
                     self._counters["errors"] += 1
                 if not item.future.done():
                     item.future.set_exception(exc)
+            finally:
+                if self._current_item is item:
+                    self._current_item = None
 
     def submit(
         self,
@@ -128,6 +146,15 @@ class SharedChainGateway:
             raise
         return future
 
+    def _operation_timeout(self, priority: int, timeout: float | None) -> float:
+        if timeout is not None:
+            return max(0.1, float(timeout))
+        return (
+            DEFAULT_EVENT_TIMEOUT_SECONDS
+            if priority <= PRIORITY_EVENT
+            else DEFAULT_NORMAL_TIMEOUT_SECONDS
+        )
+
     def run_sync(
         self,
         priority: int,
@@ -135,7 +162,18 @@ class SharedChainGateway:
         *,
         timeout: float | None = None,
     ) -> Any:
-        return self.submit(priority, operation, timeout=timeout).result(timeout=timeout)
+        effective_timeout = self._operation_timeout(priority, timeout)
+        future = self.submit(priority, operation, timeout=min(effective_timeout, 5.0))
+        try:
+            return future.result(timeout=effective_timeout)
+        except TimeoutError as exc:
+            with self._lock:
+                self._counters["timeouts"] += 1
+            future.cancel()
+            self.reset(reason=f"operation timeout after {effective_timeout:g}s")
+            raise TimeoutError(
+                f"shared chain operation timed out after {effective_timeout:g}s"
+            ) from exc
 
     async def run_async(
         self,
@@ -144,8 +182,24 @@ class SharedChainGateway:
         *,
         timeout: float | None = None,
     ) -> Any:
-        future = self.submit(priority, operation, timeout=timeout)
-        return await asyncio.wrap_future(future)
+        effective_timeout = self._operation_timeout(priority, timeout)
+        future = self.submit(priority, operation, timeout=min(effective_timeout, 5.0))
+        try:
+            return await asyncio.wait_for(
+                asyncio.wrap_future(future),
+                timeout=effective_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            with self._lock:
+                self._counters["timeouts"] += 1
+            future.cancel()
+            await asyncio.to_thread(
+                self.reset,
+                reason=f"operation timeout after {effective_timeout:g}s",
+            )
+            raise TimeoutError(
+                f"shared chain operation timed out after {effective_timeout:g}s"
+            ) from exc
 
     async def initialize(self, *, priority: int = PRIORITY_NORMAL) -> None:
         await self.run_async(priority, lambda client: client.initialize())
@@ -274,6 +328,58 @@ class SharedChainGateway:
             timeout=timeout,
         )
 
+    def reset(self, *, reason: str = "manual reset", timeout: float = 15.0) -> dict[str, Any]:
+        """Cancel the active client, fail pending work, and create a fresh connection."""
+
+        if self._closed:
+            return self.stats()
+        with self._reset_lock:
+            async def restart() -> None:
+                worker = self._worker_task
+                if worker is not None:
+                    worker.cancel()
+                    try:
+                        await worker
+                    except asyncio.CancelledError:
+                        pass
+
+                current = self._current_item
+                if current is not None and not current.future.done():
+                    current.future.set_exception(RuntimeError(f"shared chain reset: {reason}"))
+                self._current_item = None
+
+                queue = self._queue
+                if queue is not None:
+                    while not queue.empty():
+                        item = queue.get_nowait()
+                        if not item.future.done():
+                            item.future.set_exception(
+                                RuntimeError(f"shared chain reset: {reason}")
+                            )
+
+                client = self._client
+                self._client = None
+                self._initialized = False
+                if client is not None:
+                    try:
+                        await asyncio.wait_for(client.close(), timeout=5.0)
+                    except Exception:
+                        pass
+
+                self._queue = asyncio.PriorityQueue()
+                self._worker_task = self._loop.create_task(self._worker())
+
+            if not self._loop.is_running():
+                return self.stats()
+            future = asyncio.run_coroutine_threadsafe(restart(), self._loop)
+            try:
+                future.result(timeout=timeout)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"shared chain reset failed: {exc}") from exc
+            with self._lock:
+                self._counters["resets"] += 1
+        return self.stats()
+
     def stats(self) -> dict[str, Any]:
         with self._lock:
             counters = dict(self._counters)
@@ -364,6 +470,24 @@ def get_shared_chain(url: str) -> SharedChainGateway:
 def shared_chain_stats() -> dict[str, Any]:
     with _shared_lock:
         return _shared_gateway.stats() if _shared_gateway else {"running": False}
+
+
+def reset_shared_chain(
+    url: str | None = None,
+    *,
+    reason: str = "manual reset",
+) -> dict[str, Any]:
+    """Reset the shared connection in place without replacing its adapter object."""
+
+    global _shared_gateway
+    with _shared_lock:
+        gateway = _shared_gateway
+        if gateway is None and url:
+            gateway = SharedChainGateway(url)
+            _shared_gateway = gateway
+    if gateway is None:
+        return {"running": False, "resets": 0, "reason": reason}
+    return {**gateway.reset(reason=reason), "reason": reason}
 
 
 def shutdown_shared_chain() -> None:
