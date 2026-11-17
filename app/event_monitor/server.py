@@ -443,6 +443,7 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                         watched = self.server.context.store.add_watched_address(
                             network, address, address_label, min_transfer_tao,
                             library_book=library_book,
+                            clear_exclusion=True,
                         )
                     except ValueError:
                         skipped.append(address)

@@ -1254,3 +1254,13 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u al
 - 事件服务首次启动自动从 `../Bittensor_event/data/events.db` 继承子网档案、归档、仓库和交易状态；可用 `WALLET_LINK_EVENT_LEGACY_DB` 指定旧库，用 `WALLET_LINK_EVENT_INHERIT_LEGACY=0` 关闭。
 - `seed_default_subnet_watch()` 会按地址库把 `SN1`–`SN128` 加入事件监控，状态保存在 `collector_state` 的 `watch:default-subnet-books:v1`。不得改成每次启动扫描整库后重新添加，否则会复活用户主动移出的地址。
 - 完整服务实测事件链状态 `connected`；旧库继承与 SN 默认监控结果见 `VERIFICATION.md`。
+
+
+## 15. 2026-11-18 事件监控 1.0.2
+
+- 项目方识别范围为 `SN1`–`SN127` 地址库。地址事件和冷键交换事件使用 `project_owner_tags` 保存来源项目方，摘要末尾显示 `（SNx项目方）`。
+- 非项目方地址库不得追加尾注，仍使用原事件发生子网前缀。
+- 事件列表、详情和浮窗统一使用 `.project-owner-suffix` 琥珀色高亮样式；长摘要允许换行，尾注不能被省略号截掉。
+- `WatchService.sweep_local_index()` 返回 `address_rows`。主服务 `_sync_auto_import_rows_to_event()` 只同步到已确认且至少有一个启用地址的地址库。
+- `watched_address_exclusions` 保存用户主动移出的地址；自动同步与默认 seeding 均不得绕开排除。只有事件监控 API 显式重新添加才清除排除。
+- 本轮全量测试 **792 passed**，浏览器模拟信号和详情尾注已验收。

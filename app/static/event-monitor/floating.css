@@ -90,3 +90,9 @@ main { overflow: auto; }
   .event { grid-template-columns: 5px minmax(0,1fr); }
   .event time { grid-column: 2; }
 }
+
+.project-owner-suffix {
+  color: #ffd166;
+  font-weight: 850;
+  text-shadow: 0 0 10px rgba(255,209,102,.28);
+}

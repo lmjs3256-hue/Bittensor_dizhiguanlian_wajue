@@ -61,7 +61,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.1" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.2" in page.text
 
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
@@ -75,7 +75,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.1"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.2"
 
 
 def test_shared_library_does_not_auto_populate_monitor_list(merged_client):
@@ -287,3 +287,64 @@ def test_default_sn1_to_sn128_books_are_seeded_once_without_resurrection(tmp_pat
     assert third["added"] == 1
     assert "SN3 New" in third["new_books"]
     assert len(store.list_watched_addresses("finney")) == 2
+
+
+def test_auto_import_rows_sync_only_monitored_books_and_respect_exclusions(merged_client):
+    client, database = merged_client
+    third_address = "5HCFWvRqzSHWRPecN7q8J6c7aKQnrCZTMHstPv39xL1wgDHh"
+
+    create_book(client, "SN1 Apex", [ADDRESS])
+    create_book(client, "SN2 DaniLabs", [third_address])
+    monitored = client.post(
+        "/event-api/addresses",
+        json={
+            "network": "finney",
+            "addresses": [ADDRESS],
+            "label": "SN1 Apex",
+            "library_book": "SN1 Apex",
+        },
+    )
+    assert monitored.status_code == 201
+
+    # 后续自动入库把 ADDRESS_TWO 加入已监控的 SN1 地址库。
+    client.post(
+        "/api/library/books",
+        json={
+            "name": "SN1 Apex",
+            "addresses": [ADDRESS_TWO],
+            "include_seed": False,
+            "category": "其他",
+        },
+    )
+    result = main_module._sync_auto_import_rows_to_event({
+        "address_rows": [
+            {"address": ADDRESS_TWO, "book": "SN1 Apex"},
+            {"address": third_address, "book": "SN2 DaniLabs"},
+        ]
+    })
+    assert result["added"] == 1
+    watched = client.get("/event-api/addresses").json()["addresses"]
+    assert {item["address"] for item in watched} == {ADDRESS, ADDRESS_TWO}
+    assert {item["library_book"] for item in watched} == {"SN1 Apex"}
+
+    synced = next(item for item in watched if item["address"] == ADDRESS_TWO)
+    assert client.delete(f"/event-api/addresses/{synced['address_id']}").status_code == 200
+    again = main_module._sync_auto_import_rows_to_event({
+        "address_rows": [{"address": ADDRESS_TWO, "book": "SN1 Apex"}]
+    })
+    assert again["skipped"] == 1
+    watched = client.get("/event-api/addresses").json()["addresses"]
+    assert {item["address"] for item in watched} == {ADDRESS}
+
+    manual = client.post(
+        "/event-api/addresses",
+        json={
+            "network": "finney",
+            "addresses": [ADDRESS_TWO],
+            "label": "SN1 Apex",
+            "library_book": "SN1 Apex",
+        },
+    )
+    assert manual.status_code == 201
+    watched = client.get("/event-api/addresses").json()["addresses"]
+    assert {item["address"] for item in watched} == {ADDRESS, ADDRESS_TWO}

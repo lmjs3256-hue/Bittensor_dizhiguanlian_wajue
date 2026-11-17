@@ -72,6 +72,7 @@ BUILTIN_ADDRESSES_ENABLED = True
 # 本次启动内置名单的写入结果，供 /api/diagnose 显示「新版本真的跑起来了吗」。
 BUILTIN_STARTUP_RESULT: dict[str, Any] | None = None
 DEFAULT_SUBNET_WATCH_RESULT: dict[str, Any] | None = None
+EVENT_WATCH_AUTO_SYNC_RESULT: dict[str, Any] | None = None
 # 地址库自动入库的调度间隔：每 30 秒拿本地索引的新块撞一次地址库。
 # 不消耗任何 Taostats 额度（数据来自 RPC 直采的 transfers 表）。
 # 与 watch.py 的 SWEEP_TICK_SECONDS 同源：前端「距下一轮」倒计时依赖这个值，
@@ -396,6 +397,70 @@ async def _job_scheduler() -> None:
             continue
 
 
+def _sync_auto_import_rows_to_event(result: dict[str, Any]) -> dict[str, Any] | None:
+    """把自动入库本轮新增地址同步到已经确认监控的地址库。"""
+
+    global EVENT_WATCH_AUTO_SYNC_RESULT
+    rows = result.get("address_rows") or []
+    if not rows or not EVENT_MONITOR.running or EVENT_MONITOR.context is None:
+        return None
+    store = EVENT_MONITOR.context.store
+    watched = store.list_watched_addresses("finney")
+    monitored_books = {
+        str(item.get("library_book") or "").strip()
+        for item in watched
+        if item.get("enabled") and str(item.get("library_book") or "").strip()
+    }
+    if not monitored_books:
+        return None
+    library = {str(item.get("address") or ""): item for item in SERVICE.library()}
+    watched_by_address = {str(item.get("address") or ""): item for item in watched}
+    added = 0
+    updated = 0
+    skipped = 0
+    synced_books: set[str] = set()
+    for row in rows:
+        address = str(row.get("address") or "").strip()
+        book = str(row.get("book") or "").strip()
+        if not address or not book or book not in monitored_books:
+            continue
+        item = library.get(address) or {}
+        label = str(item.get("label") or book)[:120]
+        existing = watched_by_address.get(address)
+        try:
+            if existing is not None:
+                if str(existing.get("library_book") or "") != book:
+                    changed = store.update_watched_address(
+                        int(existing["address_id"]),
+                        label=label,
+                        library_book=book,
+                    )
+                    if changed is not None:
+                        watched_by_address[address] = changed
+                        updated += 1
+                        synced_books.add(book)
+                continue
+            store.add_watched_address(
+                "finney", address, label, 0, library_book=book,
+            )
+            added += 1
+            synced_books.add(book)
+        except ValueError:
+            skipped += 1
+    EVENT_WATCH_AUTO_SYNC_RESULT = {
+        "added": added,
+        "updated": updated,
+        "skipped": skipped,
+        "books": sorted(synced_books),
+    }
+    if added or updated:
+        print(
+            f"[event-monitor] 自动入库同步新增 {added} 个、改库 {updated} 个地址",
+            file=sys.stderr,
+        )
+    return EVENT_WATCH_AUTO_SYNC_RESULT
+
+
 async def _watch_scheduler() -> None:
     """地址库自动入库：每 30 秒把本地索引里的新块拿去撞一次地址库。
 
@@ -413,7 +478,8 @@ async def _watch_scheduler() -> None:
             if WATCH_SWEEP_LOCK.locked():
                 continue
             async with WATCH_SWEEP_LOCK:
-                await asyncio.to_thread(WATCH.sweep_local_index)
+                result = await asyncio.to_thread(WATCH.sweep_local_index)
+                await asyncio.to_thread(_sync_auto_import_rows_to_event, result)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 流水线失败不能拖垮服务
@@ -440,7 +506,8 @@ async def _local_scan_scheduler() -> None:
                 # 新块刚提交就立即撞一次地址库，不等自动入库调度器下一拍。
                 if not WATCH_SWEEP_LOCK.locked():
                     async with WATCH_SWEEP_LOCK:
-                        await asyncio.to_thread(WATCH.sweep_local_index)
+                        result = await asyncio.to_thread(WATCH.sweep_local_index)
+                        await asyncio.to_thread(_sync_auto_import_rows_to_event, result)
         except asyncio.CancelledError:
             raise
         except ScanBusyError:
@@ -998,6 +1065,7 @@ def health(svc: Annotated[LinkService, Depends(service)]):
         },
         "shared_chain": shared_chain_stats(),
         "default_subnet_watch": DEFAULT_SUBNET_WATCH_RESULT,
+        "event_watch_auto_sync": EVENT_WATCH_AUTO_SYNC_RESULT,
     }
 
 

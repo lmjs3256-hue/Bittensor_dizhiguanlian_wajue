@@ -612,6 +612,133 @@ class ChainShapeTests(unittest.TestCase):
             self.assertEqual(published[0][1], "discovered")
             collector.close()
 
+    def test_project_owner_transfer_gets_prominent_source_suffix(self) -> None:
+        coldkey = "5ColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ1234"
+        raw = {
+            "raw_id": "project-owner-transfer",
+            "event_index": 1,
+            "module": "Balances",
+            "event_name": "Transfer",
+            "raw": {
+                "attributes": {
+                    "from": coldkey,
+                    "to": "5OtherKeyABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                    "amount": 1_000_000_000,
+                }
+            },
+        }
+        event = address_event_record(
+            raw,
+            network="finney",
+            watched_addresses=[{
+                "address": coldkey,
+                "label": "SN46 项目方",
+                "library_book": "SN46项目方相关",
+            }],
+            block_hash="0x" + "a" * 64,
+            height=100,
+            spec_version=491,
+            event_at="2026-11-18T00:00:00.000Z",
+        )
+        self.assertTrue(event["summary"].endswith("（SN46项目方）"))
+        self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
+
+    def test_project_owner_token_transfer_gets_source_suffix(self) -> None:
+        coldkey = "5ColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ1234"
+        raw = {
+            "raw_id": "project-owner-token-transfer",
+            "event_index": 2,
+            "module": "SubtensorModule",
+            "event_name": "StakeTransferred",
+            "raw": {
+                "attributes": [
+                    coldkey,
+                    "5DestinationABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                    "5HotKeyABCDEFGHIJKLMNOPQRSTUVWXYZ5678",
+                    46,
+                    78,
+                    1_000_000_000,
+                ],
+            },
+        }
+        event = address_event_record(
+            raw,
+            network="finney",
+            watched_addresses=[{
+                "address": coldkey,
+                "label": "SN46 项目方",
+                "library_book": "SN46项目方相关",
+            }],
+            block_hash="0x" + "d" * 64,
+            height=103,
+            spec_version=491,
+            event_at="2026-11-18T00:00:00.000Z",
+        )
+        self.assertTrue(event["summary"].startswith("SN46 → SN78 代币转移"))
+        self.assertTrue(event["summary"].endswith("（SN46项目方）"))
+        self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
+
+    def test_non_project_owner_keeps_original_subnet_prefix_only(self) -> None:
+        coldkey = "5ColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ1234"
+        raw = {
+            "raw_id": "normal-wallet-stake",
+            "event_index": 1,
+            "module": "SubtensorModule",
+            "event_name": "StakeAdded",
+            "raw": {
+                "attributes": [coldkey, "5HotKeyABCDEFGHIJKLMNOPQRSTUVWXYZ5678",
+                               1_000_000_000, 2_000_000_000, 78, 0],
+            },
+        }
+        event = address_event_record(
+            raw,
+            network="finney",
+            watched_addresses=[{
+                "address": coldkey,
+                "label": "普通观察地址",
+                "library_book": "普通地址库",
+            }],
+            block_hash="0x" + "b" * 64,
+            height=101,
+            spec_version=491,
+            event_at="2026-11-18T00:00:00.000Z",
+        )
+        self.assertTrue(event["summary"].startswith("SN78 · "))
+        self.assertNotIn("项目方）", event["summary"])
+        self.assertEqual(event["details"]["project_owner_tags"], [])
+
+    def test_project_owner_coldkey_swap_chain_event_gets_source_suffix(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        rules, _ = load_rules(root / "app" / "event_monitor" / "config" / "event_rules.json")
+        collector = ChainCollector(
+            url="unused", network="finney", store=object(), rules=rules,
+            publish=lambda *args: None, status=lambda *args: None,
+        )
+        coldkey = "5ColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ1234"
+        raw_event = ScaleValue({
+            "event_index": 9,
+            "module_id": "SubtensorModule",
+            "event_id": "ColdkeySwapped",
+            "attributes": [coldkey, "5NewColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ"],
+            "phase": "ApplyExtrinsic",
+        })
+        raws, mapped = collector._map_block_events(
+            [raw_event],
+            watched_addresses=[{
+                "address": coldkey,
+                "label": "SN46 项目方",
+                "library_book": "SN46项目方相关",
+            }],
+            disabled_netuids=set(),
+            block_hash="0x" + "c" * 64,
+            height=102,
+            spec_version=491,
+            event_at="2026-11-18T00:00:00.000Z",
+        )
+        swap = next(item for item in mapped if item["event_name"].endswith("ColdkeySwapped"))
+        self.assertTrue(swap["summary"].endswith("（SN46项目方）"))
+        self.assertEqual(swap["details"]["project_owner_tags"], ["SN46项目方"])
+
     def test_address_monitor_masks_addresses_and_builds_concise_events(self) -> None:
         watched = [{
             "address": "5ColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ1234",
@@ -1054,6 +1181,7 @@ class ServerTests(unittest.TestCase):
                     data=json.dumps({
                         "address": "5HCFWvRqzSHWRPecN7q8J6c7aKQnrCZTMHstPv39xL1wgDHh",
                         "label": "Browser Test",
+                        "library_book": "SN46项目方相关",
                         "min_transfer_tao": "0.5",
                     }).encode(),
                     headers={"Content-Type": "application/json"},
@@ -1148,7 +1276,11 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(simulated_address["event_type"], "解质押")
                 self.assertEqual(
                     simulated_address["summary"],
-                    f"SN78 · Browser Test · {watched['masked']} · 卖出 1.00 TAO",
+                    f"SN78 · Browser Test · {watched['masked']} · 卖出 1.00 TAO（SN46项目方）",
+                )
+                self.assertEqual(
+                    simulated_address["details"]["project_owner_tags"],
+                    ["SN46项目方"],
                 )
                 self.assertIn(watched["masked"], simulated_address["summary"])
                 delete_address_simulation = urllib.request.Request(

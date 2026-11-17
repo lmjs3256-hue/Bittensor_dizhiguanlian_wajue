@@ -989,6 +989,8 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
   --theme-grid: rgba(28,37,50,.035);
   --theme-radial: rgba(9,111,100,.10);
   --on-accent: #ffffff;
+  --project-owner: #9a4b00;
+  --project-owner-soft: #fff0d8;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
@@ -1008,6 +1010,8 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
     --theme-grid: rgba(255,255,255,.025);
     --theme-radial: rgba(99,213,194,.10);
     --on-accent: #0d1418;
+    --project-owner: #ffd166;
+    --project-owner-soft: rgba(161,79,0,.24);
   }
 }
 :root[data-theme="eye"] {
@@ -1027,6 +1031,8 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
   --theme-grid: rgba(54,57,47,.04);
   --theme-radial: rgba(82,102,77,.10);
   --on-accent: #ffffff;
+  --project-owner: #805b2d;
+  --project-owner-soft: #f2ead8;
 }
 :root[data-theme="darkgray"] {
   --bg: #292b2f;
@@ -1045,6 +1051,8 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
   --theme-grid: rgba(255,255,255,.025);
   --theme-radial: rgba(169,181,166,.08);
   --on-accent: #151815;
+  --project-owner: #ffd28a;
+  --project-owner-soft: rgba(223,194,140,.16);
 }
 body {
   background:
@@ -1067,3 +1075,36 @@ body {
 :root[data-theme="darkgray"] .subnet-event-item > span { color: var(--text); }
 :root[data-theme="darkgray"] .alert-banner { color: var(--amber); }
 :root[data-theme="darkgray"] .alert-banner.critical { color: var(--red); }
+
+.project-owner-suffix {
+  display: inline-block;
+  margin-left: .32em;
+  padding: .08em .38em;
+  border: 1px solid color-mix(in srgb, var(--project-owner) 58%, transparent);
+  border-radius: .36em;
+  color: var(--project-owner);
+  background: var(--project-owner-soft);
+  font-weight: 850;
+  letter-spacing: .01em;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--project-owner) 24%, transparent);
+}
+.detail-summary .project-owner-suffix { font-size: .78em; vertical-align: .08em; }
+
+/* 项目方尾注必须在长摘要末尾保持可见，不被事件行省略号截掉。 */
+.event-copy strong {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:baseline;
+  white-space:normal;
+  overflow:visible;
+  text-overflow:clip;
+}
+.event-copy strong > .project-owner-suffix,
+.detail-summary > .project-owner-suffix {
+  display:inline-block;
+  flex:0 0 auto;
+  margin-top:0;
+  color:var(--project-owner);
+  font-family:inherit;
+  white-space:nowrap;
+}

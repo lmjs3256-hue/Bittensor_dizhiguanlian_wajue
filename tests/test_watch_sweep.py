@@ -135,6 +135,7 @@ def test_new_transfer_from_library_address_imports_partner(
     assert result["scanned"] == 1
     assert result["hits"] == 1
     assert result["inserted"] == 1
+    assert result["address_rows"] == [{"address": PARTNER, "book": "测试库"}]
     assert _in_library(database, PARTNER)
 
 

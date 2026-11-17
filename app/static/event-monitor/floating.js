@@ -39,6 +39,21 @@ function esc(value) {
   return node.innerHTML;
 }
 
+const PROJECT_OWNER_SUFFIX = /（SN\d+项目方(?:、SN\d+项目方)*）$/;
+
+function summaryHtml(event) {
+  const summary = String(event.summary || "");
+  const tags = Array.isArray(event.details?.project_owner_tags)
+    ? event.details.project_owner_tags.filter(Boolean)
+    : [];
+  const text = tags.length && !PROJECT_OWNER_SUFFIX.test(summary)
+    ? `${summary}（${tags.join("、")}）`
+    : summary;
+  const match = text.match(PROJECT_OWNER_SUFFIX);
+  if (!match) return esc(text);
+  return `${esc(text.slice(0, -match[0].length))}<span class="project-owner-suffix">${esc(match[0])}</span>`;
+}
+
 function time(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
@@ -141,7 +156,7 @@ async function loadEvents() {
         : event.source === "github" ? "GitHub" : event.source === "simulation" ? "模拟" : "链上";
       return `<article class="event tone-${tone}${priorityClass}${latest ? " is-latest-event" : ""}" data-latest-until="${latest ? eventTimestamp + 30000 : ""}">
         <i></i>
-        <div class="event-copy"><strong>${esc(event.summary)}</strong><small>${esc(source)} · ${esc(event.event_type)} · ${esc(event.event_name)}</small></div>
+        <div class="event-copy"><strong>${summaryHtml(event)}</strong><small>${esc(source)} · ${esc(event.event_type)} · ${esc(event.event_name)}</small></div>
         <time>${esc(time(event.event_at))}</time>
       </article>`;
     }).join("");

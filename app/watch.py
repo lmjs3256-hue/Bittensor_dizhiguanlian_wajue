@@ -563,6 +563,7 @@ class WatchService:
                     "scanned": len(rows),
                     "hits": 0,
                     "inserted": 0,
+                    "address_rows": [],
                     "last_block": int(last.block_number),
                     "last_event_index": int(last.event_index),
                     "reason": "auto_import_off",
@@ -584,6 +585,7 @@ class WatchService:
 
             inserted = 0
             hits = 0
+            related_rows: dict[str, dict[str, str]] = {}
             for row in rows:
                 # 库与库之间的往来统计：关联结果靠它给「同档对手方」加分。
                 # 原来只有逐地址 API 巡检会写这张表，0.9.0 删掉那条链路后
@@ -645,9 +647,13 @@ class WatchService:
                     if imported:
                         inserted += 1
                     if related_row is not None:
-                        # 本轮刚入库的地址立刻进入已知集合，后续 B→C、C→D
-                        # 事件可在同一批内继续逐层传播，不用等下一轮。
+                        # 本轮刚入库或改判的地址立刻进入已知集合，后续
+                        # B→C、C→D 可在同一批内继续传播。
                         by_address[related_row.address] = related_row
+                        related_rows[related_row.address] = {
+                            "address": related_row.address,
+                            "book": related_row.book or "",
+                        }
                     # 一侧已经记过账就别再从另一侧重复累计同一笔。
                     break
 
@@ -662,7 +668,8 @@ class WatchService:
             "scanned": len(rows),
             "hits": hits,
             "inserted": inserted,
-                "expired_candidates": int(expired_candidates),
+            "address_rows": list(related_rows.values()),
+            "expired_candidates": int(expired_candidates),
             "last_block": int(last.block_number),
             "last_event_index": int(last.event_index),
         }

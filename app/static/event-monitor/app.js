@@ -697,6 +697,30 @@ function renderPagination() {
   el.pageLast.disabled = page >= pages;
 }
 
+const PROJECT_OWNER_SUFFIX = /（SN\d+项目方(?:、SN\d+项目方)*）$/;
+
+function eventSummaryText(event) {
+  const summary = String(event.summary || "");
+  const tags = Array.isArray(event.details?.project_owner_tags)
+    ? event.details.project_owner_tags.filter(Boolean)
+    : [];
+  if (!tags.length || PROJECT_OWNER_SUFFIX.test(summary)) return summary;
+  return `${summary}（${tags.join("、")}）`;
+}
+
+function renderEventSummary(element, event) {
+  const text = eventSummaryText(event);
+  const match = text.match(PROJECT_OWNER_SUFFIX);
+  if (!match) {
+    element.textContent = text;
+    return;
+  }
+  element.append(
+    document.createTextNode(text.slice(0, -match[0].length)),
+    infoElement("span", "project-owner-suffix", match[0]),
+  );
+}
+
 function renderEvent(event, index = 0) {
   const row = document.createElement("article");
   const tone = ["red", "yellow", "green"][index % 3];
@@ -717,7 +741,7 @@ function renderEvent(event, index = 0) {
   row.tabIndex = 0;
   row.dataset.id = event.event_id;
   row.setAttribute("role", "button");
-  row.setAttribute("aria-label", `查看事件：${event.summary}`);
+  row.setAttribute("aria-label", `查看事件：${eventSummaryText(event)}`);
 
   const main = document.createElement("div");
   main.className = "event-main";
@@ -731,7 +755,7 @@ function renderEvent(event, index = 0) {
   const copy = document.createElement("div");
   copy.className = "event-copy";
   const title = document.createElement("strong");
-  title.textContent = event.summary;
+  renderEventSummary(title, event);
   const meta = document.createElement("span");
   const priorityLabel = event.priority_level === 2 ? " · 重点" : event.priority_level === 1 ? " · 优先" : "";
   const subnetLabel = event.event_name === "Balances.Transfer"
@@ -875,7 +899,7 @@ function renderDetail(data) {
   time.textContent = formatFullTime(event.event_at);
   const summary = document.createElement("h2");
   summary.className = "detail-summary";
-  summary.textContent = event.summary;
+  renderEventSummary(summary, event);
   const meta = document.createElement("div");
   meta.className = "detail-meta";
   meta.textContent = `${event.event_type} · ${event.event_name}`;
@@ -2750,7 +2774,7 @@ el.simulationForm.addEventListener("submit", async (event) => {
     el.sourceFilter.value = "";
     setPanelCleared(false, { render: false });
     await loadEvents(1);
-    showToast(`已发送并显示：${response.event.summary}`);
+    showToast(`已发送并显示：${eventSummaryText(response.event)}`);
   } catch (error) {
     el.simulationError.textContent = error.message;
   }

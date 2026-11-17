@@ -15,7 +15,12 @@ from typing import Any
 
 import xxhash
 
-from .address_monitor import address_event_record, mask_address
+from .address_monitor import (
+    address_event_record,
+    append_project_owner_suffix,
+    mask_address,
+    project_owner_tags_for_raw_event,
+)
 from .github import parse_github_repository
 from .rules import event_fields, get_rule
 from .storage import Store, now_iso
@@ -722,6 +727,14 @@ class ChainCollector:
                 normalized.get("netuid") is None
                 or int(normalized["netuid"]) not in disabled_netuids
             ):
+                owner_tags = project_owner_tags_for_raw_event(raw, watched_addresses)
+                if owner_tags:
+                    normalized["summary"] = append_project_owner_suffix(
+                        normalized.get("summary") or "", owner_tags
+                    )
+                    normalized_details = dict(normalized.get("details") or {})
+                    normalized_details["project_owner_tags"] = owner_tags
+                    normalized["details"] = normalized_details
                 if not raw_added:
                     raws.append(raw)
                 mapped.append(normalized)

@@ -244,6 +244,12 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS watched_addresses_network
                     ON watched_addresses(network, enabled);
+                CREATE TABLE IF NOT EXISTS watched_address_exclusions (
+                    network TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(network, address)
+                );
                 """
             )
             columns = {
@@ -1181,10 +1187,22 @@ class Store:
     def add_watched_address(
         self, network: str, address: str, label: str,
         min_transfer_tao: float = 0, library_book: str = "",
+        *, clear_exclusion: bool = False,
     ) -> dict[str, Any]:
         stamp = now_iso()
         try:
             with self.connect() as db:
+                excluded = db.execute(
+                    "SELECT 1 FROM watched_address_exclusions WHERE network=? AND address=?",
+                    (network, address),
+                ).fetchone()
+                if excluded and not clear_exclusion:
+                    raise ValueError("该地址已被用户移出事件监控")
+                if clear_exclusion:
+                    db.execute(
+                        "DELETE FROM watched_address_exclusions WHERE network=? AND address=?",
+                        (network, address),
+                    )
                 cur = db.execute(
                     """INSERT INTO watched_addresses
                        (network,address,label,min_transfer_tao,library_book,enabled,created_at,updated_at)
@@ -1237,6 +1255,16 @@ class Store:
 
     def delete_watched_address(self, address_id: int) -> bool:
         with self.connect() as db:
+            row = db.execute(
+                "SELECT network,address FROM watched_addresses WHERE address_id=?",
+                (address_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            db.execute(
+                "INSERT OR REPLACE INTO watched_address_exclusions(network,address,created_at) VALUES(?,?,?)",
+                (row["network"], row["address"], now_iso()),
+            )
             cur = db.execute(
                 "DELETE FROM watched_addresses WHERE address_id=?",
                 (address_id,),
