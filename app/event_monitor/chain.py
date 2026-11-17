@@ -886,6 +886,22 @@ class ChainCollector:
     def process_block(self, height: int) -> list[dict[str, Any]]:
         return self._persist_block(self._fetch_block(height))
 
+    def _report_progress(self, target: int, processed: int) -> None:
+        fresh = self.store.get_cursor(f"chain:{self.network}") or {}
+        current_height = int(fresh.get("height") or 0)
+        self.status("chain", "connected", {
+            "network": self.network,
+            "best_height": target,
+            "last_processed": current_height,
+            "finalized_height": None,
+            "spec_version": self.last_spec_version or fresh.get("spec_version"),
+            "lag_blocks": max(0, target - current_height),
+            "processed": processed,
+            "syncing": current_height < target,
+            "updated_at": now_iso(),
+            "state": "connected",
+        })
+
     def poll_once(self) -> dict[str, Any]:
         best = self.rpc("chain_getHeader", [])
         if not isinstance(best, dict):
@@ -928,10 +944,12 @@ class ChainCollector:
                 # the first matching event reaches the panel before workers warm up.
                 self._persist_block(self._fetch_block(heights[0], self.substrate))
                 processed += 1
+                self._report_progress(target, processed)
                 futures = [self._executor.submit(self._fetch_block, height) for height in heights[1:]]
                 for future in futures:
                     self._persist_block(future.result())
                     processed += 1
+                    self._report_progress(target, processed)
             except Exception as exc:
                 if self._state_was_discarded(exc) and last < target:
                     return self._recover_to_live_head(target, last, exc)

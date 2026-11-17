@@ -426,6 +426,33 @@ class ChainShapeTests(unittest.TestCase):
         self.assertEqual(address_event["netuid"], 78)
         self.assertEqual(address_event["event_type"], "质押")
 
+    def test_catchup_progress_refreshes_chain_heartbeat(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        rules, _ = load_rules(root / "app" / "event_monitor" / "config" / "event_rules.json")
+        statuses = []
+
+        class StoreStub:
+            def get_cursor(self, _name):
+                return {"height": 42, "spec_version": 491}
+
+        collector = ChainCollector(
+            url="unused", network="finney", store=StoreStub(), rules=rules,
+            publish=lambda *_args: None,
+            status=lambda *args: statuses.append(args),
+        )
+        try:
+            collector._report_progress(target=100, processed=3)
+        finally:
+            collector.close()
+
+        assert statuses[-1][0:2] == ("chain", "connected")
+        details = statuses[-1][2]
+        assert details["best_height"] == 100
+        assert details["last_processed"] == 42
+        assert details["lag_blocks"] == 58
+        assert details["syncing"] is True
+        assert details["updated_at"]
+
     def test_balance_transfer_is_suppressed_inside_matching_stake_extrinsic(self) -> None:
         root = Path(__file__).resolve().parent.parent
         rules, _ = load_rules(root / "app" / "event_monitor" / "config" / "event_rules.json")
