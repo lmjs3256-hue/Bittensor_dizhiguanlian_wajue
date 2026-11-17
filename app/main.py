@@ -51,6 +51,10 @@ VERSION_INFO = read_version_info()
 SEED_BOOKS_ENABLED = True
 # 官方交易所名单默认导入：每次启动在后台静默同步一次（有 key 才发请求）。
 AUTO_EXCHANGE_SYNC_ENABLED = True
+# 子网项目方地址：启动时检查一次，此后每小时检查是否已满 7 天。
+AUTO_SUBNET_OWNER_SYNC_ENABLED = True
+SUBNET_OWNER_SYNC_INTERVAL_SECONDS = 7 * 24 * 60 * 60
+SUBNET_OWNER_SYNC_CHECK_SECONDS = 60 * 60
 # 内置固定名单（人工确认的交易所/验证者/公共地址）：每次启动幂等写入地址库。
 BUILTIN_ADDRESSES_ENABLED = True
 # 本次启动内置名单的写入结果，供 /api/diagnose 显示「新版本真的跑起来了吗」。
@@ -90,6 +94,26 @@ async def _auto_sync_exchanges() -> None:
         await asyncio.to_thread(SERVICE.auto_sync_exchange_addresses)
     except Exception as exc:  # noqa: BLE001 - 后台同步失败不影响服务
         print(f"[exchange-sync] 官方交易所名单同步失败：{exc}", file=sys.stderr)
+
+
+async def _auto_sync_subnet_owners() -> None:
+    """每周检查一次链上子网项目方；失败只记录状态，不影响服务启动。"""
+
+    try:
+        await asyncio.to_thread(
+            SERVICE.auto_sync_subnet_owners,
+            min_interval_minutes=SUBNET_OWNER_SYNC_INTERVAL_SECONDS // 60,
+        )
+    except Exception as exc:  # noqa: BLE001 - 后台同步失败不影响服务
+        print(f"[subnet-owner-sync] 子网项目方同步失败：{exc}", file=sys.stderr)
+
+
+async def _subnet_owner_scheduler() -> None:
+    """每小时检查一次，服务连续运行跨过 7 天时也会自动更新。"""
+
+    while True:
+        await _auto_sync_subnet_owners()
+        await asyncio.sleep(SUBNET_OWNER_SYNC_CHECK_SECONDS)
 
 
 @asynccontextmanager
@@ -150,6 +174,11 @@ async def lifespan(_app: FastAPI):
     exchange_sync = (
         asyncio.create_task(_auto_sync_exchanges()) if AUTO_EXCHANGE_SYNC_ENABLED else None
     )
+    subnet_owner_sync = (
+        asyncio.create_task(_subnet_owner_scheduler())
+        if AUTO_SUBNET_OWNER_SYNC_ENABLED
+        else None
+    )
     watch_loop = asyncio.create_task(_watch_scheduler())
     local_scan = (
         asyncio.create_task(_local_scan_scheduler()) if LOCAL_AUTO_SCAN_ENABLED else None
@@ -160,10 +189,12 @@ async def lifespan(_app: FastAPI):
         scheduler.cancel()
         if exchange_sync is not None:
             exchange_sync.cancel()
+        if subnet_owner_sync is not None:
+            subnet_owner_sync.cancel()
         watch_loop.cancel()
         if local_scan is not None:
             local_scan.cancel()
-        for task in (scheduler, exchange_sync, watch_loop, local_scan):
+        for task in (scheduler, exchange_sync, subnet_owner_sync, watch_loop, local_scan):
             if task is None:
                 continue
             try:
@@ -1660,6 +1691,31 @@ def exchange_sync_status(svc: Annotated[LinkService, Depends(service)]):
 def exchange_sync_ack(svc: Annotated[LinkService, Depends(service)]):
     """前端已提示过新增地址，清掉待提示列表，避免每次刷新都弹。"""
     return svc.acknowledge_exchange_notice()
+
+
+@app.post("/api/library/import-subnet-owners")
+def import_subnet_owner_addresses(svc: Annotated[LinkService, Depends(service)]):
+    """手动同步当前子网项目方地址；注销子网自动归档。"""
+
+    try:
+        return svc.sync_subnet_owner_addresses()
+    except Exception as exc:
+        raise HTTPException(502, f"子网项目方同步失败：{exc}") from exc
+
+
+@app.get("/api/library/subnet-owner-sync")
+def subnet_owner_sync_status(svc: Annotated[LinkService, Depends(service)]):
+    """项目方同步状态与活跃/归档子网数量。"""
+
+    return svc.subnet_owner_sync_status()
+
+
+@app.get("/api/library/subnet-owners")
+def subnet_owner_entries(
+    svc: Annotated[LinkService, Depends(service)],
+    include_archived: bool = Query(default=False),
+):
+    return {"items": svc.subnet_owner_entries(include_archived=include_archived)}
 
 
 # -- 地址库自动入库（本地索引流水线） ---------------------------------------

@@ -436,7 +436,9 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 </tr>
 </tbody>
 </table>
-<p><strong>提示：三个金额门槛 ≠ 结果表里的「金额筛选」。</strong> 上面三把尺在<strong>扫描时</strong>生效：不达标的转账根本不会建立关联，也不会消耗 Taostats 额度去查它的下游。结果表上方的「金额筛选」只把已经查出来的行藏起来，不重新查询，只影响显示、建库和导出。0.9.7 及以前第一跳无条件保留小额转账，所以那时把「单边最低 TAO」调到 10 也挡不住一笔 0.001 TAO 的直连；0.9.8 起由「1 级关联最低 TAO」决定。</p>
+<blockquote>
+<p><strong>三个金额门槛 ≠ 结果表里的「金额筛选」。</strong> 上面三把尺在<strong>扫描时</strong>生效：不达标的转账根本不会建立关联，也不会消耗 Taostats 额度去查它的下游。结果表上方的「金额筛选」只把已经查出来的行藏起来，不重新查询、不改变 <code>state.lastResult</code>，只影响显示、建库和导出。0.9.7 及以前第一跳无条件保留小额转账，所以那时把「单边最低 TAO」调到 10 也挡不住一笔 0.001 TAO 的直连；0.9.8 起由「1 级关联最低 TAO」决定。</p>
+</blockquote>
 <p>点 <strong>扫描关联</strong> 开始。</p>
 <h3 id="分轮续查是怎么回事">分轮续查是怎么回事</h3>
 <p>Taostats 免费额度限制每分钟 5 次请求，一次查询装不下所有关联。所以工具会：</p>
@@ -641,6 +643,16 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <hr />
 <h2 id="七已知地址库">七、已知地址库</h2>
 <p>左侧菜单 <strong>已知地址库</strong> 是工具的“常识库”：地址被标成交易所、验证者或公共地址后，查询时才能过滤、才能在结果里显示标签。</p>
+<h3 id="项目方地址每周自动同步注销自动归档">项目方地址：每周自动同步，注销自动归档</h3>
+<p>地址库工具栏在「同步官方交易所地址」旁边新增 <strong>「同步项目方地址」</strong>。这项功能直接读取 Bittensor 链上公开数据，不需要 Taostats API key。</p>
+<ul>
+<li><strong>数据来源</strong>：<code>SubtensorModule.NetworksAdded</code> 判断子网当前是否注册，<code>SubnetOwner</code> 取项目方冷钱包，<code>SubnetIdentitiesV3</code> 取子网公开名称。</li>
+<li><strong>入库格式</strong>：每个子网单独建库，库名是 <code>SN&lt;编号&gt; &lt;子网名称&gt;</code>，例如 <code>SN55 NIOME</code>；地址标签显示为 <code>SN55 项目方</code>，备注写子网名称；地址库台账的库备注另外保留编号与项目方地址。</li>
+<li><strong>自动更新</strong>：服务启动时检查一次，此后每小时判断上次同步是否已满 7 天；满 7 天自动更新。任何时候都可以手动点「同步项目方地址」立即刷新。</li>
+<li><strong>注销归档</strong>：链上 <code>NetworksAdded</code> 变为 <code>false</code> 后，该子网的项目方地址库会标为归档，并从默认的地址库清单和台账里隐藏，记录仍保留在数据库。</li>
+<li><strong>同编号重新注册</strong>：同一 NETUID 再次出现在链上时，工具会恢复这个编号的台账，并按新的子网名称和新的项目方地址重建可见记录；旧名称、旧地址的库继续归档，不会和新项目混在一起。</li>
+<li><strong>同一地址拥有多个子网</strong>：子网级关系完整保存在项目方台账里；如果该地址已经属于其他地址库，为了不破坏人工整理，地址不再重复复制到第二个库，但同步结果会明确提示冲突数量。</li>
+</ul>
 <h3 id="分类含义">分类含义</h3>
 <p>分类记录“这个地址是谁”。预置三类，可以自己加（例如项目方、做市商，最多 12 个字）：</p>
 <table>
@@ -876,6 +888,7 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <li>官方名单里已经删掉的地址不会从你的地址库里删掉，避免误删整理好的数据。</li>
 <li>按钮下方一行小字显示当前官方条数和最近同步时间。</li>
 <li><strong>同步验证者地址</strong>：紧挨「同步官方交易所地址」。调用 Taostats 活跃验证者名单，把当前在跑的验证者热/冷钱包写进地址库（分类 <code>VALIDATOR</code>），同步完提示新增了多少个。</li>
+<li><strong>同步项目方地址</strong>：紧挨「同步官方交易所地址」。从链上同步当前子网的项目方地址，按 <code>SN编号 名称</code> 建库；服务每 7 天自动更新一次，也可手动点击。子网注销后自动归档，同一编号重新注册后按新名称和新项目方地址恢复。</li>
 <li>如果提示「验证者名单请求失败：…SSL: UNEXPECTED_EOF_WHILE_READING」，那是和 Taostats 的 TLS 握手偶发被截断，不是 key 有问题。程序会自动退避重试 3 次（约 3.6 秒内）；3 次都失败才会报错，这时直接再点一次即可，不需要改设置。</li>
 <li>同样<strong>只增不改</strong>：已在库里的地址保留原分类、名称、备注，只追加「验证者（系统）」；名单里消失的地址不删除。</li>
 <li>同步进来的地址查询时<strong>查到即截止</strong>，不再向下展开，避免验证者流水把结果灌满无效关联。</li>

@@ -3493,6 +3493,7 @@ async function loadLibrary() {
     updateUndoButton();
     updateSeedButton();
     refreshExchangeSyncStatus();
+    refreshSubnetOwnerSyncStatus();
   } catch (error) { toast(error.message, true); }
 }
 
@@ -5221,6 +5222,58 @@ async function refreshExchangeSyncStatus() {
   }
 }
 
+function describeSubnetOwnerItems(items, limit = 6) {
+  const list = (items || []).filter((item) => item && Number.isFinite(Number(item.netuid)));
+  const shown = list.slice(0, limit).map((item) => `SN${item.netuid} ${item.name || "未命名"}`);
+  const rest = list.length - shown.length;
+  return `${shown.join("、")}${rest > 0 ? ` 等 ${list.length} 个` : ""}`;
+}
+
+async function refreshSubnetOwnerSyncStatus() {
+  const label = $("#subnet-owner-sync-status");
+  try {
+    const data = await api("/api/library/subnet-owner-sync");
+    if (label) {
+      const when = data.synced_at ? historyTime(data.synced_at) : "尚未同步";
+      const err = data.error ? ` · 上次失败：${data.error}` : "";
+      label.textContent = `项目方地址：活跃 ${data.active_total || 0} 个子网 · 归档 ${data.archived_total || 0} 个 · 最近同步 ${when}（北京时间）${err}`;
+    }
+    return data;
+  } catch (_) {
+    if (label) label.textContent = "项目方地址：状态读取失败";
+    return null;
+  }
+}
+
+async function syncSubnetOwnerLibrary() {
+  const button = $("#sync-subnet-owners");
+  button.disabled = true;
+  button.textContent = "同步中…";
+  try {
+    const data = await api("/api/library/import-subnet-owners", { method: "POST" });
+    await loadLibrary();
+    const parts = [];
+    if (data.inserted) parts.push(`新增 ${data.inserted} 个子网项目方`);
+    if (data.updated) parts.push(`更新 ${data.updated} 个子网`);
+    if (data.restored) parts.push(`恢复 ${data.restored} 个重新注册子网`);
+    if (data.archived) {
+      const names = describeSubnetOwnerItems(data.archived_items);
+      parts.push(`归档 ${data.archived} 个已注销子网${names ? `：${names}` : ""}`);
+    }
+    if (data.owner_conflicts && data.owner_conflicts.length) {
+      parts.push(`${data.owner_conflicts.length} 个地址已有其他库归属，子网关系仍已记录`);
+    }
+    if (!parts.length) parts.push("没有变化，链上项目方名单已是最新");
+    toast(`项目方地址同步完成：${parts.join("；")}。当前活跃 ${data.active_total || 0} 个子网。`);
+    await refreshSubnetOwnerSyncStatus();
+  } catch (error) {
+    toast(`项目方地址同步失败：${error.message}`, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "同步项目方地址";
+  }
+}
+
 async function checkExchangeSyncNotice() {
   const data = await refreshExchangeSyncStatus();
   if (!data || !data.notify) return;
@@ -6050,6 +6103,7 @@ $("#library-file").addEventListener("change", (event) => {
   if (event.target.files[0]) openImportDialog(event.target.files[0]);
 });
 $("#sync-exchanges").addEventListener("click", syncExchangeLibrary);
+$("#sync-subnet-owners").addEventListener("click", syncSubnetOwnerLibrary);
 $("#sync-validators").addEventListener("click", syncValidatorLibrary);
 $("#reconcile-history").addEventListener("click", reconcileHistory);
 $("#watch-save").addEventListener("click", saveWatchConfig);
@@ -6653,4 +6707,5 @@ $("#copy-machine").addEventListener("click", async () => {
   loadCategories();
   loadRemovedRelations();
   checkExchangeSyncNotice();
+  refreshSubnetOwnerSyncStatus();
 })();

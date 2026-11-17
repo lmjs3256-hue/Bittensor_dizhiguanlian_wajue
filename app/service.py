@@ -15,7 +15,7 @@ from typing import Any, Iterable
 
 from sqlalchemy import delete, func, or_, select
 
-from .collector import RPCCollector, query_account_balances
+from .collector import RPCCollector, query_account_balances, query_subnet_owners
 from .crawl import CrawlState, TaostatsCrawl
 from .crawl import stake_counterparty as _stake_counterparty
 from .db import (
@@ -31,6 +31,7 @@ from .db import (
     RemovedRelation,
     ScanJob,
     ScanLock,
+    SubnetOwnerEntry,
     SYSTEM_CLASSIFICATION,
     Transfer,
     WatchCandidate,
@@ -160,6 +161,9 @@ OFFICIAL_EXCHANGE_LABEL = "官方交易所"
 # 官方验证者名单（Taostats /v1/validators/active）：同步进库后作为验证者，
 # 查询时和人工标记的验证者一样是关联终点。
 OFFICIAL_VALIDATOR_SOURCE = "taostats:/v1/validators/active"
+# 子网项目方来源：直接读当前 runtime 的 SubnetOwner / SubnetIdentitiesV3 /
+# NetworksAdded。与官方交易所是两套生命周期：项目方按 NETUID 归属，注销后归档。
+SUBNET_OWNER_SOURCE = "bittensor:SubtensorModule.SubnetOwner"
 # 结论固定、不接受人工改判的来源：官方同步 + 内置固定名单。
 LOCKED_SOURCE_PREFIXES = (OFFICIAL_EXCHANGE_SOURCE_PREFIX, BUILTIN_SOURCE_PREFIX)
 
@@ -2883,6 +2887,300 @@ class LinkService:
             "synced_at": synced_at,
         }
 
+    def sync_subnet_owner_addresses(self) -> dict[str, Any]:
+        """同步当前已注册子网的项目方地址，并归档已注销子网。
+
+        数据全部来自链上当前 runtime：
+        - ``NetworksAdded``：是否仍处于注册状态；
+        - ``SubnetOwner``：项目方冷钱包；
+        - ``SubnetIdentitiesV3``：子网公开名称。
+
+        地址库按子网编号建库，库名为 ``SN<netuid> <子网名称>``，库备注写明
+        “子网名称 + 项目方地址”。同一 NETUID 注销时只把状态标为归档并从地址库
+        默认列表隐藏；再次注册时复用同一条台账，但按新名称/新地址重建地址。
+        """
+
+        from .config import settings as load_settings
+
+        rpc_url = load_settings().rpc_url
+        registry = query_subnet_owners(rpc_url)
+        if not registry:
+            raise RuntimeError("链上未返回任何子网注册记录")
+
+        synced_at = utcnow()
+        added: list[dict[str, Any]] = []
+        updated: list[dict[str, Any]] = []
+        archived: list[dict[str, Any]] = []
+        restored: list[dict[str, Any]] = []
+        skipped = 0
+        invalid_owners: list[int] = []
+        owner_conflicts: list[dict[str, Any]] = []
+
+        with self.database.session() as db:
+            state_rows = {
+                row.netuid: row
+                for row in db.scalars(select(SubnetOwnerEntry)).all()
+            }
+            # NETUID 0 是根网络，没有项目方冷钱包；项目方台账只统计可归属的
+            # 子网，避免界面把根网络显示成一个“缺地址”的项目。
+            active_netuids = {
+                netuid
+                for netuid, item in registry.items()
+                if int(netuid) > 0 and bool(item.get("active"))
+            }
+
+            for netuid in sorted(active_netuids):
+                item = registry[netuid]
+                owner = str(item.get("owner_address") or "").strip()
+                if not is_valid_ss58(owner):
+                    invalid_owners.append(netuid)
+                    continue
+                name = " ".join(str(item.get("name") or "").split())[:160] or f"SN{netuid}"
+                state = state_rows.get(netuid)
+                was_archived = bool(state is not None and not state.active)
+                old_owner = state.owner_address if state is not None else ""
+                old_name = state.name if state is not None else ""
+
+                if state is None:
+                    state = SubnetOwnerEntry(
+                        netuid=netuid,
+                        name=name,
+                        owner_address=owner,
+                        active=True,
+                        source=SUBNET_OWNER_SOURCE,
+                        synced_at=synced_at,
+                    )
+                    db.add(state)
+                    db.flush()
+                    state_rows[netuid] = state
+                    added.append({"netuid": netuid, "name": name, "address": owner})
+                else:
+                    changed = was_archived or state.name != name or state.owner_address != owner
+                    if changed:
+                        state.name = name
+                        state.owner_address = owner
+                        state.active = True
+                        state.archived_at = None
+                        state.source = SUBNET_OWNER_SOURCE
+                        state.synced_at = synced_at
+                        payload = {
+                            "netuid": netuid,
+                            "name": name,
+                            "address": owner,
+                            "old_name": old_name,
+                            "old_address": old_owner,
+                        }
+                        (restored if was_archived else updated).append(payload)
+                    else:
+                        state.synced_at = synced_at
+                        skipped += 1
+
+                book_name = self._subnet_owner_book_name(netuid, name)
+                registry_row = db.scalar(
+                    select(AddressBook).where(AddressBook.name == book_name)
+                )
+                relation = db.scalar(
+                    select(AddressLibrary).where(
+                        AddressLibrary.address == owner,
+                        AddressLibrary.book == book_name,
+                    )
+                )
+                owner_row = relation or db.scalar(
+                    select(AddressLibrary).where(AddressLibrary.address == owner)
+                )
+                if owner_row is None:
+                    relation = AddressLibrary(
+                        address=owner,
+                        label=f"SN{netuid} 项目方",
+                        category="其他",
+                        categories=encode_categories(["其他"]),
+                        note=name,
+                        source=SUBNET_OWNER_SOURCE,
+                        book=book_name,
+                        exchange_confirmed=False,
+                        exchange_rejected=False,
+                    )
+                    db.add(relation)
+                elif relation is not None:
+                    relation.label = f"SN{netuid} 项目方"
+                    relation.note = name
+                    relation.source = SUBNET_OWNER_SOURCE
+                    relation.book = book_name
+                elif (
+                    owner_row.source == SUBNET_OWNER_SOURCE
+                    and (owner_row.book or "").startswith(f"SN{netuid} ")
+                ):
+                    # 同一 NETUID 重新注册且项目方地址没变：地址唯一约束下复用
+                    # 旧记录，把它迁到新名称对应的库。旧库地址行因此自动隐藏；
+                    # 若旧台账已经空了，一并清掉，避免库清单留下旧名称空组。
+                    previous_book = (owner_row.book or "").strip()
+                    if previous_book and previous_book != book_name:
+                        previous_registry = db.scalar(
+                            select(AddressBook).where(AddressBook.name == previous_book)
+                        )
+                        if previous_registry is not None:
+                            db.delete(previous_registry)
+                    relation = owner_row
+                    relation.label = f"SN{netuid} 项目方"
+                    relation.note = name
+                    relation.source = SUBNET_OWNER_SOURCE
+                    relation.book = book_name
+                else:
+                    # ``address_library.address`` 全库唯一：同一冷钱包拥有多个子网时
+                    # 不能硬塞第二条记录，否则整次同步会因唯一约束失败。子网级关系
+                    # 仍完整保存在 SubnetOwnerEntry；地址库保留用户原先的归属。
+                    owner_conflicts.append(
+                        {
+                            "netuid": netuid,
+                            "name": name,
+                            "address": owner,
+                            "existing_book": owner_row.book or "",
+                        }
+                    )
+                if registry_row is None:
+                    db.add(
+                        AddressBook(
+                            name=book_name,
+                            note=f"子网 {name}（SN{netuid}）· 项目方 {owner}",
+                        )
+                    )
+                else:
+                    registry_row.note = f"子网 {name}（SN{netuid}）· 项目方 {owner}"
+
+            for netuid, state in state_rows.items():
+                if netuid in active_netuids or not state.active:
+                    continue
+                state.active = False
+                state.archived_at = synced_at
+                state.synced_at = synced_at
+                archived.append(
+                    {"netuid": netuid, "name": state.name, "address": state.owner_address}
+                )
+
+        result = {
+            "inserted": len(added),
+            "updated": len(updated),
+            "restored": len(restored),
+            "archived": len(archived),
+            "skipped": skipped,
+            "active_total": len(active_netuids),
+            "invalid_owner_netuids": invalid_owners,
+            "owner_conflicts": owner_conflicts,
+            "inserted_items": added,
+            "updated_items": updated,
+            "restored_items": restored,
+            "archived_items": archived,
+            "source": SUBNET_OWNER_SOURCE,
+            "synced_at": synced_at.isoformat(),
+        }
+        settings_store.save_subnet_owner_sync_state(
+            {
+                "attempted_at": result["synced_at"],
+                "synced_at": result["synced_at"],
+                "ok": True,
+                "error": "",
+                "inserted": added,
+                "updated": updated,
+                "restored": restored,
+                "archived": archived,
+            }
+        )
+        return result
+
+    def subnet_owner_sync_status(self) -> dict[str, Any]:
+        """项目方地址同步状态与当前活跃/归档子网数量。"""
+
+        with self.database.session() as db:
+            active = int(
+                db.scalar(
+                    select(func.count(SubnetOwnerEntry.id)).where(
+                        SubnetOwnerEntry.active.is_(True)
+                    )
+                )
+                or 0
+            )
+            archived = int(
+                db.scalar(
+                    select(func.count(SubnetOwnerEntry.id)).where(
+                        SubnetOwnerEntry.active.is_(False)
+                    )
+                )
+                or 0
+            )
+            rows = db.scalars(
+                select(SubnetOwnerEntry).order_by(SubnetOwnerEntry.netuid)
+            ).all()
+            latest_sync = max((row.synced_at for row in rows), default=None)
+        state = settings_store.load_subnet_owner_sync_state()
+        return {
+            "active_total": active,
+            "archived_total": archived,
+            "synced_at": state.get("synced_at") or iso_utc(latest_sync),
+            "attempted_at": state.get("attempted_at") or "",
+            "ok": bool(state.get("ok", False)),
+            "error": state.get("error") or "",
+            "last_inserted": state.get("inserted") or [],
+            "last_updated": state.get("updated") or [],
+            "last_restored": state.get("restored") or [],
+            "last_archived": state.get("archived") or [],
+        }
+
+    def auto_sync_subnet_owners(self, *, min_interval_minutes: int = 7 * 24 * 60) -> dict[str, Any]:
+        """每周自动同步项目方地址；失败写状态但不影响服务。"""
+
+        state = settings_store.load_subnet_owner_sync_state()
+        last = str(state.get("attempted_at") or "")
+        if last and min_interval_minutes > 0:
+            try:
+                attempted = datetime.fromisoformat(last)
+                if attempted.tzinfo is None:
+                    attempted = attempted.replace(tzinfo=timezone.utc)
+                if utcnow() - attempted < timedelta(minutes=min_interval_minutes):
+                    return {"status": "skipped", "reason": "recent"}
+            except ValueError:
+                pass
+        attempted_at = utcnow().isoformat()
+        try:
+            result = self.sync_subnet_owner_addresses()
+        except Exception as exc:  # noqa: BLE001 - 后台同步失败不冒泡
+            settings_store.save_subnet_owner_sync_state(
+                {
+                    **state,
+                    "attempted_at": attempted_at,
+                    "synced_at": state.get("synced_at") or "",
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+            return {"status": "failed", "error": str(exc)}
+        return {"status": "synced", **result}
+
+    @staticmethod
+    def _subnet_owner_book_name(netuid: int, name: str) -> str:
+        clean = " ".join(str(name or "").split()) or f"SN{netuid}"
+        return f"SN{int(netuid)} {clean}"[:BOOK_NAME_MAX_LENGTH]
+
+    def subnet_owner_entries(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
+        """返回项目方地址台账；默认只显示当前活跃子网。"""
+
+        with self.database.session() as db:
+            query = select(SubnetOwnerEntry).order_by(SubnetOwnerEntry.netuid)
+            if not include_archived:
+                query = query.where(SubnetOwnerEntry.active.is_(True))
+            rows = db.scalars(query).all()
+            return [
+                {
+                    "netuid": row.netuid,
+                    "name": row.name,
+                    "owner_address": row.owner_address,
+                    "active": bool(row.active),
+                    "archived_at": iso_utc(row.archived_at),
+                    "synced_at": iso_utc(row.synced_at),
+                    "book": self._subnet_owner_book_name(row.netuid, row.name),
+                }
+                for row in rows
+            ]
+
     def exchange_sync_status(self) -> dict[str, Any]:
         """官方交易所名单的同步状态：总条数、最近一次同步与待提示的新增地址。"""
 
@@ -3135,10 +3433,24 @@ class LinkService:
                     AddressLibrary.category, AddressLibrary.label, AddressLibrary.id
                 )
             ).all()
+            state_rows = db.scalars(
+                select(SubnetOwnerEntry).where(SubnetOwnerEntry.active.is_(True))
+            ).all()
+            active_books = {
+                self._subnet_owner_book_name(row.netuid, row.name) for row in state_rows
+            }
+            visible = [
+                row
+                for row in rows
+                if not (
+                    row.source == SUBNET_OWNER_SOURCE
+                    and (row.book or "") not in active_books
+                )
+            ]
             return [
                 address_dict(row)
                 for row in sorted(
-                    rows,
+                    visible,
                     key=lambda row: (
                         order.get(row.category, 500),
                         row.label or "",
@@ -3354,14 +3666,29 @@ class LinkService:
                     AddressLibrary.book,
                     AddressLibrary.category,
                     func.count(AddressLibrary.id),
+                    AddressLibrary.source,
                 )
                 .where(AddressLibrary.book != "")
-                .group_by(AddressLibrary.book, AddressLibrary.category)
+                .group_by(AddressLibrary.book, AddressLibrary.category, AddressLibrary.source)
             ).all()
             registry = {row.name: row for row in db.scalars(select(AddressBook)).all()}
+            state_rows = db.scalars(
+                select(SubnetOwnerEntry).where(SubnetOwnerEntry.active.is_(True))
+            ).all()
+            active_books = {
+                self._subnet_owner_book_name(row.netuid, row.name) for row in state_rows
+            }
+        project_books = {
+            name
+            for name, _category, _count, source in rows
+            if source == SUBNET_OWNER_SOURCE
+        }
+        hidden_books = project_books - active_books
+        rows = [row for row in rows if row[0] not in hidden_books]
+        registry = {name: row for name, row in registry.items() if name not in hidden_books}
         counts: dict[str, int] = {}
         categories: dict[str, dict[str, int]] = {}
-        for name, category, count in rows:
+        for name, category, count, _source in rows:
             counts[name] = counts.get(name, 0) + int(count)
             categories.setdefault(name, {})[category] = int(count)
         names = list(dict.fromkeys([*counts.keys(), *registry.keys()]))

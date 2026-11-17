@@ -101,6 +101,31 @@ class AddressBook(Base):
     )
 
 
+class SubnetOwnerEntry(Base):
+    """按 NETUID 保存当前注册子网的项目方（owner coldkey）快照。
+
+    地址库仍以地址为唯一键，无法表达“同一地址拥有多个子网”的完整关系；
+    这张表只保存子网级身份和注册生命周期。地址本身继续写入
+    ``address_library``，供查询、备注和导出复用现有能力。
+
+    ``netuid`` 唯一，保证注销后同一编号重新注册时只更新同一逻辑子网，不会
+    把新项目的名称/项目方地址错误地合并到旧记录之外。
+    """
+
+    __tablename__ = "subnet_owner_entries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    netuid: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(160), default="")
+    owner_address: Mapped[str] = mapped_column(String(64), default="", index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    source: Mapped[str] = mapped_column(String(255), default="")
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class RemovedRelation(Base):
     """人工判定为「干扰」的关联地址：永久排除，不进结果、不再向下扩展。
 

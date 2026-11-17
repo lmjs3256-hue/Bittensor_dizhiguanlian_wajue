@@ -29,8 +29,9 @@ def _license_gate_open(monkeypatch, tmp_path):
     import app.main as main_module
 
     monkeypatch.setattr(main_module, "SEED_BOOKS_ENABLED", False)
-    # 启动时自动同步官方交易所名单对外发网络请求，测试里一律关掉。
+    # 启动时自动同步官方交易所/项目方名单对外发网络请求，测试里一律关掉。
     monkeypatch.setattr(main_module, "AUTO_EXCHANGE_SYNC_ENABLED", False)
+    monkeypatch.setattr(main_module, "AUTO_SUBNET_OWNER_SYNC_ENABLED", False)
     from app import taostats
 
     taostats.clear_api_key()

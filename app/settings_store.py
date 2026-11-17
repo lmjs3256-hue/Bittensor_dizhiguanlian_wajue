@@ -251,6 +251,24 @@ def save_exchange_sync_state(state: dict[str, Any]) -> bool:
     return _write(data)
 
 
+# -- 子网项目方地址同步状态 ------------------------------------------------
+_SUBNET_OWNER_SYNC_FIELD = "subnet_owner_sync"
+
+
+def load_subnet_owner_sync_state() -> dict[str, Any]:
+    """读取子网项目方最近一次同步状态（时间、新增、归档和待提示列表）。"""
+
+    state = _read().get(_SUBNET_OWNER_SYNC_FIELD)
+    return dict(state) if isinstance(state, dict) else {}
+
+
+def save_subnet_owner_sync_state(state: dict[str, Any]) -> bool:
+    data = _read()
+    data["version"] = 1
+    data[_SUBNET_OWNER_SYNC_FIELD] = dict(state or {})
+    return _write(data)
+
+
 # -- 扫描阈值（单边 / 累计 / 1 级关联最低 TAO） ------------------------------
 _SCAN_THRESHOLDS_FIELD = "scan_thresholds"
 

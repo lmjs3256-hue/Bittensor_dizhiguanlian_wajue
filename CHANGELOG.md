@@ -1,5 +1,36 @@
 # 变更记录
 
+## 0.9.9 · 子网项目方地址同步与注销归档 · 2026-11-17
+
+地址库工具栏在「同步官方交易所地址」旁新增 **「同步项目方地址」**。数据直接读取 Bittensor 当前 runtime，不依赖 Taostats API key：
+
+- `SubtensorModule.NetworksAdded[netuid]`：子网当前是否仍注册；
+- `SubtensorModule.SubnetOwner[netuid]`：项目方冷钱包；
+- `SubtensorModule.SubnetIdentitiesV3[netuid]`：子网公开名称。
+
+### 入库与自动更新
+
+- 每个子网按 `SN<netuid> <名称>` 建地址库，地址标签为 `SN<netuid> 项目方`，备注直接写链上子网名称；地址库台账备注另外保留编号与项目方地址。
+- 服务启动时检查一次，此后每小时判断上次同步是否已满 7 天；满 7 天自动更新。手动按钮可随时立即同步。
+- 新增 `SubnetOwnerEntry` 台账，按 NETUID 唯一保存名称、项目方地址、注册状态、归档时间和最近同步时间。地址仍复用既有 `address_library` 与地址库导出能力。
+
+### 注销与同编号重新注册
+
+- `NetworksAdded=false` 的子网自动标为归档；项目方地址库从默认地址库清单和台账隐藏，数据库记录保留。
+- 同一 NETUID 再次注册时复用原台账并恢复为活跃，按链上新名称和新项目方地址重建可见库；旧名称/旧地址继续归档，不会和新项目混在一起。
+- 如果同一项目方地址已经属于别的地址库，不强行复制第二条地址记录，避免破坏人工分类；子网级关系仍保存在 `SubnetOwnerEntry`，同步结果会返回冲突数量。
+
+### 接口与前端
+
+- 新增 `POST /api/library/import-subnet-owners`、`GET /api/library/subnet-owner-sync`、`GET /api/library/subnet-owners?include_archived=true`。
+- 地址库页同时显示交易所与项目方两个同步状态；窄屏状态上下排列，按钮区自动换行，不遮挡。
+- 同步状态写入 `data/settings.json` 的 `subnet_owner_sync` 字段。
+
+### 测试
+
+- 新增 `tests/test_subnet_owners.py`：链上三映射合并、按子网编号名称入库、注销归档隐藏、同编号换名换地址恢复、同地址重新注册、7 天间隔、API 与前端入口。
+- 全量 **725 passed**。
+
 ## 0.9.8 · 1 级关联可设金额门槛，挡住小额蹭关联 · 2026-11-13
 
 用户问：「当前扫描地址关联逻辑的 1 级关联是不是不限定金额？那如果有人恶意转账进去蹭关联怎么处理？增加个条件 1 级关联仍然需要提供可以设置转账金额门槛的窗口。顺便排查单边最低 TAO 和累计最低 TAO 有没有真实应用到地址扫描的筛选逻辑上。」

@@ -86,6 +86,84 @@ def query_account_balances(
     return {}
 
 
+def merge_subnet_owner_maps(
+    added_rows: list[tuple[Any, Any]],
+    owner_rows: list[tuple[Any, Any]],
+    identity_rows: list[tuple[Any, Any]],
+) -> dict[int, dict[str, Any]]:
+    """把链上三张映射合成按 NETUID 索引的项目方快照。"""
+
+    owners = dict(owner_rows)
+    identities = dict(identity_rows)
+    result: dict[int, dict[str, Any]] = {}
+    for raw_netuid, added in added_rows:
+        try:
+            netuid = int(raw_netuid)
+        except (TypeError, ValueError):
+            continue
+        owner = str(owners.get(raw_netuid) or owners.get(netuid) or "").strip()
+        identity = identities.get(raw_netuid) or identities.get(netuid) or {}
+        name = ""
+        if isinstance(identity, dict):
+            name = " ".join(str(identity.get("subnet_name") or "").split())[:160]
+        result[netuid] = {
+            "netuid": netuid,
+            "name": name,
+            "owner_address": owner,
+            "active": bool(added),
+        }
+    return result
+
+
+async def _query_subnet_owners(url: str) -> dict[int, dict[str, Any]]:
+    """Read the current subnet registry from the Bittensor runtime.
+
+    ``NetworksAdded`` is the authoritative current-registration flag used by
+    this application. ``SubnetOwner`` supplies the owner coldkey and
+    ``SubnetIdentitiesV3`` supplies the published subnet name. Mapping queries
+    fetch each map in paged batches, so a weekly refresh does not issue one RPC
+    request per NETUID.
+    """
+
+    substrate = AsyncSubstrateInterface(url)
+    try:
+        await substrate.initialize()
+        await substrate.init_runtime()
+
+        async def read_map(storage: str, *, ignore_errors: bool = False) -> list[tuple[Any, Any]]:
+            result = await substrate.query_map(
+                "SubtensorModule",
+                storage,
+                page_size=500,
+                fully_exhaust=True,
+                ignore_decoding_errors=ignore_errors,
+            )
+            pairs: list[tuple[Any, Any]] = []
+            async for key, value in result:
+                pairs.append((getattr(key, "value", key), getattr(value, "value", value)))
+            return pairs
+
+        added_rows = await read_map("NetworksAdded")
+        owners = dict(await read_map("SubnetOwner"))
+        identities = dict(await read_map("SubnetIdentitiesV3", ignore_errors=True))
+
+        return merge_subnet_owner_maps(added_rows, list(owners.items()), list(identities.items()))
+    finally:
+        await substrate.close()
+
+
+def query_subnet_owners(url: str, *, timeout_seconds: float = 90.0) -> dict[int, dict[str, Any]]:
+    """Synchronous wrapper used by the weekly/manual project-owner sync."""
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            asyncio.wait_for(_query_subnet_owners(url), timeout=timeout_seconds)
+        )
+    raise RuntimeError("subnet owner sync cannot run inside an active event loop")
+
+
 def _event_value(item: Any) -> dict[str, Any]:
     value = getattr(item, "value", item)
     if not isinstance(value, dict):
