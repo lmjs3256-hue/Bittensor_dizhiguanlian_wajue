@@ -5247,6 +5247,9 @@ function describeSubnetOwnerChanges(items, limit = 20) {
     } else if (item.address) {
       changes.push(`项目方 ${shortAddr(item.address)}`);
     }
+    if (Number(item.cleared_addresses) > 0) {
+      changes.push(`清理旧库 ${number(item.cleared_addresses)} 条地址`);
+    }
     return `${head}（${changes.join("；")}）`;
   }).join("、");
   return `${text}${list.length > shown.length ? ` 等 ${list.length} 个` : ""}`;
@@ -5286,8 +5289,7 @@ async function syncSubnetOwnerLibrary() {
       parts.push(`重新注册 ${data.restored} 个：${describeSubnetOwnerChanges(data.restored_items)}`);
     }
     if (data.archived) {
-      const names = describeSubnetOwnerItems(data.archived_items);
-      parts.push(`归档 ${data.archived} 个已注销子网${names ? `：${names}` : ""}`);
+      parts.push(`归档 ${data.archived} 个已注销子网：${describeSubnetOwnerChanges(data.archived_items)}`);
     }
     if (data.owner_conflicts && data.owner_conflicts.length) {
       parts.push(`${data.owner_conflicts.length} 个地址已有其他库归属，子网关系仍已记录`);

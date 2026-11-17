@@ -88,10 +88,23 @@ def test_deregistered_subnet_is_archived_and_hidden(monkeypatch):
         database, service = build_service(directory)
         try:
             service.sync_subnet_owner_addresses()
+            with database.session() as db:
+                db.add(
+                    AddressLibrary(
+                        address=OWNER_C,
+                        label="关联地址",
+                        category="其他",
+                        categories='["其他"]',
+                        note="由项目方产生",
+                        source="auto-watch:local-index",
+                        book="SN55 NIOME",
+                    )
+                )
             patch_registry(monkeypatch, registry(active=False))
             result = service.sync_subnet_owner_addresses()
             assert result["archived"] == 1
             assert result["archived_items"][0]["netuid"] == 55
+            assert result["archived_items"][0]["cleared_addresses"] == 2
             assert service.library() == []
             assert service.address_books() == []
             status = service.subnet_owner_sync_status()
@@ -168,6 +181,18 @@ def test_fast_reregistration_without_observed_archive_removes_old_owner(monkeypa
         database, service = build_service(directory)
         try:
             service.sync_subnet_owner_addresses()
+            with database.session() as db:
+                db.add(
+                    AddressLibrary(
+                        address=OWNER_C,
+                        label="关联地址",
+                        category="其他",
+                        categories='["其他"]',
+                        note="由项目方产生",
+                        source="auto-watch:local-index",
+                        book="SN113 SN113",
+                    )
+                )
             patch_registry(monkeypatch, registry(netuid=113, name="SN113", owner=OWNER_B))
             result = service.sync_subnet_owner_addresses()
 
@@ -177,6 +202,7 @@ def test_fast_reregistration_without_observed_archive_removes_old_owner(monkeypa
             assert item["old_name"] == item["name"] == "SN113"
             assert item["old_address"] == OWNER_A
             assert item["address"] == OWNER_B
+            assert item["cleared_addresses"] == 2
 
             with database.session() as db:
                 rows = db.query(AddressLibrary).filter(
