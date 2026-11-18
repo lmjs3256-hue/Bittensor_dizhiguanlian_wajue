@@ -2282,7 +2282,7 @@ async function renderAddressesView() {
   const sortHint = infoElement(
     "p",
     "monitor-library-sort-hint",
-    "地址库按 SN 数字从小到大排列；出现 SN2 后直接到 SN4 之类的跳号，表示 SN3 当前没有可监控地址库，不是排序错误。",
+    "地址库按 SN 数字从小到大排列；若出现跳号，表示该子网当前没有可监控项目方地址库，可点“同步项目方地址”检查冲突。",
   );
   const list = infoElement("div", "address-list");
   list.append(infoElement("p", "info-intro", "正在读取监控地址…"));

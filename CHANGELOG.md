@@ -1,5 +1,23 @@
 # 变更记录
 
+## 1.0.13 · 项目方地址冲突修复 · 2026-11-18
+
+### 根因
+
+- `address_library.address` 当前只允许一个地址属于一个地址库。
+- SN3 当前 Owner `5GsGUrd21bnkNxQsH2grv474y4gcDwCmp5xJ72KeokspZ2bg` 早已被放在普通 `const` 库，项目方同步只记录 `owner_conflicts`，因此创建了 `SN3 Teutonic` 台账却没有地址明细，事件监控也无法种入 SN3。
+
+### 修复
+
+- 链上确认的当前 `SubnetOwner` 现在优先于普通/自动库归属：若地址已在非项目方库，自动迁入对应 `SNx 项目方` 库。
+- 同步结果新增 `owner_reassigned` 和重归属明细，界面会显示“原地址库 → SNx”。
+- 原普通库中的其他地址不受影响；同一 Owner 同时属于多个项目方子网时仍保留冲突提示，避免错误覆盖。
+
+### 测试
+
+- 新增“Owner 已在 const 库仍必须建立 SN3 项目方库且保留 const 其他地址”的回归测试。
+- 全量 **814 passed**；Python 编译、JavaScript 语法、JSON 与 `pip check` 通过。
+
 ## 1.0.12 · 地址库批量管理与事件流样式 · 2026-11-18
 
 ### 地址库管理

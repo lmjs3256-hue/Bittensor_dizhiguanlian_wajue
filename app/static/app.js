@@ -5269,6 +5269,9 @@ function describeSubnetOwnerChanges(items, limit = 20) {
     } else if (item.address) {
       changes.push(`项目方 ${shortAddr(item.address)}`);
     }
+    if (item.previous_book) {
+      changes.push(`地址库 ${item.previous_book} → SN${item.netuid}`);
+    }
     if (Number(item.cleared_addresses) > 0) {
       changes.push(`清理旧库 ${number(item.cleared_addresses)} 条地址`);
     }
@@ -5313,8 +5316,11 @@ async function syncSubnetOwnerLibrary() {
     if (data.archived) {
       parts.push(`归档 ${data.archived} 个已注销子网：${describeSubnetOwnerChanges(data.archived_items)}`);
     }
+    if (data.owner_reassigned) {
+      parts.push(`重归属 ${data.owner_reassigned} 个项目方：${describeSubnetOwnerChanges(data.owner_reassigned_items)}`);
+    }
     if (data.owner_conflicts && data.owner_conflicts.length) {
-      parts.push(`${data.owner_conflicts.length} 个地址已有其他库归属，子网关系仍已记录`);
+      parts.push(`${data.owner_conflicts.length} 个地址同时归属多个项目方库，当前需人工确认`);
     }
     if (!parts.length) parts.push("没有变化，链上项目方名单已是最新");
     toast(`项目方地址同步完成：${parts.join("；")}。当前活跃 ${data.active_total || 0} 个子网。`);

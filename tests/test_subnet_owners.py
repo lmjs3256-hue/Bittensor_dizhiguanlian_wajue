@@ -82,6 +82,58 @@ def test_sync_creates_subnet_owner_book_with_number_name_and_note(monkeypatch):
             database.engine.dispose()
 
 
+def test_owner_in_regular_book_is_reassigned_to_project_owner_book(monkeypatch):
+    patch_registry(monkeypatch, registry(netuid=3, name="Teutonic", owner=OWNER_C))
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            with database.session() as db:
+                db.add(AddressBook(name="const", note="人工地址库"))
+                db.add_all([
+                    AddressLibrary(
+                        address=OWNER_A,
+                        label="const",
+                        category="其他",
+                        categories='["其他"]',
+                        note="保留地址",
+                        source="book:const",
+                        book="const",
+                    ),
+                    AddressLibrary(
+                        address=OWNER_C,
+                        label="const",
+                        category="大V",
+                        categories='["大V"]',
+                        note="人工放入 const",
+                        source="book:const",
+                        book="const",
+                    ),
+                ])
+
+            result = service.sync_subnet_owner_addresses()
+
+            assert result["owner_reassigned"] == 1
+            assert result["owner_conflicts"] == []
+            assert result["owner_reassigned_items"] == [{
+                "netuid": 3,
+                "name": "Teutonic",
+                "address": OWNER_C,
+                "previous_book": "const",
+            }]
+            rows = service.library()
+            owner_row = next(row for row in rows if row["address"] == OWNER_C)
+            assert owner_row["book"] == "SN3 Teutonic"
+            assert owner_row["label"] == "SN3 项目方"
+            assert owner_row["source"] == SUBNET_OWNER_SOURCE
+            assert any(row["address"] == OWNER_A and row["book"] == "const" for row in rows)
+            assert [book["name"] for book in service.address_books()] == [
+                "SN3 Teutonic",
+                "const",
+            ]
+        finally:
+            database.engine.dispose()
+
+
 def test_project_owner_books_sort_by_subnet_number(monkeypatch):
     value = {
         0: {"netuid": 0, "name": "root", "owner_address": "", "active": True},
@@ -245,6 +297,8 @@ def test_sync_toast_names_updated_subnet_and_old_new_owner():
     assert "function describeSubnetOwnerChanges" in js
     assert "old_address" in js
     assert "更新 ${data.updated} 个：" in js
+    assert "owner_reassigned" in js
+    assert "previous_book" in js
 
 
 def test_auto_sync_respects_weekly_interval(monkeypatch):

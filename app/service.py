@@ -3050,6 +3050,7 @@ class LinkService:
         skipped = 0
         invalid_owners: list[int] = []
         owner_conflicts: list[dict[str, Any]] = []
+        owner_reassigned: list[dict[str, Any]] = []
 
         with self.database.session() as db:
             state_rows = {
@@ -3169,17 +3170,39 @@ class LinkService:
                     relation.source = SUBNET_OWNER_SOURCE
                     relation.book = book_name
                 else:
-                    # ``address_library.address`` 全库唯一：同一冷钱包拥有多个子网时
-                    # 不能硬塞第二条记录，否则整次同步会因唯一约束失败。子网级关系
-                    # 仍完整保存在 SubnetOwnerEntry；地址库保留用户原先的归属。
-                    owner_conflicts.append(
-                        {
-                            "netuid": netuid,
-                            "name": name,
-                            "address": owner,
-                            "existing_book": owner_row.book or "",
-                        }
-                    )
+                    # ``address_library.address`` 全库唯一。链上确认的当前
+                    # SubnetOwner 是官方身份，优先于用户早先给该地址设置的普通库
+                    # 归属；否则会出现“项目方台账有 SN3，但地址库没有任何地址”，
+                    # 事件监控也无法种入该子网。
+                    previous_book = str(owner_row.book or "").strip()
+                    if owner_row.source != SUBNET_OWNER_SOURCE:
+                        owner_row.label = f"SN{netuid} 项目方"
+                        owner_row.note = name
+                        owner_row.source = SUBNET_OWNER_SOURCE
+                        owner_row.book = book_name
+                        owner_row.category = "其他"
+                        owner_row.categories = encode_categories(["其他"])
+                        relation = owner_row
+                        owner_reassigned.append(
+                            {
+                                "netuid": netuid,
+                                "name": name,
+                                "address": owner,
+                                "previous_book": previous_book,
+                            }
+                        )
+                        prune_empty_book(db, previous_book)
+                    else:
+                        # 同一冷钱包同时是多个子网 Owner 时，当前单库模型无法
+                        # 正确表达多条项目方归属，保留冲突提示，等待后续支持多库。
+                        owner_conflicts.append(
+                            {
+                                "netuid": netuid,
+                                "name": name,
+                                "address": owner,
+                                "existing_book": previous_book,
+                            }
+                        )
                 if registry_row is None:
                     db.add(
                         AddressBook(
@@ -3214,6 +3237,8 @@ class LinkService:
             "active_total": len(active_netuids),
             "invalid_owner_netuids": invalid_owners,
             "owner_conflicts": owner_conflicts,
+            "owner_reassigned": len(owner_reassigned),
+            "owner_reassigned_items": owner_reassigned,
             "inserted_items": added,
             "updated_items": updated,
             "restored_items": restored,
@@ -3231,6 +3256,7 @@ class LinkService:
                 "updated": updated,
                 "restored": restored,
                 "archived": archived,
+                "owner_reassigned": owner_reassigned,
             }
         )
         return result

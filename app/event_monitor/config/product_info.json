@@ -1,11 +1,21 @@
 {
   "product": {
     "name": "Wallet Link · 事件监控",
-    "version": "1.0.12",
+    "version": "1.0.13",
     "released_at": "2026-11-18",
     "status": "合并稳定版"
   },
   "releases": [
+    {
+      "version": "1.0.13",
+      "date": "2026-11-18",
+      "title": "项目方地址冲突修复",
+      "changes": [
+        "当前 SubnetOwner 已在普通或自动地址库时，自动迁入对应 SNx 项目方库。",
+        "同步结果显示原地址库到项目方库的重归属记录，并保留原普通库其他地址。",
+        "修复 SN3 Owner 被 const 库占用后，SN3 项目方库和事件监控无法建立的问题。"
+      ]
+    },
     {
       "version": "1.0.12",
       "date": "2026-11-18",
