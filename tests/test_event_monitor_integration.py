@@ -61,14 +61,14 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/styles.css?v=1.0.20" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.20" in page.text
+    assert "/static/event-monitor/styles.css?v=1.0.21" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.21" in page.text
     assert main_module.EVENT_MONITOR.settings.static_dir == main_module.EVENT_MONITOR_STATIC
 
     floating = client.get("/event-monitor/floating?mode=window")
     assert floating.status_code == 200
-    assert "/static/event-monitor/floating.css?v=1.0.20" in floating.text
-    assert "/static/event-monitor/floating.js?v=1.0.20" in floating.text
+    assert "/static/event-monitor/floating.css?v=1.0.21" in floating.text
+    assert "/static/event-monitor/floating.js?v=1.0.21" in floating.text
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
     assert client.get("/event-monitor/floating?mode=window").status_code == 200
@@ -81,7 +81,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.20"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.21"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
@@ -200,6 +200,32 @@ def test_address_transfer_simulation_uses_global_threshold(merged_client):
     event = simulated.json()["event"]
     assert float(event["details"]["amount_tao"]) == 6.5
     assert "6.50 TAO" in event["summary"]
+
+
+def test_emission_switch_simulation_signals(merged_client):
+    client, _ = merged_client
+    signals = client.get("/event-api/simulation/signals").json()["signals"]
+    signal_ids = {signal["id"] for signal in signals}
+    assert {"subnet_emission_enabled", "subnet_emission_disabled"} <= signal_ids
+
+    cases = [
+        ("subnet_emission_enabled", "SN82 已开启子网排放（模拟）"),
+        ("subnet_emission_disabled", "SN82 已关闭子网排放（模拟）"),
+    ]
+    for signal_id, expected_summary in cases:
+        response = client.post(
+            "/event-api/simulation/events",
+            json={"netuid": 82, "signal_id": signal_id},
+        )
+        assert response.status_code == 202, response.text
+        event = response.json()["event"]
+        assert event["source"] == "simulation"
+        assert event["event_type"] == "排放开关"
+        assert event["event_name"] == "SubtensorModule.SubnetEmissionEnabled"
+        assert event["summary"] == expected_summary
+
+    deleted = client.delete("/event-api/simulation/events")
+    assert deleted.status_code == 200
 
 
 def test_delete_address_book_removes_all_watched_addresses_at_once(merged_client):

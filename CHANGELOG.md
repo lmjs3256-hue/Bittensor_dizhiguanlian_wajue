@@ -1,5 +1,18 @@
 # 变更记录
 
+## 1.0.21 · 排放开关模拟信号 · 2026-11-19
+
+### 新增
+
+- 模拟信号目录新增 `subnet_emission_enabled` 和 `subnet_emission_disabled`。
+- 两个测试信号都会生成 `SubtensorModule.SubnetEmissionEnabled` 类型的“排放开关”事件。
+- 摘要分别为 `SNx 已开启子网排放（模拟）` 和 `SNx 已关闭子网排放（模拟）`，用于验证事件流和推送。
+
+### 测试
+
+- 新增排放开启/关闭模拟信号目录与事件生成接口测试。
+- 全量 **830 passed**；Python 编译、JavaScript 语法、JSON 与 `pip check` 通过。
+
 ## 1.0.20 · 子网排放开关监控 · 2026-11-19
 
 ### 新增

@@ -261,6 +261,26 @@
       "supports_completion": false
     },
     {
+      "id": "subnet_emission_enabled",
+      "label": "子网排放开启",
+      "event_type": "排放开关",
+      "event_name": "SubtensorModule.SubnetEmissionEnabled",
+      "description": "SubnetEmissionEnabled：模拟子网排放开关从关闭变为开启，验证事件流推送",
+      "summary": "SN{netuid} 已开启子网排放（模拟）",
+      "completed_summary": "SN{netuid} 排放开启测试已完成确认",
+      "supports_completion": false
+    },
+    {
+      "id": "subnet_emission_disabled",
+      "label": "子网排放关闭",
+      "event_type": "排放开关",
+      "event_name": "SubtensorModule.SubnetEmissionEnabled",
+      "description": "SubnetEmissionEnabled：模拟子网排放开关从开启变为关闭，验证事件流推送",
+      "summary": "SN{netuid} 已关闭子网排放（模拟）",
+      "completed_summary": "SN{netuid} 排放关闭测试已完成确认",
+      "supports_completion": false
+    },
+    {
       "id": "github_commit",
       "label": "GitHub 默认分支提交",
       "event_type": "GitHub 仓库更新",
