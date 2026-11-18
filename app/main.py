@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
@@ -160,6 +161,8 @@ def _reconcile_event_monitor_watch() -> dict[str, Any] | None:
         removed = 0
         updated = 0
         unchanged = 0
+        removed_books: dict[str, int] = {}
+        updated_books: dict[str, int] = {}
         for row in watched:
             watched_book = str(row.get("library_book") or "").strip()
             if not watched_book:
@@ -169,24 +172,38 @@ def _reconcile_event_monitor_watch() -> dict[str, Any] | None:
             current_book = str((current or {}).get("book") or "").strip()
             if current is not None and current_book in current_books:
                 label = str(current.get("label") or current_book)[:120]
-                if current_book != watched_book or label != str(row.get("label") or ""):
+                role = "project_owner" if current.get("source") == SUBNET_OWNER_SOURCE else ""
+                if (
+                    current_book != watched_book
+                    or label != str(row.get("label") or "")
+                    or role != str(row.get("address_role") or "")
+                ):
                     changed = store.update_watched_address(
                         int(row["address_id"]),
                         label=label,
                         library_book=current_book,
+                        address_role=role,
                     )
                     if changed is not None:
                         updated += 1
+                        key = (
+                            f"{watched_book} → {current_book}"
+                            if watched_book != current_book else current_book
+                        )
+                        updated_books[key] = updated_books.get(key, 0) + 1
                 else:
                     unchanged += 1
                 continue
             if store.delete_watched_address(int(row["address_id"])):
                 removed += 1
+                removed_books[watched_book] = removed_books.get(watched_book, 0) + 1
         EVENT_WATCH_RECONCILE_RESULT = {
             "removed": removed,
             "updated": updated,
             "unchanged": unchanged,
             "checked": len(watched),
+            "removed_books": removed_books,
+            "updated_books": updated_books,
         }
         if removed or updated:
             print(
@@ -200,6 +217,26 @@ def _reconcile_event_monitor_watch() -> dict[str, Any] | None:
         return EVENT_WATCH_RECONCILE_RESULT
 
 
+def _sync_event_monitor_library_state() -> dict[str, Any] | None:
+    """Seed new SN books, then reconcile stale/moved addresses with detail."""
+
+    seed = _seed_default_event_subnet_watch()
+    reconcile = _reconcile_event_monitor_watch()
+    if reconcile is None:
+        return None
+    result = {
+        **reconcile,
+        "added": int((seed or {}).get("added") or 0),
+        "added_books": dict((seed or {}).get("new_book_counts") or {}),
+        "updated_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        ).replace("+00:00", "Z"),
+    }
+    global EVENT_WATCH_RECONCILE_RESULT
+    EVENT_WATCH_RECONCILE_RESULT = result
+    return result
+
+
 async def _auto_sync_subnet_owners() -> None:
     """每周检查一次链上子网项目方；失败只记录状态，不影响服务启动。"""
 
@@ -208,8 +245,7 @@ async def _auto_sync_subnet_owners() -> None:
             SERVICE.auto_sync_subnet_owners,
             min_interval_minutes=SUBNET_OWNER_SYNC_INTERVAL_SECONDS // 60,
         )
-        await asyncio.to_thread(_seed_default_event_subnet_watch)
-        await asyncio.to_thread(_reconcile_event_monitor_watch)
+        await asyncio.to_thread(_sync_event_monitor_library_state)
     except Exception as exc:  # noqa: BLE001 - 后台同步失败不影响服务
         print(f"[subnet-owner-sync] 子网项目方同步失败：{exc}", file=sys.stderr)
 
@@ -285,8 +321,7 @@ async def lifespan(_app: FastAPI):
                 f"事件库 {EVENT_MONITOR.settings.database if EVENT_MONITOR.settings else ''}",
                 file=sys.stderr,
             )
-            _seed_default_event_subnet_watch()
-            _reconcile_event_monitor_watch()
+            _sync_event_monitor_library_state()
         except Exception as exc:  # noqa: BLE001 - 事件模块失败不应拖垮地址工具
             print(f"[event-monitor] 事件监控启动失败：{exc}", file=sys.stderr)
     else:
@@ -494,14 +529,19 @@ def _sync_auto_import_rows_to_event(result: dict[str, Any]) -> dict[str, Any] | 
             continue
         item = library.get(address) or {}
         label = str(item.get("label") or book)[:120]
+        role = "project_owner" if item.get("source") == SUBNET_OWNER_SOURCE else ""
         existing = watched_by_address.get(address)
         try:
             if existing is not None:
-                if str(existing.get("library_book") or "") != book:
+                if (
+                    str(existing.get("library_book") or "") != book
+                    or str(existing.get("address_role") or "") != role
+                ):
                     changed = store.update_watched_address(
                         int(existing["address_id"]),
                         label=label,
                         library_book=book,
+                        address_role=role,
                     )
                     if changed is not None:
                         watched_by_address[address] = changed
@@ -510,6 +550,7 @@ def _sync_auto_import_rows_to_event(result: dict[str, Any]) -> dict[str, Any] | 
                 continue
             store.add_watched_address(
                 "finney", address, label, 0, library_book=book,
+                address_role=role,
             )
             added += 1
             synced_books.add(book)
@@ -548,7 +589,7 @@ async def _watch_scheduler() -> None:
             async with WATCH_SWEEP_LOCK:
                 result = await asyncio.to_thread(WATCH.sweep_local_index)
                 await asyncio.to_thread(_sync_auto_import_rows_to_event, result)
-                await asyncio.to_thread(_reconcile_event_monitor_watch)
+                await asyncio.to_thread(_sync_event_monitor_library_state)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 流水线失败不能拖垮服务
@@ -949,7 +990,7 @@ def reset_event_monitor_chain():
 def reconcile_event_monitor_watch():
     """按当前共享地址库清理已解散库的旧监听地址并修正迁移归属。"""
 
-    result = _reconcile_event_monitor_watch()
+    result = _sync_event_monitor_library_state()
     if result is None:
         raise HTTPException(503, "事件监控尚未就绪，请稍后重试")
     if result.get("error"):
@@ -1633,7 +1674,7 @@ def dissolve_address_book(name: str, svc: Annotated[LinkService, Depends(service
 
     try:
         result = svc.dissolve_address_book(name)
-        _reconcile_event_monitor_watch()
+        _sync_event_monitor_library_state()
         return result
     except InputError as exc:
         raise HTTPException(404, str(exc)) from exc

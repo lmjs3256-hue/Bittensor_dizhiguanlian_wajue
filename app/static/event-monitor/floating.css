@@ -92,9 +92,24 @@ main { overflow: auto; }
 }
 
 .project-owner-suffix {
-  color: #ffd166;
+  color: #d8b4fe;
   font-weight: 850;
-  text-shadow: 0 0 10px rgba(255,209,102,.28);
+  text-shadow: 0 0 10px rgba(192,132,252,.28);
+}
+.event-library-tag {
+  display: inline-block;
+  margin-left: .28em;
+  padding: .04em .3em;
+  border: 1px solid rgba(96,165,250,.34);
+  border-radius: .32em;
+  color: #93c5fd;
+  background: rgba(59,130,246,.10);
+  font-size: .9em;
+}
+.official-owner-tag {
+  border: 1px solid rgba(192,132,252,.44);
+  border-radius: .32em;
+  background: rgba(139,92,246,.15);
 }
 
 

@@ -719,14 +719,26 @@ function eventPrimaryAddress(event) {
   return String(matched.find((item) => item?.address)?.address || "").trim();
 }
 
+function isSystemAutoAddressLabel(label, address) {
+  const clean = String(label || "").trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
+  const value = String(address || "").trim();
+  if (!clean || clean === "未命名地址" || clean === value || clean === maskAddress(value)) return true;
+  return clean.length <= 4 && value.endsWith(clean);
+}
+
 function addressEventNoteDetails(event) {
   const matched = Array.isArray(event.details?.matched_addresses)
     ? event.details.matched_addresses
     : [];
   const primaryAddress = eventPrimaryAddress(event);
   const item = matched.find((entry) => String(entry?.address || "") === primaryAddress) || matched[0] || {};
+  const libraryName = String(item.library_book || "").trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
   const label = String(item.label || "").trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
-  const labelTag = label && label !== "未命名地址" ? `【${label}】` : "";
+  const primaryTag = libraryName
+    ? `【${libraryName}】`
+    : (!isSystemAutoAddressLabel(label, primaryAddress) ? `【${label}】` : "");
+  const officialOwner = item.address_role === "project_owner" || item.official_owner === true;
+  const officialTag = officialOwner ? "【官方】" : "";
   const manualTags = Array.isArray(item.manual_note_tags)
     ? item.manual_note_tags.filter(Boolean).map((tag) => {
       const clean = String(tag).trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
@@ -735,7 +747,7 @@ function addressEventNoteDetails(event) {
     : manualNoteTags(item.manual_note);
   const seen = new Set();
   const tags = [];
-  for (const tag of [labelTag, ...manualTags]) {
+  for (const tag of [...manualTags, primaryTag, officialTag]) {
     const key = compactTag(tag);
     if (key && !seen.has(key)) {
       seen.add(key);
@@ -744,7 +756,9 @@ function addressEventNoteDetails(event) {
   }
   return {
     base: stripAddressEventTags(event.summary),
-    labelTag,
+    primaryTag,
+    officialTag,
+    officialOwner,
     manualTags,
     tags,
     address: primaryAddress,
@@ -790,12 +804,20 @@ function renderEventSummary(element, event) {
     const note = addressEventNoteDetails(event);
     element.append(document.createTextNode(note.base));
     element.append(document.createTextNode(" · "));
-    if (note.labelTag) {
-      element.append(infoElement("span", "project-owner-suffix", note.labelTag));
-    }
     if (note.manualTags.length) {
       for (const tag of note.manualTags) appendEditableManualTag(element, event, tag);
-    } else {
+    }
+    if (note.primaryTag) {
+      element.append(infoElement(
+        "span",
+        note.officialOwner ? "project-owner-suffix official-owner-tag" : "event-library-tag",
+        note.primaryTag,
+      ));
+    }
+    if (note.officialTag) {
+      element.append(infoElement("span", "project-owner-suffix official-owner-tag", note.officialTag));
+    }
+    if (!note.manualTags.length) {
       const placeholder = infoElement("button", "event-note-placeholder", "【手动备注】");
       placeholder.type = "button";
       placeholder.title = "点击添加手动备注，例如 回购、官方、出货";
@@ -2158,6 +2180,31 @@ function bookNameMatches(name, needle) {
   return /^\d+$/.test(compact) && number != null && number === Number(compact);
 }
 
+function eventLibrarySyncMessage(result) {
+  const parts = [];
+  for (const [book, count] of Object.entries(result.added_books || {})) {
+    parts.push(`新增「${book}」${count} 个地址`);
+  }
+  for (const [book, count] of Object.entries(result.removed_books || {})) {
+    parts.push(`移除已解散库「${book}」${count} 个地址`);
+  }
+  for (const [change, count] of Object.entries(result.updated_books || {})) {
+    parts.push(`更新「${change}」${count} 个地址`);
+  }
+  return parts.length
+    ? `地址库同步：${parts.join("；")}`
+    : `地址库已最新，检查了 ${Number(result.checked || 0)} 个监听地址`;
+}
+
+async function pollEventLibrarySync() {
+  try {
+    const result = await request("/api/event-monitor/watch/reconcile", { method: "POST" });
+    if (Number(result.added || 0) || Number(result.removed || 0) || Number(result.updated || 0)) {
+      showToast(eventLibrarySyncMessage(result));
+    }
+  } catch {}
+}
+
 async function renderAddressesView() {
   const intro = infoElement(
     "p",
@@ -2170,9 +2217,14 @@ async function renderAddressesView() {
     infoElement("strong", "", "按地址库选择事件监控地址"),
     infoElement("small", "", "共享的是地址资料，不是监控状态。搜索优先匹配地址库名，也可输入地址后 4 位反查所属库。"),
   );
+  const sharedActions = infoElement("div", "monitor-library-actions");
+  const syncButton = infoElement("button", "button ghost", "刷新同步");
+  syncButton.type = "button";
+  syncButton.title = "立即按当前已知地址库更新事件监控名单";
   const sharedButton = infoElement("button", "button primary", "选择地址库");
   sharedButton.type = "button";
-  shared.append(sharedCopy, sharedButton);
+  sharedActions.append(syncButton, sharedButton);
+  shared.append(sharedCopy, sharedActions);
   const guide = infoElement(
     "p",
     "monitor-group-guide",
@@ -2221,6 +2273,22 @@ async function renderAddressesView() {
       });
   };
 
+  syncButton.addEventListener("click", async () => {
+    syncButton.disabled = true;
+    syncButton.textContent = "同步中";
+    try {
+      const result = await request("/api/event-monitor/watch/reconcile", { method: "POST" });
+      showToast(eventLibrarySyncMessage(result));
+      await load();
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      if (syncButton.isConnected) {
+        syncButton.disabled = false;
+        syncButton.textContent = "刷新同步";
+      }
+    }
+  });
   sharedButton.addEventListener("click", () => openSharedAddressPicker(load));
   try {
     await load();
@@ -2443,6 +2511,7 @@ async function openSharedAddressPicker(reload) {
             addresses: [item.address],
             label: String(item.label || maskAddress(item.address)).slice(0, 120),
             library_book: item.book,
+            address_role: item.source === "bittensor:SubtensorModule.SubnetOwner" ? "project_owner" : "",
             min_transfer_tao: "0",
           }),
         });
@@ -2645,10 +2714,16 @@ function renderAddressRow(item, reload) {
     }
   });
   codeLine.append(addressCode, copy);
-  identity.append(
-    infoElement("strong", "", item.label || "未命名地址"),
-    codeLine,
-  );
+  const manualDisplay = manualNoteTags(item.manual_note).join("");
+  const fallbackLabel = isSystemAutoAddressLabel(item.label, item.address)
+    ? ""
+    : String(item.label || "").trim();
+  const displayName = manualDisplay || String(item.library_book || "").trim() || fallbackLabel || maskAddress(item.address);
+  identity.append(infoElement("strong", "", displayName));
+  if (item.address_role === "project_owner") {
+    identity.append(infoElement("span", "address-official-badge", "官方项目方"));
+  }
+  identity.append(codeLine);
   const labelEditor = infoElement("div", "address-label-editor");
   const label = infoElement("input", "address-label-input");
   label.value = item.label || "";
@@ -3194,6 +3269,8 @@ Promise.all([loadEvents(), loadStatus(), loadProduct(), loadSimulationSignals()]
   .catch((error) => showToast(error.message));
 setInterval(loadStatus, 5000);
 setInterval(renderHeartbeatCountdown, 1000);
+setInterval(pollEventLibrarySync, 30000);
+setTimeout(pollEventLibrarySync, 2000);
 
 
 // 事件 API 返回的导出/详情链接由后端拼出原始路径；统一在 DOM 层补全合并前缀。

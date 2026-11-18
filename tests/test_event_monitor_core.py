@@ -93,6 +93,7 @@ class StoreTests(unittest.TestCase):
         finally:
             db.close()
         self.assertIn("manual_note", columns)
+        self.assertIn("address_role", columns)
 
     def test_watched_address_manual_note_is_separate_and_editable(self) -> None:
         item = self.store.add_watched_address(
@@ -101,12 +102,17 @@ class StoreTests(unittest.TestCase):
             "SN53 项目方",
             library_book="SN53 NIOME",
             manual_note="回购、官方",
+            address_role="project_owner",
         )
         self.assertEqual(item["label"], "SN53 项目方")
         self.assertEqual(item["manual_note"], "回购、官方")
-        updated = self.store.update_watched_address(item["address_id"], manual_note="出货")
+        self.assertEqual(item["address_role"], "project_owner")
+        updated = self.store.update_watched_address(
+            item["address_id"], manual_note="出货", address_role="",
+        )
         self.assertEqual(updated["label"], "SN53 项目方")
         self.assertEqual(updated["manual_note"], "出货")
+        self.assertEqual(updated["address_role"], "")
 
     def test_event_is_idempotent_and_updates_same_record(self) -> None:
         event = make_event()
@@ -509,7 +515,7 @@ class ChainShapeTests(unittest.TestCase):
         self.assertEqual(len(mapped), 1)
         self.assertEqual(mapped[0]["source"], "address")
         self.assertEqual(mapped[0]["event_name"], "Balances.Transfer")
-        self.assertEqual(mapped[0]["summary"], "全链 · 13566 TAO · 5FqA…sThe")
+        self.assertEqual(mapped[0]["summary"], "全链 · 13566 TAO · 5FqA…sThe → 5Dz3…N24U")
 
     def test_dict_parser_migration_rewinds_once(self) -> None:
         root = Path(__file__).resolve().parent.parent
@@ -602,7 +608,7 @@ class ChainShapeTests(unittest.TestCase):
         )
         self.assertEqual(mapped[0]["netuid"], 53)
         self.assertTrue(mapped[0]["summary"].startswith("SN53 · "))
-        self.assertIn("买入 20.00 TAO", mapped[0]["summary"])
+        self.assertIn("20.00 TAO", mapped[0]["summary"])
 
     def test_scalar_substrate_params_fall_back_to_value_attributes(self) -> None:
         root = Path(__file__).resolve().parent.parent
@@ -832,16 +838,20 @@ class ChainShapeTests(unittest.TestCase):
         sell = address_event_record(make_raw("StakeRemoved", 5_000_000_000), **common)
         transfer = address_event_record(make_raw("Transfer", 2_000_000_000), **common)
 
-        self.assertEqual(buy["summary"], "SN53 · 买入 20.00 TAO · 5Col…1234")
+        self.assertEqual(buy["summary"], "SN53 · 20.00 TAO · 5Col…1234")
         self.assertEqual(buy["details"]["address_action"], "buy")
         self.assertEqual(buy["details"]["manual_note_tags"], ["【回购】", "【官方】"])
         self.assertEqual(
             buy["details"]["display_tags"],
-            ["【SN53 项目方】", "【回购】", "【官方】"],
+            ["【SN53 NIOME】", "【回购】", "【官方】"],
         )
-        self.assertIn("卖出 5.00 TAO", sell["summary"])
+        self.assertIn("5.00 TAO", sell["summary"])
+        self.assertNotIn("卖出", sell["summary"])
         self.assertEqual(sell["details"]["address_action"], "sell")
-        self.assertEqual(transfer["summary"], "全链 · 2 TAO · 5Col…1234")
+        self.assertEqual(
+            transfer["summary"],
+            "全链 · 2 TAO · 5Col…1234 → 5Oth…WXYZ",
+        )
         self.assertEqual(transfer["details"]["address_action"], "transfer")
 
     def test_project_owner_transfer_gets_prominent_source_suffix(self) -> None:
@@ -872,8 +882,8 @@ class ChainShapeTests(unittest.TestCase):
             spec_version=491,
             event_at="2026-11-18T00:00:00.000Z",
         )
-        self.assertEqual(event["summary"], "全链 · 1 TAO · 5Col…1234")
-        self.assertIn("【SN46 项目方】", event["details"]["display_tags"])
+        self.assertEqual(event["summary"], "全链 · 1 TAO · 5Col…1234 → 5Oth…WXYZ")
+        self.assertIn("【SN46项目方相关】", event["details"]["display_tags"])
         self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
 
     def test_project_owner_token_transfer_gets_source_suffix(self) -> None:
@@ -907,8 +917,8 @@ class ChainShapeTests(unittest.TestCase):
             spec_version=491,
             event_at="2026-11-18T00:00:00.000Z",
         )
-        self.assertEqual(event["summary"], "SN46→SN78 · 1 TAO 等值 · 5Col…1234")
-        self.assertIn("【SN46 项目方】", event["details"]["display_tags"])
+        self.assertEqual(event["summary"], "SN46→SN78 · 1 TAO 等值 · 5Col…1234 → 5Des…WXYZ")
+        self.assertIn("【SN46项目方相关】", event["details"]["display_tags"])
         self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
 
     def test_non_project_owner_keeps_original_subnet_prefix_only(self) -> None:
@@ -990,8 +1000,8 @@ class ChainShapeTests(unittest.TestCase):
             raw,
             network="finney",
             watched_addresses=[
-                {"address": counterparty, "label": "自动入库对手方", "library_book": "SN51 lium.io", "created_at": "2026-11-18T04:15:00Z"},
-                {"address": owner, "label": "SN51 项目方", "library_book": "SN51 lium.io", "created_at": "2026-11-17T07:00:00Z"},
+                {"address": counterparty, "label": "5Dz3", "library_book": "SN51 lium.io", "address_role": "", "created_at": "2026-11-18T04:15:00Z"},
+                {"address": owner, "label": "SN51 项目方", "library_book": "SN51 lium.io", "address_role": "project_owner", "created_at": "2026-11-17T07:00:00Z"},
             ],
             block_hash="0x" + "a" * 64,
             height=9530960,
@@ -999,8 +1009,9 @@ class ChainShapeTests(unittest.TestCase):
             event_at="2026-11-18T04:14:24.000Z",
         )
         self.assertEqual(event["details"]["primary_address"], owner)
-        self.assertEqual(event["summary"], "全链 · 13566 TAO · 5FqA…sThe")
-        self.assertIn("【SN51 项目方】", event["details"]["display_tags"])
+        self.assertEqual(event["summary"], "全链 · 13566 TAO · 5FqA…sThe → 5Dz3…N24U")
+        self.assertIn("【SN51 lium.io】", event["details"]["display_tags"])
+        self.assertTrue(event["details"]["matched_addresses"][0]["official_owner"])
 
     def test_address_monitor_masks_addresses_and_builds_concise_events(self) -> None:
         watched = [{
@@ -1035,7 +1046,7 @@ class ChainShapeTests(unittest.TestCase):
         self.assertEqual(event["event_type"], "零号子网质押")
         self.assertEqual(
             event["summary"],
-            f"SN0 · 买入 1.25 TAO · {mask_address(watched[0]['address'])}",
+            f"SN0 · 1.25 TAO · {mask_address(watched[0]['address'])}",
         )
         self.assertIn(mask_address(watched[0]["address"]), event["summary"])
         self.assertNotIn("5HotKey", event["summary"])
@@ -1539,7 +1550,7 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(simulated_address["event_type"], "解质押")
                 self.assertEqual(
                     simulated_address["summary"],
-                    f"SN78 · 卖出 1.00 TAO · {watched['masked']}",
+                    f"SN78 · 1.00 TAO · {watched['masked']}",
                 )
                 self.assertEqual(
                     simulated_address["details"]["project_owner_tags"],

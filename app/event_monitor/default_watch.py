@@ -42,9 +42,11 @@ def seed_default_subnet_watch(store: Any, items: list[dict[str, Any]]) -> dict[s
     added = 0
     skipped = 0
     new_books: list[str] = []
+    new_book_counts: dict[str, int] = {}
     for book in sorted(by_book, key=lambda value: (int(SUBNET_BOOK.match(value).group(1)), value)):
         if book in seeded_books:
             continue
+        book_added = 0
         for item in by_book[book]:
             address = str(item.get("address") or "").strip()
             if not address:
@@ -57,12 +59,19 @@ def seed_default_subnet_watch(store: Any, items: list[dict[str, Any]]) -> dict[s
                     str(item.get("label") or book)[:120],
                     0,
                     library_book=book,
+                    address_role=(
+                        "project_owner"
+                        if item.get("source") == "bittensor:SubtensorModule.SubnetOwner"
+                        else ""
+                    ),
                 )
                 added += 1
+                book_added += 1
             except ValueError:
                 skipped += 1
         seeded_books.add(book)
         new_books.append(book)
+        new_book_counts[book] = book_added
 
     if new_books:
         store.set_collector_state(
@@ -76,6 +85,7 @@ def seed_default_subnet_watch(store: Any, items: list[dict[str, Any]]) -> dict[s
     return {
         "seeded": bool(new_books),
         "new_books": new_books,
+        "new_book_counts": new_book_counts,
         "book_count": len(seeded_books),
         "added": added,
         "skipped": skipped,

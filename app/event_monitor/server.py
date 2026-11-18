@@ -72,16 +72,19 @@ def _annotate_address_event(
             item["label"] = current.get("label") or item.get("label") or "未命名地址"
             item["library_book"] = current.get("library_book") or item.get("library_book") or ""
             item["manual_note"] = str(current.get("manual_note") or "")
+            item["address_role"] = str(current.get("address_role") or "")
+        item["official_owner"] = str(item.get("address_role") or "") == "project_owner"
         manual_tags = manual_note_tags(item.get("manual_note"))
         item["manual_note_tags"] = manual_tags
-        owner_tags = project_owner_tags([item])
+        library_book = str(item.get("library_book") or "").strip()
         label = str(item.get("label") or "").strip()
-        label_tag = "" if label in {"", "未命名地址"} else bracket_tag(label)
-        item["display_tags"] = _unique_tags([
-            label_tag,
-            *[bracket_tag(tag) for tag in owner_tags],
-            *manual_tags,
-        ])
+        library_tag = bracket_tag(library_book) if library_book else ""
+        if not library_tag and label not in {"", "未命名地址"}:
+            address = str(item.get("address") or "").strip()
+            masked = _mask_address(address)
+            if label not in {address, masked} and not (len(label) <= 4 and address.endswith(label)):
+                library_tag = bracket_tag(label)
+        item["display_tags"] = _unique_tags([library_tag, *manual_tags])
         matched.append(item)
         all_manual_tags.extend(manual_tags)
         all_display_tags.extend(item["display_tags"])
@@ -505,6 +508,9 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                 label = str(body.get("label") or "").strip()[:120]
                 library_book = str(body.get("library_book") or body.get("book") or "").strip()[:80]
                 manual_note = str(body.get("manual_note") or "").strip()[:240]
+                address_role = str(body.get("address_role") or "").strip()[:40]
+                if address_role not in {"", "project_owner"}:
+                    address_role = ""
                 network = str(body.get("network") or "finney")
                 if not addresses:
                     raise ValueError("请至少输入一个 SS58 地址")
@@ -521,6 +527,7 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                             network, address, address_label, min_transfer_tao,
                             library_book=library_book,
                             manual_note=manual_note,
+                            address_role=address_role,
                             clear_exclusion=True,
                         )
                     except ValueError:
@@ -620,6 +627,11 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                     str(body.get("manual_note") or "").strip()[:240]
                     if "manual_note" in body else None
                 )
+                address_role = None
+                if "address_role" in body:
+                    address_role = str(body.get("address_role") or "").strip()[:40]
+                    if address_role not in {"", "project_owner"}:
+                        address_role = ""
                 watched = self.server.context.store.update_watched_address(
                     int(address_match.group(1)),
                     label=label,
@@ -627,6 +639,7 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                     min_transfer_tao=min_transfer_tao,
                     library_book=library_book,
                     manual_note=manual_note,
+                    address_role=address_role,
                 )
                 if watched is None:
                     self._error(404, "监控地址不存在")

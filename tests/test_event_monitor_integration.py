@@ -88,10 +88,12 @@ def test_address_event_api_uses_current_manual_note_without_rewriting_summary(me
             "label": "SN53 项目方",
             "library_book": "SN53 NIOME",
             "manual_note": "回购",
+            "address_role": "project_owner",
         },
     )
     assert created.status_code == 201
     address_id = created.json()["address"]["address_id"]
+    assert created.json()["address"]["address_role"] == "project_owner"
 
     simulated = client.post(
         "/event-api/simulation/events",
@@ -117,7 +119,7 @@ def test_address_event_api_uses_current_manual_note_without_rewriting_summary(me
     assert event["summary"] == simulated.json()["event"]["summary"]
     assert matched["manual_note"] == "官方、出货"
     assert matched["manual_note_tags"] == ["【官方】", "【出货】"]
-    assert "【SN53 项目方】" in matched["display_tags"]
+    assert "【SN53 NIOME】" in matched["display_tags"]
 
     detail = client.get(f"/event-api/events/{event_id}").json()["event"]
     assert detail["details"]["matched_addresses"][0]["manual_note"] == "官方、出货"
@@ -163,8 +165,11 @@ def test_event_watch_reconcile_removes_dissolved_books_and_updates_moved_address
 
     response = client.post("/api/event-monitor/watch/reconcile")
     assert response.status_code == 200, response.text
-    assert response.json()["removed"] == 1
-    assert response.json()["updated"] == 1
+    payload = response.json()
+    assert payload["removed"] == 1
+    assert payload["updated"] == 1
+    assert payload["removed_books"] == {"SN51项目方": 1}
+    assert payload["updated_books"] == {"SN51项目方 → SN51 lium.io": 1}
 
     watched = client.get("/event-api/addresses").json()["addresses"]
     assert [(item["address"], item["library_book"]) for item in watched] == [
@@ -344,6 +349,8 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "/api/event-monitor/chain/reset" in app_js
     assert "compareBookNames" in app_js
     assert "bookNameMatches" in app_js
+    assert "pollEventLibrarySync" in app_js
+    assert "刷新同步" in app_js
     assert "address-${direction}" in app_js
     main_app_js = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(
         encoding="utf-8"
@@ -359,6 +366,8 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert ".event-note-placeholder" in css
     assert ".detail-backdrop { backdrop-filter: none; }" in css
     assert ".chain-reset-button" in css
+    assert ".official-owner-tag" in css
+    assert ".event-library-tag" in css
 
     floating_js = (Path(__file__).resolve().parents[1] / "app" / "static" / "event-monitor" / "floating.js").read_text(
         encoding="utf-8"

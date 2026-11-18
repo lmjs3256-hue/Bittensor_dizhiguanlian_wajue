@@ -56,16 +56,25 @@ function manualTags(value) {
   }).filter(Boolean);
 }
 
+function isSystemAutoAddressLabel(label, address) {
+  const clean = String(label || "").trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
+  const value = String(address || "").trim();
+  if (!clean || clean === "未命名地址" || clean === value || clean === `${value.slice(0, 4)}…${value.slice(-4)}`) return true;
+  return clean.length <= 4 && value.endsWith(clean);
+}
+
 function addressSummaryHtml(event) {
   const matched = Array.isArray(event.details?.matched_addresses)
     ? event.details.matched_addresses
     : [];
   const primary = String(event.details?.primary_address || matched[0]?.address || "");
   const item = matched.find((entry) => String(entry?.address || "") === primary) || matched[0] || {};
+  const libraryName = String(item.library_book || "").trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
   const label = String(item.label || "").trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
-  const labelHtml = label && label !== "未命名地址"
-    ? `<span class="project-owner-suffix">${esc(`【${label}】`)}</span>`
-    : "";
+  const primaryTag = libraryName
+    ? `【${libraryName}】`
+    : (!isSystemAutoAddressLabel(label, primary) ? `【${label}】` : "");
+  const official = item.address_role === "project_owner" || item.official_owner === true;
   const notes = Array.isArray(item.manual_note_tags) && item.manual_note_tags.length
     ? item.manual_note_tags
     : manualTags(item.manual_note);
@@ -73,8 +82,14 @@ function addressSummaryHtml(event) {
   const noteHtml = notes.length
     ? notes.map((tag) => `<button type="button" class="event-note-tag event-note-tag-editable" data-note-event-id="${eventId}" title="点击编辑手动备注">${esc(tag)}</button>`).join("")
     : `<button type="button" class="event-note-placeholder" data-note-event-id="${eventId}" title="点击添加手动备注">【手动备注】</button>`;
+  const libraryHtml = primaryTag
+    ? `<span class="${official ? "project-owner-suffix official-owner-tag" : "event-library-tag"}">${esc(primaryTag)}</span>`
+    : "";
+  const officialHtml = official
+    ? '<span class="project-owner-suffix official-owner-tag">【官方】</span>'
+    : "";
   const base = String(event.summary || "").replace(TRAILING_NOTE_TAGS, "").replace(/\s*·\s*$/, "").trim();
-  return `${esc(base)} · ${labelHtml}${noteHtml}`;
+  return `${esc(base)} · ${noteHtml}${libraryHtml}${officialHtml}`;
 }
 
 function showToast(message) {
@@ -203,6 +218,7 @@ async function openNoteEditor(event) {
   input.focus();
   input.select();
 }
+
 
 function summaryHtml(event) {
   if (event.source === "address") return addressSummaryHtml(event);

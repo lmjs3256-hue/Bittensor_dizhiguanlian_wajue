@@ -989,8 +989,8 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
   --theme-grid: rgba(28,37,50,.035);
   --theme-radial: rgba(9,111,100,.10);
   --on-accent: #ffffff;
-  --project-owner: #9a4b00;
-  --project-owner-soft: #fff0d8;
+  --project-owner: #7048b6;
+  --project-owner-soft: #f0e9ff;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
@@ -1010,8 +1010,8 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
     --theme-grid: rgba(255,255,255,.025);
     --theme-radial: rgba(99,213,194,.10);
     --on-accent: #0d1418;
-    --project-owner: #ffd166;
-    --project-owner-soft: rgba(161,79,0,.24);
+    --project-owner: #c4b5fd;
+    --project-owner-soft: rgba(139,92,246,.22);
   }
 }
 :root[data-theme="eye"] {
@@ -1031,8 +1031,8 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
   --theme-grid: rgba(54,57,47,.04);
   --theme-radial: rgba(82,102,77,.10);
   --on-accent: #ffffff;
-  --project-owner: #805b2d;
-  --project-owner-soft: #f2ead8;
+  --project-owner: #7650a8;
+  --project-owner-soft: #ece3f4;
 }
 :root[data-theme="darkgray"] {
   --bg: #292b2f;
@@ -1051,8 +1051,8 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
   --theme-grid: rgba(255,255,255,.025);
   --theme-radial: rgba(169,181,166,.08);
   --on-accent: #151815;
-  --project-owner: #ffd28a;
-  --project-owner-soft: rgba(223,194,140,.16);
+  --project-owner: #d8b4fe;
+  --project-owner-soft: rgba(192,132,252,.16);
 }
 body {
   background:
@@ -1340,3 +1340,24 @@ body {
 }
 .chain-reset-button:hover:not(:disabled) { border-color: rgba(180,35,24,.44); background: rgba(180,35,24,.10); }
 .chain-reset-button:disabled { opacity: .5; cursor: default; }
+
+.event-library-tag {
+  display:inline-block; flex:0 0 auto; margin-left:.3em; padding:.08em .38em;
+  border:1px solid color-mix(in srgb, var(--blue) 30%, transparent); border-radius:.36em;
+  color:var(--blue); background:color-mix(in srgb, var(--blue) 9%, transparent);
+  font-size:.88em; font-weight:720; line-height:1.35; white-space:nowrap;
+}
+.official-owner-tag {
+  border-color:color-mix(in srgb, var(--project-owner) 64%, transparent) !important;
+  color:var(--project-owner) !important;
+  background:var(--project-owner-soft) !important;
+  box-shadow:0 0 10px color-mix(in srgb, var(--project-owner) 18%, transparent);
+}
+.address-official-badge {
+  width:fit-content; padding:2px 6px; border:1px solid color-mix(in srgb, var(--project-owner) 50%, transparent);
+  border-radius:5px; color:var(--project-owner); background:var(--project-owner-soft);
+  font-size:9px; font-weight:750; line-height:1.4;
+}
+
+.monitor-library-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.monitor-library-actions .button { min-height:36px; padding-inline:13px; font-size:11px; }

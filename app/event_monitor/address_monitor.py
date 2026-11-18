@@ -63,6 +63,16 @@ def bracket_tag(value: Any) -> str:
     return f"【{text}】" if text else ""
 
 
+def is_system_auto_address_label(value: Any, address: Any) -> bool:
+    """Detect labels that are just a copy of the address suffix."""
+
+    label = str(value or "").strip().strip(TAG_EDGE)
+    account = str(address or "").strip()
+    if not label or label in {"未命名地址", account, mask_address(account)}:
+        return True
+    return len(label) <= 4 and bool(account) and account.endswith(label)
+
+
 def manual_note_tags(value: Any) -> list[str]:
     """Split a free-form manual note into stable, display-ready tags."""
 
@@ -181,7 +191,8 @@ def address_event_record(
         verb = "质押" if event_name == "StakeAdded" else "解质押"
         summary_subnet = _subnet_label(netuid)
         summary_amount = f"{display_tao_amount} TAO"
-        summary_action = "买入" if event_name == "StakeAdded" else "卖出"
+        # 方向只通过绿色/红色表示，摘要不再写“买入/卖出”。
+        summary_action = ""
         address_action = "buy" if event_name == "StakeAdded" else "sell"
         event_type = (
             "零号子网质押" if netuid == 0 and event_name == "StakeAdded"
@@ -268,7 +279,10 @@ def address_event_record(
     # are watched, show the project owner as the primary address. Otherwise the
     # faster newly-added counterparty row can hide who actually triggered the event.
     matched.sort(key=lambda item: (
-        0 if project_owner_tags([item]) else 1,
+        0 if (
+            item.get("address_role") == "project_owner"
+            or project_owner_tags([item])
+        ) else 1,
         str(item.get("created_at") or ""),
     ))
     owner_tags = project_owner_tags(matched)
@@ -281,12 +295,11 @@ def address_event_record(
         item_tags: list[str] = []
         label = str(item.get("label") or "").strip()
         address = str(item.get("address") or "").strip()
-        if label and label not in {address, mask_address(address)}:
-            label_tag = bracket_tag(label)
-            if label_tag:
-                item_tags.append(label_tag)
-        for owner_tag in project_owner_tags([item]):
-            item_tags.append(bracket_tag(owner_tag))
+        library_book = str(item.get("library_book") or "").strip()
+        if library_book:
+            item_tags.append(bracket_tag(library_book))
+        elif not is_system_auto_address_label(label, address):
+            item_tags.append(bracket_tag(label))
         note_tags = manual_note_tags(item.get("manual_note"))
         item_tags.extend(note_tags)
         unique_item_tags: list[str] = []
@@ -308,6 +321,8 @@ def address_event_record(
             "library_book": item.get("library_book") or "",
             "manual_note": str(item.get("manual_note") or ""),
             "manual_note_tags": note_tags,
+            "address_role": str(item.get("address_role") or ""),
+            "official_owner": str(item.get("address_role") or "") == "project_owner",
             "display_tags": unique_item_tags,
         })
 
@@ -316,7 +331,17 @@ def address_event_record(
         summary_parts.append(f"{summary_action} {summary_amount}")
     else:
         summary_parts.append(summary_amount)
-    summary_parts.append(mask_address(primary_address))
+    if event_type == "普通转账":
+        summary_address = (
+            f"{mask_address(details.get('from'))} → {mask_address(details.get('to'))}"
+        )
+    elif event_type == "代币转移":
+        origin = details.get("origin_coldkey")
+        destination = details.get("destination_coldkey")
+        summary_address = f"{mask_address(origin)} → {mask_address(destination)}"
+    else:
+        summary_address = mask_address(primary_address)
+    summary_parts.append(summary_address)
     # 地址标签（项目方、手动备注）只作为结构化 UI 标签展示，不再拼进持久化摘要，
     # 避免旧前端重复追加尾注，也便于后续修改备注时实时刷新历史事件。
     summary = " · ".join(part for part in summary_parts if part)
