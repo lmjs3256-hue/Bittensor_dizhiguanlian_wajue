@@ -243,22 +243,27 @@ def _sync_event_monitor_library_state() -> dict[str, Any] | None:
     return result
 
 
-def _subnet_has_watched_addresses(netuid: int) -> bool:
+def _watched_subnet_netuids() -> set[int]:
     if not EVENT_MONITOR.running or EVENT_MONITOR.context is None:
-        return False
-    prefix = f"SN{int(netuid)} "
-    return any(
-        str(item.get("library_book") or "").startswith(prefix)
-        for item in EVENT_MONITOR.context.store.list_watched_addresses("finney")
-    )
+        return set()
+    result: set[int] = set()
+    for item in EVENT_MONITOR.context.store.list_watched_addresses("finney"):
+        match = re.match(r"^SN(\d+) ", str(item.get("library_book") or ""))
+        if match:
+            result.add(int(match.group(1)))
+    return result
 
 
-def _ensure_subnet_owner_watched(netuid: int) -> int:
+def _subnet_has_watched_addresses(netuid: int) -> bool:
+    return int(netuid) in _watched_subnet_netuids()
+
+
+def _ensure_subnet_owner_watched(netuid: int, *, source_items: list[dict[str, Any]] | None = None) -> int:
     if not EVENT_MONITOR.running or EVENT_MONITOR.context is None:
         return 0
     prefix = f"SN{int(netuid)} "
     owners = [
-        item for item in SERVICE.library()
+        item for item in (source_items if source_items is not None else SERVICE.library())
         if str(item.get("book") or "").startswith(prefix)
         and item.get("source") == SUBNET_OWNER_SOURCE
     ]
@@ -2353,7 +2358,26 @@ def import_subnet_owner_addresses(svc: Annotated[LinkService, Depends(service)])
     """手动同步当前子网项目方地址；注销子网自动归档。"""
 
     try:
-        return svc.sync_subnet_owner_addresses()
+        watched_before = _watched_subnet_netuids()
+        result = svc.sync_subnet_owner_addresses()
+        changed_netuids = {
+            int(item["netuid"])
+            for key in ("updated_items", "restored_items")
+            for item in (result.get(key) or [])
+            if item.get("netuid") is not None
+        }
+        if EVENT_MONITOR.running and EVENT_MONITOR.context is not None:
+            result["event_watch_reconcile"] = _sync_event_monitor_library_state()
+            library_items = svc.library()
+            restored: dict[str, int] = {}
+            for netuid in sorted(changed_netuids & watched_before):
+                count = _ensure_subnet_owner_watched(
+                    netuid, source_items=library_items,
+                )
+                if count:
+                    restored[str(netuid)] = count
+            result["owner_watch_restored"] = restored
+        return result
     except Exception as exc:
         raise HTTPException(502, f"子网项目方同步失败：{exc}") from exc
 

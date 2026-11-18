@@ -1,11 +1,21 @@
 {
   "product": {
     "name": "Wallet Link · 事件监控",
-    "version": "1.0.16",
+    "version": "1.0.17",
     "released_at": "2026-11-19",
     "status": "合并稳定版"
   },
   "releases": [
+    {
+      "version": "1.0.17",
+      "date": "2026-11-19",
+      "title": "SN109 新 Owner 与手动同步联动",
+      "changes": [
+        "SN109 当前新 Owner 已写入 SN109 SN109 项目方库和事件监控。",
+        "手动同步项目方地址后自动对账事件监控，并恢复已监控 NETUID 的新 Owner。",
+        "已知 netuid 的历史注销事件摘要不再显示 SN待定。"
+      ]
+    },
     {
       "version": "1.0.16",
       "date": "2026-11-19",
