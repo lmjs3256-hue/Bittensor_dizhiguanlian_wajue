@@ -11,6 +11,7 @@
   --event-red: #c8444f;
   --event-yellow: #ffd166;
   --event-green: #2f9e71;
+  --blue: #8fc4ff;
   --mono: "Cascadia Code", Consolas, monospace;
   --event-font-size: 13px;
 }
@@ -54,6 +55,9 @@ main { overflow: auto; }
 .event > i { width: 4px; height: 4px; border-radius: 50%; margin-top: 6px; background: var(--tone); box-shadow: 0 0 7px var(--tone); }
 .event-copy { min-width: 0; }
 .event-copy strong { display: block; color: var(--tone); font-size: var(--event-font-size); line-height: 1.5; }
+.event.address-buy .event-copy strong { color: var(--event-green); }
+.event.address-sell .event-copy strong { color: var(--event-red); }
+.event.address-transfer .event-copy strong { color: var(--blue); background: transparent; font-weight: 650; }
 .event.is-latest-event { background: linear-gradient(90deg, rgba(119,225,193,.06), transparent 76%); }
 .event.is-latest-event .event-copy strong { animation: latest-event-entry .7s cubic-bezier(.16,1,.3,1) 1 both, latest-event-glow 2s ease-in-out .7s 15; }
 @keyframes latest-event-entry {

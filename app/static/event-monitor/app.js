@@ -70,11 +70,13 @@ function rewriteEventLink(link) {
 const UI_KEYS = {
   panelCleared: "subnetPulse.panelCleared",
   eventFontSize: "subnetPulse.eventFontSize",
+  addressBookPageSize: "subnetPulse.addressBookPageSize",
   floatingMode: "subnetPulse.floatingMode.v2",
   inlineBounds: "subnetPulse.inlineFloatingBounds",
 };
 const FONT_MIN = 11;
 const FONT_MAX = 18;
+const ADDRESS_BOOK_PAGE_SIZES = [10, 50, 100];
 let uiChannel = null;
 try {
   if ("BroadcastChannel" in window) uiChannel = new BroadcastChannel("subnet-pulse-ui");
@@ -88,6 +90,8 @@ const state = {
   eventTypes: [],
   currentPage: 1,
   pageSize: 12,
+  addressBookPage: 1,
+  addressBookPageSize: readStoredAddressBookPageSize(),
   subnetFilter: null,
   eventFontSize: readStoredEventFontSize(),
   panelCleared: readStoredPanelCleared(),
@@ -241,6 +245,21 @@ function readStoredPanelCleared() {
   } catch {
     return false;
   }
+}
+
+function readStoredAddressBookPageSize() {
+  try {
+    const size = Number(localStorage.getItem(UI_KEYS.addressBookPageSize));
+    return ADDRESS_BOOK_PAGE_SIZES.includes(size) ? size : 10;
+  } catch {
+    return 10;
+  }
+}
+
+function saveAddressBookPageSize(size) {
+  try {
+    localStorage.setItem(UI_KEYS.addressBookPageSize, String(size));
+  } catch {}
 }
 
 function readStoredFloatingMode() {
@@ -2236,6 +2255,7 @@ async function renderAddressesView() {
   sharedButton.type = "button";
   sharedActions.append(syncButton, sharedButton);
   shared.append(sharedCopy, sharedActions);
+
   const transferFilter = infoElement("section", "global-transfer-filter");
   const transferFilterCopy = infoElement("div", "global-transfer-filter-copy");
   transferFilterCopy.append(
@@ -2253,15 +2273,117 @@ async function renderAddressesView() {
   transferFilterSave.type = "button";
   transferFilterControl.append(transferFilterInput, infoElement("em", "", "TAO"), transferFilterSave);
   transferFilter.append(transferFilterCopy, transferFilterControl);
+
   const guide = infoElement(
     "p",
     "monitor-group-guide",
-    "如需监控单个地址：先到左侧“已知地址库”新建一个只包含该地址的地址库，再在本页勾选整个库。",
+    "如需监控单个地址：先到左侧“已知地址库”新建一个只包含该地址的地址库，再在本页勾选整个库。地址库默认折叠，展开后才能编辑库内地址。",
+  );
+  const sortHint = infoElement(
+    "p",
+    "monitor-library-sort-hint",
+    "地址库按 SN 数字从小到大排列；出现 SN2 后直接到 SN4 之类的跳号，表示 SN3 当前没有可监控地址库，不是排序错误。",
   );
   const list = infoElement("div", "address-list");
   list.append(infoElement("p", "info-intro", "正在读取监控地址…"));
-  el.infoView.append(intro, shared, transferFilter, guide, list);
+
+  const pager = infoElement("nav", "monitor-library-pagination");
+  pager.setAttribute("aria-label", "事件监控地址库分页");
+  const pageSizeLabel = infoElement("label", "monitor-library-page-size");
+  pageSizeLabel.append(document.createTextNode("每页"));
+  const pageSizeSelect = infoElement("select");
+  pageSizeSelect.setAttribute("aria-label", "每页显示多少个地址库");
+  for (const size of ADDRESS_BOOK_PAGE_SIZES) {
+    const option = infoElement("option", "", String(size));
+    option.value = String(size);
+    pageSizeSelect.append(option);
+  }
+  pageSizeLabel.append(pageSizeSelect, document.createTextNode("个库"));
+  const pageActions = infoElement("div", "monitor-library-page-actions");
+  const firstPage = infoElement("button", "button ghost", "首页");
+  const previousPage = infoElement("button", "button ghost", "上一页");
+  const pageStatus = infoElement("span", "monitor-library-page-status", "");
+  const nextPage = infoElement("button", "button ghost", "下一页");
+  const lastPage = infoElement("button", "button ghost", "末页");
+  for (const button of [firstPage, previousPage, nextPage, lastPage]) button.type = "button";
+  pageActions.append(firstPage, previousPage, pageStatus, nextPage, lastPage);
+  const pageJump = infoElement("label", "monitor-library-page-jump");
+  pageJump.append(document.createTextNode("跳至"));
+  const pageJumpInput = infoElement("input");
+  pageJumpInput.type = "number";
+  pageJumpInput.min = "1";
+  pageJumpInput.setAttribute("aria-label", "跳转到指定地址库页码");
+  pageJump.append(pageJumpInput, document.createTextNode("页"));
+  pager.append(pageSizeLabel, pageActions, pageJump);
+  pager.hidden = true;
+
+  el.infoView.append(intro, shared, transferFilter, guide, sortHint, list, pager);
   let loadVersion = 0;
+  let sortedGroups = [];
+
+  const totalPages = () => Math.max(1, Math.ceil(sortedGroups.length / state.addressBookPageSize));
+  const setPage = (value) => {
+    state.addressBookPage = Math.min(Math.max(1, Number(value) || 1), totalPages());
+    renderPage();
+  };
+
+  const renderPage = () => {
+    const pages = totalPages();
+    state.addressBookPage = Math.min(Math.max(1, state.addressBookPage), pages);
+    const page = state.addressBookPage;
+    const start = (page - 1) * state.addressBookPageSize;
+    const visibleGroups = sortedGroups.slice(start, start + state.addressBookPageSize);
+    list.replaceChildren();
+    if (!visibleGroups.length) {
+      list.append(infoElement("p", "address-empty", "事件监控名单为空。请从命名地址库勾选并确认；确认前不会监控任何地址。"));
+    }
+
+    for (const [name, items] of visibleGroups) {
+      const group = infoElement("details", "monitor-book-group");
+      group.open = false;
+      const summary = infoElement("summary", "monitor-book-summary");
+      const enabled = items.filter((item) => item.enabled).length;
+      const title = infoElement("strong", "", name);
+      const status = infoElement("span", "monitor-book-summary-status", `${enabled} / ${items.length} 个地址启用监控`);
+      const removeBook = infoElement("button", "monitor-book-remove", "移出整库");
+      removeBook.type = "button";
+      removeBook.title = `一次性移出「${name}」的 ${items.length} 个监控地址`;
+      removeBook.addEventListener("click", async (clickEvent) => {
+        clickEvent.preventDefault();
+        clickEvent.stopPropagation();
+        if (!window.confirm(`确定移出整个地址库「${name}」吗？\n将移除 ${items.length} 个事件监控地址，不会删除左侧共享已知地址库。`)) return;
+        removeBook.disabled = true;
+        removeBook.textContent = "移除中";
+        try {
+          const query = new URLSearchParams({ network: "finney", library_book: name });
+          const result = await request(`/event-api/addresses/book?${query.toString()}`, { method: "DELETE" });
+          showToast(`已移出「${result.library_book || name}」${Number(result.deleted || 0)} 个地址；共享已知地址库不受影响`);
+          await load();
+        } catch (error) {
+          removeBook.disabled = false;
+          removeBook.textContent = "移出整库";
+          showToast(error.message);
+        }
+      });
+      summary.append(title, status, removeBook);
+      const body = infoElement("div", "monitor-book-addresses");
+      items.forEach((item) => body.append(renderAddressRow(item, load)));
+      group.append(summary, body);
+      list.append(group);
+    }
+
+    pageSizeSelect.value = String(state.addressBookPageSize);
+    pageSizeSelect.disabled = !sortedGroups.length;
+    firstPage.disabled = page <= 1;
+    previousPage.disabled = page <= 1;
+    nextPage.disabled = page >= pages;
+    lastPage.disabled = page >= pages;
+    pageStatus.textContent = `第 ${page} / ${pages} 页 · 共 ${sortedGroups.length} 个地址库`;
+    pageJumpInput.value = String(page);
+    pageJumpInput.max = String(pages);
+    pageJumpInput.disabled = pages <= 1;
+    pager.hidden = !sortedGroups.length;
+  };
 
   const load = async () => {
     const requestVersion = ++loadVersion;
@@ -2276,34 +2398,37 @@ async function renderAddressesView() {
     transferFilterInput.value = String(filterData.min_transfer_tao ?? 5);
     state.watchedAddresses = data.addresses || [];
     populateSimulationAddresses();
-    list.replaceChildren();
-    if (!state.watchedAddresses.length) {
-      list.append(infoElement("p", "address-empty", "事件监控名单为空。请从命名地址库勾选并确认；确认前不会监控任何地址。"));
-      return;
-    }
     const groups = new Map();
     for (const item of state.watchedAddresses) {
       const name = String(item.library_book || "").trim() || "历史/未归档监控";
       if (!groups.has(name)) groups.set(name, []);
       groups.get(name).push(item);
     }
-    [...groups.entries()]
-      .sort(([left], [right]) => compareBookNames(left, right))
-      .forEach(([name, items]) => {
-        const group = infoElement("details", "monitor-book-group");
-        group.open = true;
-        const summary = infoElement("summary", "monitor-book-summary");
-        const enabled = items.filter((item) => item.enabled).length;
-        summary.append(
-          infoElement("strong", "", name),
-          infoElement("span", "", `${enabled} / ${items.length} 个地址启用监控`),
-        );
-        const body = infoElement("div", "monitor-book-addresses");
-        items.forEach((item) => body.append(renderAddressRow(item, load)));
-        group.append(summary, body);
-        list.append(group);
-      });
+    sortedGroups = [...groups.entries()]
+      .sort(([left], [right]) => compareBookNames(left, right));
+    renderPage();
   };
+
+  pageSizeSelect.addEventListener("change", () => {
+    const size = Number(pageSizeSelect.value);
+    if (!ADDRESS_BOOK_PAGE_SIZES.includes(size)) return;
+    state.addressBookPageSize = size;
+    state.addressBookPage = 1;
+    saveAddressBookPageSize(size);
+    renderPage();
+  });
+  firstPage.addEventListener("click", () => setPage(1));
+  previousPage.addEventListener("click", () => setPage(state.addressBookPage - 1));
+  nextPage.addEventListener("click", () => setPage(state.addressBookPage + 1));
+  lastPage.addEventListener("click", () => setPage(totalPages()));
+  const jumpToTypedPage = () => setPage(pageJumpInput.value);
+  pageJumpInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      jumpToTypedPage();
+    }
+  });
+  pageJumpInput.addEventListener("change", jumpToTypedPage);
 
   transferFilterSave.addEventListener("click", async () => {
     const value = transferFilterInput.value.trim() || "0";
@@ -2353,6 +2478,7 @@ async function renderAddressesView() {
     await load();
   } catch (error) {
     list.replaceChildren(infoElement("p", "address-empty", error.message));
+    pager.hidden = true;
   }
 }
 
@@ -2371,14 +2497,14 @@ async function openSharedAddressPicker(reload) {
   const note = infoElement(
     "p",
     "dialog-copy",
-    "一级勾选代表整个地址库；展开后可用二级勾选只监控库内部分地址。已知地址库与事件监控共用地址资料，但监控名单独立；移出监控不会删除已知地址库。",
+    "一级勾选代表整个地址库；展开后可用二级勾选只监控库内部分地址。已知地址库与事件监控共用地址资料，但监控名单独立；移出监控不会删除已知地址库。批量选择前会再次确认地址库和地址数量。",
   );
   const toolbar = infoElement("div", "shared-library-toolbar");
   const search = infoElement("input");
   search.type = "search";
   search.placeholder = "输入 SN 编号、地址库名，或地址后 4 位";
   search.setAttribute("aria-label", "按 SN 编号、地址库名或地址后四位搜索");
-  const selectVisible = infoElement("button", "button ghost", "全选当前地址库");
+  const selectVisible = infoElement("button", "button ghost", "全选筛选结果");
   selectVisible.type = "button";
   const clear = infoElement("button", "button ghost", "清空选择");
   clear.type = "button";
@@ -2549,7 +2675,17 @@ async function openSharedAddressPicker(reload) {
 
   search.addEventListener("input", render);
   selectVisible.addEventListener("click", () => {
-    for (const group of visibleGroups()) setGroupChecked(group, true);
+    const groupsToSelect = visibleGroups();
+    const pending = groupsToSelect.reduce(
+      (total, group) => total + groupState(group).selectable.length,
+      0,
+    );
+    if (!pending) {
+      render();
+      return;
+    }
+    if (!window.confirm(`将选择 ${groupsToSelect.length} 个地址库、${pending} 个尚未监控的地址。\n请确认这些地址库确实都需要监控。`)) return;
+    for (const group of groupsToSelect) setGroupChecked(group, true);
     render();
   });
   clear.addEventListener("click", () => { selected.clear(); render(); });

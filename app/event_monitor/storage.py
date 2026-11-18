@@ -1342,6 +1342,37 @@ class Store:
             )
             return cur.rowcount == 1
 
+    def delete_watched_address_book(self, network: str, library_book: str) -> dict[str, Any]:
+        """Remove every watched address in one book and preserve exclusions."""
+        book = str(library_book or "").strip()
+        if not book:
+            raise ValueError("地址库名称不能为空")
+        stamp = now_iso()
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT address_id,address,library_book FROM watched_addresses
+                   WHERE network=? AND lower(library_book)=lower(?)
+                   ORDER BY address_id""",
+                (network, book),
+            ).fetchall()
+            if not rows:
+                return {"library_book": book, "deleted": 0}
+            for row in rows:
+                db.execute(
+                    """INSERT OR REPLACE INTO watched_address_exclusions
+                       (network,address,created_at) VALUES(?,?,?)""",
+                    (network, row["address"], stamp),
+                )
+            ids = [int(row["address_id"]) for row in rows]
+            marks = ",".join("?" for _ in ids)
+            deleted = db.execute(
+                f"DELETE FROM watched_addresses WHERE address_id IN ({marks})", ids,
+            ).rowcount
+        return {
+            "library_book": str(rows[0]["library_book"] or book),
+            "deleted": int(deleted),
+        }
+
     def list_repositories(self) -> list[dict[str, Any]]:
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM repositories ORDER BY netuid,owner,name").fetchall()]

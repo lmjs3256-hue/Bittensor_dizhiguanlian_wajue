@@ -61,14 +61,14 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/styles.css?v=1.0.10" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.10" in page.text
+    assert "/static/event-monitor/styles.css?v=1.0.12" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.12" in page.text
     assert main_module.EVENT_MONITOR.settings.static_dir == main_module.EVENT_MONITOR_STATIC
 
     floating = client.get("/event-monitor/floating?mode=window")
     assert floating.status_code == 200
-    assert "/static/event-monitor/floating.css?v=1.0.10" in floating.text
-    assert "/static/event-monitor/floating.js?v=1.0.10" in floating.text
+    assert "/static/event-monitor/floating.css?v=1.0.12" in floating.text
+    assert "/static/event-monitor/floating.js?v=1.0.12" in floating.text
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
     assert client.get("/event-monitor/floating?mode=window").status_code == 200
@@ -81,7 +81,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.10"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.12"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
@@ -200,6 +200,37 @@ def test_address_transfer_simulation_uses_global_threshold(merged_client):
     event = simulated.json()["event"]
     assert float(event["details"]["amount_tao"]) == 6.5
     assert "6.50 TAO" in event["summary"]
+
+
+def test_delete_address_book_removes_all_watched_addresses_at_once(merged_client):
+    client, _ = merged_client
+    other = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
+    created = client.post(
+        "/event-api/addresses",
+        json={
+            "network": "finney",
+            "addresses": [ADDRESS, ADDRESS_TWO, other],
+            "label": "Mn1Q",
+            "library_book": "Mn1Q",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["created"] == 3
+
+    removed = client.delete(
+        "/event-api/addresses/book",
+        params={"network": "finney", "library_book": "mn1q"},
+    )
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["library_book"] == "Mn1Q"
+    assert removed.json()["deleted"] == 3
+    assert client.get("/event-api/addresses").json()["addresses"] == []
+
+    with sqlite3.connect(main_module.EVENT_MONITOR.settings.database) as db:
+        excluded = db.execute(
+            "SELECT COUNT(*) FROM watched_address_exclusions WHERE network='finney'",
+        ).fetchone()[0]
+    assert excluded == 3
 
 
 def test_event_watch_reconcile_removes_dissolved_books_and_updates_moved_address(merged_client):
@@ -404,6 +435,13 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "/api/event-monitor/chain/reset" in app_js
     assert "compareBookNames" in app_js
     assert "bookNameMatches" in app_js
+    assert "ADDRESS_BOOK_PAGE_SIZES = [10, 50, 100]" in app_js
+    assert "addressBookPageSize" in app_js
+    assert "group.open = false" in app_js
+    assert "移出整库" in app_js
+    assert "/event-api/addresses/book" in app_js
+    assert "全选筛选结果" in app_js
+    assert "请确认这些地址库确实都需要监控" in app_js
     assert "pollEventLibrarySync" in app_js
     assert "刷新同步" in app_js
     assert "global-transfer-filter" in app_js
@@ -423,6 +461,12 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert ".event-row.address-buy" in css
     assert ".event-row.address-sell" in css
     assert ".event-row.address-transfer" in css
+    transfer_rule = css.split(".event-row.address-transfer .event-copy strong {", 1)[1].split("}", 1)[0]
+    assert "color: var(--blue)" in transfer_rule
+    assert "background: transparent" in transfer_rule
+    assert "color: #ffffff" not in transfer_rule
+    assert ".monitor-book-remove" in css
+    assert ".monitor-library-pagination" in css
     assert ".event-note-placeholder" in css
     assert ".detail-backdrop { backdrop-filter: none; }" in css
     assert ".chain-reset-button" in css
@@ -448,6 +492,11 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert ".note-dialog" in floating_css
     assert ".note-dialog-input" in floating_css
     assert ".floating-toast" in floating_css
+    assert "--blue: #8fc4ff" in floating_css
+    assert ".event.address-transfer .event-copy strong" in floating_css
+    floating_transfer = floating_css.split(".event.address-transfer .event-copy strong {", 1)[1].split("}", 1)[0]
+    assert "color: var(--blue)" in floating_transfer
+    assert "background: transparent" in floating_transfer
 
 
 def test_legacy_subnet_profiles_are_inherited_once(tmp_path):

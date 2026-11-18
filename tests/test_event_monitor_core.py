@@ -64,6 +64,37 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.get_global_transfer_threshold(), 7.25)
         self.assertEqual(self.store.set_global_transfer_threshold(0), 0.0)
 
+    def test_delete_watched_address_book_removes_only_that_book(self) -> None:
+        first = self.store.add_watched_address(
+            "finney", "5Mn1QBookAddressAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "Mn1Q A", library_book="Mn1Q",
+        )
+        second = self.store.add_watched_address(
+            "finney", "5Mn1QBookAddressBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "Mn1Q B", library_book="Mn1Q",
+        )
+        self.store.add_watched_address(
+            "finney", "5SN2BookAddressCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "SN2 DaniLabs", library_book="SN2 DaniLabs",
+        )
+
+        result = self.store.delete_watched_address_book("finney", "mn1q")
+
+        self.assertEqual(result["library_book"], "Mn1Q")
+        self.assertEqual(result["deleted"], 2)
+        self.assertEqual(
+            [item["library_book"] for item in self.store.list_watched_addresses("finney")],
+            ["SN2 DaniLabs"],
+        )
+        with self.store.connect() as db:
+            excluded = {
+                row["address"]
+                for row in db.execute(
+                    "SELECT address FROM watched_address_exclusions WHERE network='finney'",
+                ).fetchall()
+            }
+        self.assertEqual(excluded, {first["address"], second["address"]})
+
     def test_global_transfer_threshold_overrides_per_address_values(self) -> None:
         self.store.add_watched_address(
             "finney",

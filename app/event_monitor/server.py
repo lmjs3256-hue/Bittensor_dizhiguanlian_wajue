@@ -686,8 +686,21 @@ class MonitorHandler(SimpleHTTPRequestHandler):
             self._error(500, str(exc)[:400])
 
     def do_DELETE(self) -> None:
-        path = urllib.parse.urlparse(self.path).path
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
         try:
+            if path == "/api/addresses/book":
+                network = _first(query, "network") or "finney"
+                library_book = _first(query, "library_book") or _first(query, "book")
+                result = self.server.context.store.delete_watched_address_book(
+                    network, library_book or "",
+                )
+                if not result["deleted"]:
+                    self._error(404, "该地址库不在事件监控名单中")
+                    return
+                self._json({"status": "deleted", **result})
+                return
             if path == "/api/simulation/events":
                 deleted = self.server.context.store.delete_simulated_events()
                 if deleted:
