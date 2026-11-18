@@ -5911,7 +5911,9 @@ class LinkService:
         # 已经用 /api/seed-profile 取过一次（命中 5 分钟缓存，这里 0 次请求），
         # 所以正常情况下不会再花额度；本次请求数累加进 api_requests，
         # 让「本轮花了多少次」对得上真实网络调用。
-        profile_include = include_balances or bool(context.prefetched_requests)
+        # 画像由前端 `/api/seed-profile` 独立并行获取；主扫描默认不再同步
+        # 调 Taostats 补画像，否则网络异常会把本地扫描也一起卡住。
+        profile_include = bool(context.prefetched_requests)
         seed_profile = self._seed_profile(
             seed,
             transfer_rows=transfer_rows,

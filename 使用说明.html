@@ -1099,6 +1099,8 @@ footer.doc-foot { margin-top: 50px; padding-top: 18px; border-top: 1px solid var
 <li>同一 NETUID 随后新注册时，系统立即读取新 Owner，创建新的 <code>SNx 名称</code> 地址库；如果原库之前处于监控状态，新 Owner 会自动恢复到事件监控。注册和注销事件通过后台串行队列处理，不受子网普通事件禁用开关影响。</li>
 <li>手动点击“同步项目方地址”后，系统也会自动刷新事件监控。若某个原本已监控的 NETUID 发生 Owner 变更，新 Owner 会自动恢复监控，不需要再点一次“刷新同步”。</li>
 <li>当项目方在链上调用身份设置并产生 <code>SubnetIdentitySet</code> 事件时，系统会立即重新读取 Owner 和名称，更新对应 <code>SNx 名称</code> 地址库，并恢复已监控 NETUID 的新 Owner。若只显示 <code>SN109</code> 这类兜底名称，表示链上 <code>SubnetIdentitiesV3</code> 还没有发布正式名称。</li>
+<li>地址扫描会立即创建任务并显示队列状态，起始地址画像改为后台并行加载。Taostats 连续网络失败后会快速熔断 45 秒，不再让每个请求反复等待约 1 分钟；网络恢复后会自动重试。</li>
+<li>系统每 5 秒同时检查子网交易开关 <code>SubtokenEnabled</code> 和排放开关 <code>SubnetEmissionEnabled</code>。排放开启或关闭都会生成“排放开关”事件，功能页也会显示每个子网的当前排放状态。</li>
 <li>只有当前 <code>SubnetOwner</code> 地址使用紫色字体，不显示“官方”文字；项目方地址库后续自动入库的其他地址只显示蓝色库名标签。质押/解质押不写“买入/卖出”，分别用绿色/红色字体表示。</li>
 <li>1.0.8 修复了真实链事件解析：新版链客户端返回的事件是字典结构，旧解析器会静默跳过。升级后会一次性回补最近 200 个区块，恢复近期漏掉的项目方地址交易。</li>
 <li>事件流使用纯主题底色，不再显示页面底纹；所有交易金额保留两位小数，减少小数噪声。</li>

@@ -215,6 +215,8 @@ class Store:
                     block_hash TEXT NOT NULL,
                     block_number INTEGER,
                     observed_at TEXT NOT NULL,
+                    emission_enabled INTEGER,
+                    emission_observed_at TEXT,
                     PRIMARY KEY(network, netuid)
                 );
                 CREATE TABLE IF NOT EXISTS subnet_profiles (
@@ -277,6 +279,18 @@ class Store:
             if "state_source" not in columns:
                 db.execute(
                     "ALTER TABLE subnet_trading_state ADD COLUMN state_source TEXT NOT NULL DEFAULT 'legacy'"
+                )
+            columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(subnet_trading_state)").fetchall()
+            }
+            if "emission_enabled" not in columns:
+                db.execute(
+                    "ALTER TABLE subnet_trading_state ADD COLUMN emission_enabled INTEGER"
+                )
+            if "emission_observed_at" not in columns:
+                db.execute(
+                    "ALTER TABLE subnet_trading_state ADD COLUMN emission_observed_at TEXT"
                 )
             profile_columns = {
                 row["name"]
@@ -810,21 +824,27 @@ class Store:
     def set_trading_state(self, *, network: str, netuid: int, enabled: bool,
                           registration_block: int | None, block_hash: str,
                           block_number: int | None,
-                          state_source: str = "subtoken_enabled") -> dict[str, Any]:
+                          state_source: str = "subtoken_enabled",
+                          emission_enabled: bool | None = None) -> dict[str, Any]:
+        stamp = now_iso()
+        emission_stamp = stamp if emission_enabled is not None else None
         with self.connect() as db:
             db.execute(
                 """INSERT INTO subnet_trading_state
-                   (network,netuid,enabled,state_source,registration_block,block_hash,block_number,observed_at)
-                   VALUES(?,?,?,?,?,?,?,?)
+                   (network,netuid,enabled,state_source,registration_block,block_hash,block_number,observed_at,emission_enabled,emission_observed_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(network,netuid) DO UPDATE SET
                      enabled=excluded.enabled,
                      state_source=excluded.state_source,
                      registration_block=COALESCE(excluded.registration_block,subnet_trading_state.registration_block),
                      block_hash=excluded.block_hash,
                      block_number=excluded.block_number,
-                     observed_at=excluded.observed_at""",
+                     observed_at=excluded.observed_at,
+                     emission_enabled=COALESCE(excluded.emission_enabled,subnet_trading_state.emission_enabled),
+                     emission_observed_at=COALESCE(excluded.emission_observed_at,subnet_trading_state.emission_observed_at)""",
                 (network, netuid, int(enabled), state_source, registration_block, block_hash,
-                 block_number, now_iso()),
+                 block_number, stamp, None if emission_enabled is None else int(emission_enabled),
+                 emission_stamp),
             )
             row = db.execute(
                 "SELECT * FROM subnet_trading_state WHERE network=? AND netuid=?",
@@ -840,18 +860,34 @@ class Store:
             ).fetchone()
             if row is None:
                 return None
-            return {**dict(row), "enabled": bool(row["enabled"])}
+            item = {**dict(row), "enabled": bool(row["enabled"])}
+            if "emission_enabled" in item:
+                item["emission_enabled"] = (
+                    bool(item["emission_enabled"])
+                    if item["emission_enabled"] is not None else None
+                )
+            return item
 
     def list_trading_states(self, network: str) -> list[dict[str, Any]]:
         with self.connect() as db:
             rows = db.execute(
                 """SELECT network,netuid,enabled,state_source,registration_block,block_hash,
-                          block_number,observed_at
+                          block_number,observed_at,emission_enabled,emission_observed_at
                    FROM subnet_trading_state WHERE network=?
                    ORDER BY registration_block DESC NULLS LAST,netuid DESC""",
                 (network,),
             ).fetchall()
-            return [{**dict(row), "enabled": bool(row["enabled"])} for row in rows]
+            return [
+                {
+                    **dict(row),
+                    "enabled": bool(row["enabled"]),
+                    "emission_enabled": (
+                        bool(row["emission_enabled"])
+                        if row["emission_enabled"] is not None else None
+                    ),
+                }
+                for row in rows
+            ]
 
     def ensure_subnet_profile(self, network: str, netuid: int) -> None:
         with self.connect() as db:

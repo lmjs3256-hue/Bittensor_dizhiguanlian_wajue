@@ -258,6 +258,7 @@ class EventMonitorRuntime:
                 "github_batch_size": github_batch_size,
                 "github_token_configured": github_token_configured,
                 "trading_poll_seconds": 5,
+                "emission_poll_seconds": 5,
                 "priority_order": ["重点监控", "优先监控", "普通监控"],
                 "embedded_in": "bittensor-wallet-link-intel",
             },

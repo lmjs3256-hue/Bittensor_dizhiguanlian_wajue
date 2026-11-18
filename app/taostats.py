@@ -330,6 +330,9 @@ def reset_key_pool_for_tests() -> None:
 _PROXY_OVERRIDE_ENV = "WALLET_LINK_HTTP_PROXY"
 _PROXY_BAN_SECONDS = 600.0
 _PROBE_TIMEOUT_SECONDS = 6.0
+_OUTBOUND_CIRCUIT_SECONDS = 45.0
+_outbound_circuit_until = 0.0
+_outbound_circuit_reason = ""
 
 _proxy_state_lock = threading.Lock()
 _proxy_state: dict[str, Any] = {
@@ -474,10 +477,13 @@ def _note_proxy_failure(url: str | None, source: str, exc: Exception) -> None:
 def _reset_proxy_decision() -> None:
     """重置出站路径决策（测试用）。"""
 
+    global _outbound_circuit_until, _outbound_circuit_reason
     with _proxy_state_lock:
         _proxy_state["url"] = None
         _proxy_state["source"] = "undecided"
         _proxy_state["banned"] = {}
+        _outbound_circuit_until = 0.0
+        _outbound_circuit_reason = ""
     for client in _proxy_clients.values():
         try:
             client.close()
@@ -754,23 +760,38 @@ def _request_get(
     避免本机代理挂了或直连被墙时整条链路长时间不可用。
     """
 
+    global _outbound_circuit_until, _outbound_circuit_reason
+    now = time.monotonic()
+    with _proxy_state_lock:
+        if now < _outbound_circuit_until:
+            remaining = max(1, int(_outbound_circuit_until - now))
+            raise httpx.ConnectError(
+                f"Taostats 出站连接近期连续失败，已快速熔断，约 {remaining} 秒后重试"
+            )
     last_error: httpx.HTTPError | None = None
     for attempt in range(TRANSIENT_RETRY_ATTEMPTS):
         proxy_url, source = _active_proxy()
         try:
-            return _http_get(
+            response = _http_get(
                 url,
                 params=params,
                 headers={"Authorization": api_key},
                 timeout=timeout,
                 proxy_url=proxy_url,
             )
+            with _proxy_state_lock:
+                _outbound_circuit_until = 0.0
+                _outbound_circuit_reason = ""
+            return response
         except httpx.TransportError as exc:  # 覆盖 SSL EOF / 连接重置 / 读超时
             last_error = exc
             _note_proxy_failure(proxy_url, source, exc)
             if attempt + 1 < TRANSIENT_RETRY_ATTEMPTS:
                 time.sleep(TRANSIENT_RETRY_BACKOFF_SECONDS * (attempt + 1))
     assert last_error is not None
+    with _proxy_state_lock:
+        _outbound_circuit_until = time.monotonic() + _OUTBOUND_CIRCUIT_SECONDS
+        _outbound_circuit_reason = str(last_error)[:200]
     raise last_error
 
 
@@ -1238,6 +1259,7 @@ def _rao_to_tao_text(value: Any) -> str | None:
 
 def reset_client_state_for_tests() -> None:
     global _key_override, _key_override_active, _validator_cache, _exchange_cache
+    global _outbound_circuit_until, _outbound_circuit_reason
     with _lock:
         _request_times.clear()
         _cache.clear()
@@ -1248,3 +1270,5 @@ def reset_client_state_for_tests() -> None:
         _exchange_cache = None
         _key_override = None
         _key_override_active = False
+        _outbound_circuit_until = 0.0
+        _outbound_circuit_reason = ""

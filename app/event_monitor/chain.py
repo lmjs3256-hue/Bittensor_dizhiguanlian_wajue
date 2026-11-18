@@ -562,15 +562,23 @@ class ChainCollector:
                     registration_block=record["registration_block"],
                     block_hash=record["block_hash"],
                     block_number=height,
+                    emission_enabled=record.get("emission_enabled"),
                 )
                 if (
                     int(record["netuid"]) not in disabled_netuids
-                    and
-                    previous is not None
+                    and previous is not None
                     and previous_source == "subtoken_enabled"
-                    and previous["enabled"] != record["enabled"]
                 ):
-                    self._emit_trading_change(record, previous, height)
+                    if previous["enabled"] != record["enabled"]:
+                        self._emit_trading_change(record, previous, height)
+                    previous_emission = previous.get("emission_enabled")
+                    current_emission = record.get("emission_enabled")
+                    if (
+                        previous_emission is not None
+                        and current_emission is not None
+                        and bool(previous_emission) != bool(current_emission)
+                    ):
+                        self._emit_emission_change(record, previous, height)
             self.store.reconcile_subnet_profiles(self.network, current_netuids)
             self.last_trading_sync = time.monotonic()
             self.store.resolve_alerts("chain_trading")
@@ -581,6 +589,49 @@ class ChainCollector:
                 "chain_trading", "warning",
                 f"交易开放状态同步失败：{exc}"[:400],
             )
+
+    def _emit_emission_change(self, record: dict[str, Any], previous: dict[str, Any],
+                              height: int) -> None:
+        enabled = bool(record.get("emission_enabled"))
+        event_id = hashlib.sha256(
+            f"{self.network}:emission:{record['netuid']}:{record['block_hash']}:{enabled}".encode()
+        ).hexdigest()
+        event = {
+            "event_id": event_id,
+            "network": self.network,
+            "netuid": int(record["netuid"]),
+            "event_type": "排放开关",
+            "event_name": "SubtensorModule.SubnetEmissionEnabled",
+            "source": "chain",
+            "source_url": (
+                "https://polkadot.js.org/apps/"
+                "?rpc=wss%3A%2F%2Fentrypoint-finney.opentensor.ai%3A443"
+                f"#/explorer/query/{record['block_hash']}"
+            ),
+            "event_at": now_iso(),
+            "summary": (
+                f"SN{record['netuid']} 已开启子网排放"
+                if enabled else f"SN{record['netuid']} 已关闭子网排放"
+            ),
+            "details": {
+                "field": "SubnetEmissionEnabled",
+                "previous": bool(previous.get("emission_enabled")),
+                "current": enabled,
+                "detection_method": "state_diff",
+                "detected_at_block": height,
+                "previous_observed_at": previous.get("emission_observed_at"),
+            },
+            "raw_data": {"record": record, "previous": previous},
+            "block_number": height,
+            "block_hash": record["block_hash"],
+            "event_index": None,
+            "chain_status": "observed",
+            "enrichment_status": "complete",
+            "confidence": "high",
+        }
+        stored, created = self.store.create_event(event)
+        if created:
+            self.publish(stored, "discovered")
 
     def _emit_trading_change(self, record: dict[str, Any], previous: dict[str, Any],
                              height: int) -> None:
@@ -1465,11 +1516,17 @@ def _scan_trading_states_http(url: str, block_hash: str | None) -> tuple[list[di
         return values
 
     trading_flags = read_map("SubtokenEnabled")
+    emission_flags = read_map("SubnetEmissionEnabled")
     registered = read_map("NetworkRegisteredAt")
     records = []
     for netuid, raw_registration in registered.items():
         value = trading_flags.get(netuid)
         raw = bytes.fromhex(value.removeprefix("0x")) if value else b"\x00"
+        emission_value = emission_flags.get(netuid)
+        emission_raw = (
+            bytes.fromhex(emission_value.removeprefix("0x"))
+            if emission_value else b"\x00"
+        )
         registration_block = (
             int.from_bytes(bytes.fromhex(raw_registration.removeprefix("0x")), "little")
             if raw_registration else None
@@ -1477,6 +1534,7 @@ def _scan_trading_states_http(url: str, block_hash: str | None) -> tuple[list[di
         records.append({
             "netuid": netuid,
             "enabled": bool(raw and raw[0]),
+            "emission_enabled": bool(emission_raw and emission_raw[0]),
             "registration_block": registration_block,
             "block_hash": block_hash,
         })

@@ -782,6 +782,27 @@ def test_request_get_retries_transient_transport_error(monkeypatch):
     assert sleeps == [1.2, 2.4]
 
 
+def test_request_get_opens_fast_fail_circuit_after_transport_failure(monkeypatch):
+    monkeypatch.setenv("TAOSTATS_API_KEY", "test-secret")
+    attempts: list[str] = []
+
+    def always_fail(url, **kwargs):
+        attempts.append(url)
+        raise httpx.ConnectError("network down")
+
+    monkeypatch.setattr(taostats, "_http_get", as_http_get(always_fail))
+    monkeypatch.setattr(taostats.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(httpx.ConnectError):
+        taostats._request_get("https://api.example/x", api_key="k")
+    first_attempts = len(attempts)
+    with pytest.raises(httpx.ConnectError, match="快速熔断"):
+        taostats._request_get("https://api.example/x", api_key="k")
+
+    assert first_attempts == taostats.TRANSIENT_RETRY_ATTEMPTS
+    assert len(attempts) == first_attempts
+
+
 def test_request_get_gives_up_after_all_attempts(monkeypatch):
     """三次都失败才报不可用，且错误信息带上限速/网络原因。"""
 
@@ -800,3 +821,11 @@ def test_request_get_gives_up_after_all_attempts(monkeypatch):
 
     assert len(attempts) == taostats.TRANSIENT_RETRY_ATTEMPTS == 3
     assert "验证者名单请求失败" in str(excinfo.value)
+
+def test_address_scan_does_not_block_on_seed_profile_prefetch():
+    js = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    assert "prefetchSeedProfile(seed, requestedSource);" in js
+    assert "payload.prefetched_requests = 0;" in js
+    assert "payload.prefetched_requests = await prefetchSeedProfile" not in js

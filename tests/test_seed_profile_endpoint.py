@@ -185,6 +185,31 @@ def test_prefetched_requests_are_deducted_from_crawl_budget(monkeypatch):
             database.engine.dispose()
 
 
+def test_scan_without_prefetch_does_not_block_on_seed_profile(monkeypatch):
+    with TemporaryDirectory() as directory:
+        database, service = _build(directory, "no-profile.db")
+        try:
+            monkeypatch.setattr(service_module, "taostats_is_configured", lambda: True)
+
+            def fail_if_called(*_args, **_kwargs):
+                raise AssertionError("scan must not synchronously fetch seed profile")
+
+            monkeypatch.setattr(service_module, "get_account_profile", fail_if_called)
+            monkeypatch.setattr(service_module, "get_stake_event_total", fail_if_called)
+            result = service.relations(
+                seed=SEED,
+                depth=1,
+                min_edge_tao="0",
+                min_total_tao="0",
+                data_source="local",
+                prefetched_requests=0,
+            )
+            assert result["seed"] == SEED
+            assert result["seed_profile"]["registered_on"] is None
+        finally:
+            database.engine.dispose()
+
+
 def test_seed_profile_requests_are_reused_not_refetched(monkeypatch):
     """画像查过一次后，合成结果时命中缓存，不会再花额度。"""
 

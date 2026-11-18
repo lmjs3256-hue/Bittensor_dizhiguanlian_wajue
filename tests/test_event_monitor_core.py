@@ -380,13 +380,17 @@ class StoreTests(unittest.TestCase):
         self.store.set_trading_state(
             network="finney", netuid=99, enabled=True, registration_block=9447220,
             block_hash="0x" + "a" * 64, block_number=9477119,
+            emission_enabled=True,
         )
         self.store.set_trading_state(
             network="finney", netuid=99, enabled=False, registration_block=None,
             block_hash="0x" + "b" * 64, block_number=9477120,
+            emission_enabled=False,
         )
         state = self.store.list_trading_states("finney")[0]
         self.assertFalse(state["enabled"])
+        self.assertFalse(state["emission_enabled"])
+        self.assertTrue(state["emission_observed_at"])
         self.assertEqual(state["registration_block"], 9447220)
 
     def test_subnet_profile_auto_sync_preserves_manual_override(self) -> None:
@@ -899,6 +903,41 @@ class ChainShapeTests(unittest.TestCase):
             self.assertEqual(len(published), 1)
             self.assertEqual(published[0][1], "discovered")
             collector.close()
+
+    def test_emission_true_to_false_pushes_one_close_event(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(__file__).resolve().parent.parent
+            store = Store(Path(folder) / "events.db")
+            rules, _ = load_rules(root / "app" / "event_monitor" / "config" / "event_rules.json")
+            published = []
+            collector = ChainCollector(
+                url="unused", network="finney", store=store, rules=rules,
+                publish=lambda event, kind: published.append((event, kind)),
+                status=lambda *args: None,
+            )
+            store.set_trading_state(
+                network="finney", netuid=99, enabled=True, registration_block=9447220,
+                block_hash="0x" + "a" * 64, block_number=100,
+                emission_enabled=True,
+            )
+            changed = ([{
+                "netuid": 99,
+                "enabled": True,
+                "emission_enabled": False,
+                "registration_block": 9447220,
+                "block_hash": "0x" + "b" * 64,
+            }], 101)
+            with patch("app.event_monitor.chain._scan_trading_states_http", return_value=changed):
+                collector._sync_trading_background(None)
+                collector._sync_trading_background(None)
+            events = store.list_events({"network": "finney", "netuid": 99})
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["event_type"], "排放开关")
+            self.assertEqual(events[0]["event_name"], "SubtensorModule.SubnetEmissionEnabled")
+            self.assertIn("已关闭子网排放", events[0]["summary"])
+            self.assertEqual(len(published), 1)
+            collector.close()
+
 
     def test_address_event_uses_trade_fields_direction_and_manual_note_tags(self) -> None:
         address = "5ColdKeyABCDEFGHIJKLMNOPQRSTUVWXYZ1234"

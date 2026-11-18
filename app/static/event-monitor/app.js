@@ -3022,9 +3022,9 @@ function renderFeaturesView() {
     card.append(infoElement("span", `feature-status${feature.status === "后续" ? " planned" : ""}`, feature.status));
     grid.append(card);
   });
-  const tradingTitle = infoElement("h2", "", "交易开放监控");
+  const tradingTitle = infoElement("h2", "", "交易与排放监控");
   tradingTitle.style.marginTop = "28px";
-  const tradingCopy = infoElement("p", "info-intro", "SubtokenEnabled=true 是当前运行时定义的子网交易开关。系统每 5 秒比较前后状态，false → true 时创建并推送交易开放事件。");
+  const tradingCopy = infoElement("p", "info-intro", "系统每 5 秒比较 SubtokenEnabled 与 SubnetEmissionEnabled。交易开关变化会推送交易开放/关闭事件；子网排放开关变化会推送排放开启/关闭事件。");
   const tradingGrid = infoElement("div", "trading-grid");
   tradingGrid.append(infoElement("p", "info-intro", "正在读取链上状态…"));
   el.infoView.append(intro, grid, tradingTitle, tradingCopy, tradingGrid);
@@ -3040,10 +3040,19 @@ function renderFeaturesView() {
       const card = infoElement("article", "trading-card");
       card.append(infoElement("strong", "", `SN${state.netuid}`));
       card.append(infoElement("span", state.enabled ? "open" : "closed", state.enabled ? "交易已开放" : "交易未开放"));
+      const emissionKnown = state.emission_enabled === true || state.emission_enabled === false;
+      card.append(infoElement(
+        "span",
+        emissionKnown ? (state.emission_enabled ? "open" : "closed") : "",
+        emissionKnown ? (state.emission_enabled ? "排放已开启" : "排放已关闭") : "排放状态未知",
+      ));
       card.append(infoElement("small", "", state.registration_block
         ? `注册区块 ${Number(state.registration_block).toLocaleString("zh-CN")}`
         : "注册区块未知"));
       card.append(infoElement("small", "", `状态观察 ${formatFullTime(state.observed_at)}`));
+      if (state.emission_observed_at) {
+        card.append(infoElement("small", "", `排放观察 ${formatFullTime(state.emission_observed_at)}`));
+      }
       tradingGrid.append(card);
     });
   }).catch((error) => {

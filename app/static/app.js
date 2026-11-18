@@ -2356,10 +2356,11 @@ async function runRelations(keepRemovals = false) {
     if (state.removedAddresses.size) {
       payload.removed_addresses = [...state.removedAddresses];
     }
-    // 第一步：先把起始地址画像查出来填到左栏，用户不用等关联跑完。
-    // 这一步固定 2 次 Taostats 请求（命中 5 分钟缓存则 0 次），
-    // 花掉的次数回传给后续查询从本轮额度里扣，不会让同一分钟超限。
-    payload.prefetched_requests = await prefetchSeedProfile(seed, requestedSource);
+    // 起始地址画像与扫描任务并行：画像只负责填充左栏，不能再阻塞任务入队。
+    // Taostats 网络异常时，画像请求可能重试很久；若串行等待，用户会一直
+    // 停在“正在读取起始地址画像”，连队列状态都看不到。
+    prefetchSeedProfile(seed, requestedSource);
+    payload.prefetched_requests = 0;
     if (requestedSource === "taostats" && $("#multi-round").checked) {
       const rounds = Math.min(100, Math.max(1, Number($("#max-rounds").value) || 5));
       $("#max-rounds").value = rounds;
@@ -2381,7 +2382,7 @@ async function runRelations(keepRemovals = false) {
       pending_stake: 0,
       queued_addresses: 0,
       local_placeholder: true,
-      stage_text: "正在查询关联地址（单轮模式，通常几十秒内出结果）…",
+      stage_text: "正在查询关联地址（单轮模式，通常几十秒内出结果；画像同时加载）…",
     });
     const data = await api("/api/relations", { method: "POST", body: JSON.stringify(payload) });
     if (requestedSource === "taostats" && data.data_source !== "taostats") {
