@@ -203,8 +203,9 @@ main { overflow: auto; }
 
 .official-owner-address {
   color:#d8b4fe !important;
-  font-weight:750;
-  text-shadow:0 0 10px rgba(192,132,252,.24);
+  font-weight:900;
+  letter-spacing:.01em;
+  text-shadow:0 0 9px rgba(192,132,252,.30);
 }
 
 .event-side { display:grid; justify-items:end; gap:5px; }

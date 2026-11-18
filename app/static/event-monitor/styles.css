@@ -989,8 +989,8 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
   --theme-grid: rgba(28,37,50,.035);
   --theme-radial: rgba(9,111,100,.10);
   --on-accent: #ffffff;
-  --project-owner: #7048b6;
-  --project-owner-soft: #f0e9ff;
+  --project-owner: #4c1d95;
+  --project-owner-soft: #ede9fe;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
@@ -1031,8 +1031,8 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
   --theme-grid: rgba(54,57,47,.04);
   --theme-radial: rgba(82,102,77,.10);
   --on-accent: #ffffff;
-  --project-owner: #7650a8;
-  --project-owner-soft: #ece3f4;
+  --project-owner: #4f267f;
+  --project-owner-soft: #e9e1f2;
 }
 :root[data-theme="darkgray"] {
   --bg: #292b2f;
@@ -1367,7 +1367,44 @@ body {
 
 .official-owner-address {
   color:var(--project-owner) !important;
-  font-weight:750;
-  text-shadow:0 0 10px color-mix(in srgb, var(--project-owner) 22%, transparent);
+  font-weight:900;
+  letter-spacing:.01em;
+  text-shadow:0 0 8px color-mix(in srgb, var(--project-owner) 18%, transparent);
 }
 .address-identity code.official-owner-address { color:var(--project-owner); }
+
+/* 事件流使用纯主题底色，避免页面底纹透过半透明卡片影响文字。 */
+body {
+  background: var(--bg) !important;
+  background-image: none !important;
+}
+.feed-panel,
+.event-list,
+.event-list-head,
+.event-row,
+.event-row.is-latest-event {
+  background: var(--bg);
+  backdrop-filter: none;
+}
+.feed-panel { background: var(--bg); }
+
+.global-transfer-filter {
+  margin-top:12px; padding:13px 15px; border:1px solid var(--line); border-radius:11px;
+  background:var(--bg); display:flex; align-items:center; justify-content:space-between; gap:18px;
+}
+.global-transfer-filter-copy { min-width:0; display:grid; gap:4px; }
+.global-transfer-filter-copy strong { font-size:12px; }
+.global-transfer-filter-copy small { color:var(--muted); font-size:10px; line-height:1.55; }
+.global-transfer-filter-control { display:flex; align-items:center; gap:7px; flex:none; }
+.global-transfer-filter-control input {
+  width:96px; height:36px; border:1px solid var(--line); border-radius:8px;
+  background:var(--panel); color:var(--text); padding:0 9px; outline:0; font:11px var(--mono);
+}
+.global-transfer-filter-control em { color:var(--muted); font:9px var(--mono); font-style:normal; }
+.global-transfer-filter-control .button { min-height:36px; padding-inline:12px; font-size:10px; }
+.address-row { grid-template-columns:minmax(180px,1.2fr) minmax(140px,.8fr) auto; }
+@media (max-width:680px) {
+  .global-transfer-filter { align-items:flex-start; flex-direction:column; }
+  .global-transfer-filter-control { width:100%; }
+  .global-transfer-filter-control input { flex:1; width:auto; }
+}

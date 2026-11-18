@@ -173,7 +173,7 @@ def address_event_record(
         sender = _field(values, "from", 0)
         recipient = _field(values, "to", 1)
         amount_value = _field(values, "amount", 2)
-        amount = _amount(amount_value)
+        amount = _tao_amount_2(amount_value)
         transfer_amount_rao = _integer(amount_value)
         accounts = [("from", str(sender)), ("to", str(recipient))]
         event_type = "普通转账"
@@ -218,7 +218,7 @@ def address_event_record(
         hotkey = _field(values, "hotkey", 2)
         origin_netuid = _integer(_field(values, "origin_netuid", 3))
         destination_netuid = _integer(_field(values, "destination_netuid", 4))
-        tao_amount = _amount(_field(values, "amount", 5))
+        tao_amount = _tao_amount_2(_field(values, "amount", 5))
         netuid = destination_netuid
         event_type = "代币转移"
         summary_subnet = f"{_subnet_label(origin_netuid)}→{_subnet_label(destination_netuid)}"
@@ -244,7 +244,7 @@ def address_event_record(
         destination_hotkey = _field(values, "destination_hotkey", 3)
         origin_netuid = _integer(_field(values, "origin_netuid", 4))
         destination_netuid = _integer(_field(values, "destination_netuid", 5))
-        tao_amount = _amount(_field(values, "amount", 6))
+        tao_amount = _tao_amount_2(_field(values, "amount", 6))
         netuid = destination_netuid
         event_type = "代币转移"
         summary_subnet = f"{_subnet_label(origin_netuid)}→{_subnet_label(destination_netuid)}"

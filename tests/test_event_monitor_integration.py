@@ -61,7 +61,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.8" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.9" in page.text
 
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
@@ -75,7 +75,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.8"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.9"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
@@ -145,6 +145,21 @@ def test_event_monitor_chain_reset_endpoint(merged_client, monkeypatch):
     assert body["ok"] is True
     assert body["collector"]["state"] == "connecting"
     assert body["shared_chain"]["resets"] == 1
+
+
+def test_global_address_transfer_filter_defaults_to_five(merged_client):
+    client, _ = merged_client
+    initial = client.get("/event-api/settings/address-filter")
+    assert initial.status_code == 200
+    assert initial.json()["min_transfer_tao"] == 5.0
+
+    updated = client.put(
+        "/event-api/settings/address-filter",
+        json={"min_transfer_tao": "6.5"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["min_transfer_tao"] == 6.5
+    assert client.get("/event-api/settings/address-filter").json()["min_transfer_tao"] == 6.5
 
 
 def test_event_watch_reconcile_removes_dissolved_books_and_updates_moved_address(merged_client):
@@ -351,6 +366,8 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "bookNameMatches" in app_js
     assert "pollEventLibrarySync" in app_js
     assert "刷新同步" in app_js
+    assert "global-transfer-filter" in app_js
+    assert "/event-api/settings/address-filter" in app_js
     assert "address-${direction}" in app_js
     main_app_js = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(
         encoding="utf-8"

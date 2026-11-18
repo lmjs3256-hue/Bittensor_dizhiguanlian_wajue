@@ -2236,6 +2236,23 @@ async function renderAddressesView() {
   sharedButton.type = "button";
   sharedActions.append(syncButton, sharedButton);
   shared.append(sharedCopy, sharedActions);
+  const transferFilter = infoElement("section", "global-transfer-filter");
+  const transferFilterCopy = infoElement("div", "global-transfer-filter-copy");
+  transferFilterCopy.append(
+    infoElement("strong", "", "全局尘埃转账过滤"),
+    infoElement("small", "", "所有监控地址共用此阈值；普通 TAO 转账达到该金额才进入事件流。默认 5 TAO，填 0 表示不过滤。"),
+  );
+  const transferFilterControl = infoElement("div", "global-transfer-filter-control");
+  const transferFilterInput = infoElement("input");
+  transferFilterInput.type = "number";
+  transferFilterInput.min = "0";
+  transferFilterInput.step = "0.01";
+  transferFilterInput.value = "5";
+  transferFilterInput.setAttribute("aria-label", "全局普通转账过滤阈值 TAO");
+  const transferFilterSave = infoElement("button", "button primary", "保存");
+  transferFilterSave.type = "button";
+  transferFilterControl.append(transferFilterInput, infoElement("em", "", "TAO"), transferFilterSave);
+  transferFilter.append(transferFilterCopy, transferFilterControl);
   const guide = infoElement(
     "p",
     "monitor-group-guide",
@@ -2243,7 +2260,7 @@ async function renderAddressesView() {
   );
   const list = infoElement("div", "address-list");
   list.append(infoElement("p", "info-intro", "正在读取监控地址…"));
-  el.infoView.append(intro, shared, guide, list);
+  el.infoView.append(intro, shared, transferFilter, guide, list);
   let loadVersion = 0;
 
   const load = async () => {
@@ -2251,8 +2268,12 @@ async function renderAddressesView() {
     try {
       await request("/api/event-monitor/watch/reconcile", { method: "POST" });
     } catch {}
-    const data = await request("/event-api/addresses");
+    const [data, filterData] = await Promise.all([
+      request("/event-api/addresses"),
+      request("/event-api/settings/address-filter"),
+    ]);
     if (requestVersion !== loadVersion) return;
+    transferFilterInput.value = String(filterData.min_transfer_tao ?? 5);
     state.watchedAddresses = data.addresses || [];
     populateSimulationAddresses();
     list.replaceChildren();
@@ -2283,6 +2304,33 @@ async function renderAddressesView() {
         list.append(group);
       });
   };
+
+  transferFilterSave.addEventListener("click", async () => {
+    const value = transferFilterInput.value.trim() || "0";
+    transferFilterSave.disabled = true;
+    transferFilterSave.textContent = "保存中";
+    try {
+      const saved = await request("/event-api/settings/address-filter", {
+        method: "PUT",
+        body: JSON.stringify({ min_transfer_tao: value }),
+      });
+      transferFilterInput.value = String(saved.min_transfer_tao);
+      showToast(Number(saved.min_transfer_tao) > 0
+        ? `已保存：普通转账达到 ${formatTao(saved.min_transfer_tao)} TAO 才进入事件流`
+        : "已保存：关闭全局尘埃转账过滤");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      transferFilterSave.disabled = false;
+      transferFilterSave.textContent = "保存";
+    }
+  });
+  transferFilterInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      transferFilterSave.click();
+    }
+  });
 
   syncButton.addEventListener("click", async () => {
     syncButton.disabled = true;
@@ -2782,58 +2830,6 @@ function renderAddressRow(item, reload) {
     }
   });
   labelEditor.append(label, manualNote, notePreview);
-  const threshold = infoElement("div", "address-threshold");
-  const thresholdText = infoElement("span");
-  thresholdText.className = "address-threshold-copy";
-  thresholdText.dataset.threshold = String(item.min_transfer_tao || 0);
-  thresholdText.textContent = Number(item.min_transfer_tao) > 0
-    ? `忽略低于 ${formatTao(item.min_transfer_tao)} TAO 的普通转账`
-    : "不过滤普通转账";
-  const thresholdControl = infoElement("div", "address-threshold-control");
-  const thresholdInput = infoElement("input");
-  thresholdInput.type = "number";
-  thresholdInput.min = "0";
-  thresholdInput.step = "0.000000001";
-  thresholdInput.value = String(item.min_transfer_tao || 0);
-  thresholdInput.setAttribute("aria-label", "小额转账过滤阈值 TAO");
-  const saveThresholdButton = infoElement("button", "button address-threshold-save", "保存");
-  saveThresholdButton.type = "button";
-  saveThresholdButton.title = "保存小额普通转账过滤阈值";
-  const saveThreshold = async () => {
-    saveThresholdButton.disabled = true;
-    const previousText = saveThresholdButton.textContent;
-    saveThresholdButton.textContent = "保存中";
-    try {
-      const value = thresholdInput.value.trim() || "0";
-      await request(`/event-api/addresses/${item.address_id}`, {
-        method: "PUT",
-        body: JSON.stringify({ min_transfer_tao: value }),
-      });
-      thresholdText.dataset.threshold = String(Number(value) > 0 ? value : 0);
-      thresholdText.textContent = Number(value) > 0
-        ? `忽略低于 ${formatTao(value)} TAO 的普通转账`
-        : "不过滤普通转账";
-      showToast(Number(value) > 0 ? `已保存：忽略低于 ${formatTao(value)} TAO 的普通转账` : "已保存：关闭该地址的小额转账过滤");
-      await reload();
-    } catch (error) {
-      thresholdInput.value = String(item.min_transfer_tao || 0);
-      showToast(error.message);
-    } finally {
-      if (saveThresholdButton.isConnected) {
-        saveThresholdButton.disabled = false;
-        saveThresholdButton.textContent = previousText;
-      }
-    }
-  };
-  saveThresholdButton.addEventListener("click", saveThreshold);
-  thresholdInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      saveThreshold();
-    }
-  });
-  thresholdControl.append(thresholdInput, saveThresholdButton, infoElement("em", "", "TAO"));
-  threshold.append(thresholdText, thresholdControl);
   const toggleLabel = infoElement("label", "address-toggle");
   const toggle = infoElement("input");
   toggle.type = "checkbox";
@@ -2865,7 +2861,7 @@ function renderAddressRow(item, reload) {
   });
   const actions = infoElement("div", "address-actions");
   actions.append(toggleLabel, remove);
-  row.append(identity, labelEditor, threshold, actions);
+  row.append(identity, labelEditor, actions);
   return row;
 }
 

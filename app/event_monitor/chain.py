@@ -704,6 +704,11 @@ class ChainCollector:
         watched_addresses = self.store.list_watched_addresses(
             self.network, enabled_only=True
         )
+        global_min_transfer_tao = self.store.get_global_transfer_threshold()
+        watched_addresses = [
+            {**item, "min_transfer_tao": global_min_transfer_tao}
+            for item in watched_addresses
+        ]
         raws, mapped = self._map_block_events(
             events,
             watched_addresses=watched_addresses,

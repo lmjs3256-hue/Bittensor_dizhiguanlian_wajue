@@ -287,6 +287,11 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                     "subnets": self.server.context.store.list_trading_states(network),
                 })
                 return
+            if path == "/api/settings/address-filter":
+                self._json({
+                    "min_transfer_tao": self.server.context.store.get_global_transfer_threshold(),
+                })
+                return
             if path == "/api/addresses":
                 network = _first(query, "network") or "finney"
                 addresses = self.server.context.store.list_watched_addresses(network)
@@ -606,6 +611,12 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                 self.server.context.runtime_config["github_batch_size"] = 30 if configured else 1
                 os.environ["GITHUB_TOKEN"] = token
                 self._json(self._github_settings())
+                return
+            if path == "/api/settings/address-filter":
+                body = self._body()
+                threshold = _tao_threshold(body.get("min_transfer_tao"))
+                saved = self.server.context.store.set_global_transfer_threshold(threshold)
+                self._json({"min_transfer_tao": saved})
                 return
             address_match = re.fullmatch(r"/api/addresses/(\d+)", path)
             if address_match:

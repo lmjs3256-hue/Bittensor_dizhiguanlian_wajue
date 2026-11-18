@@ -1191,6 +1191,22 @@ class Store:
             },
         }
 
+    def get_global_transfer_threshold(self) -> float:
+        state = self.get_cursor("watch:global-transfer-threshold") or {}
+        try:
+            value = float(state.get("min_transfer_tao", 5.0))
+        except (TypeError, ValueError):
+            value = 5.0
+        return min(max(value, 0.0), 1_000_000_000.0)
+
+    def set_global_transfer_threshold(self, value: float) -> float:
+        threshold = min(max(float(value), 0.0), 1_000_000_000.0)
+        self.set_collector_state(
+            "watch:global-transfer-threshold",
+            {"min_transfer_tao": threshold},
+        )
+        return threshold
+
     def list_watched_addresses(self, network: str,
                                *, enabled_only: bool = False) -> list[dict[str, Any]]:
         where = "WHERE network=?"

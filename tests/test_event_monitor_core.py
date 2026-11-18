@@ -58,6 +58,12 @@ class StoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_global_transfer_threshold_defaults_to_five_and_persists(self) -> None:
+        self.assertEqual(self.store.get_global_transfer_threshold(), 5.0)
+        self.assertEqual(self.store.set_global_transfer_threshold(7.25), 7.25)
+        self.assertEqual(self.store.get_global_transfer_threshold(), 7.25)
+        self.assertEqual(self.store.set_global_transfer_threshold(0), 0.0)
+
     def test_old_watched_address_schema_gains_manual_note_column(self) -> None:
         path = Path(self.temp.name) / "old-schema.db"
         db = sqlite3.connect(path)
@@ -515,7 +521,7 @@ class ChainShapeTests(unittest.TestCase):
         self.assertEqual(len(mapped), 1)
         self.assertEqual(mapped[0]["source"], "address")
         self.assertEqual(mapped[0]["event_name"], "Balances.Transfer")
-        self.assertEqual(mapped[0]["summary"], "全链 · 13566 TAO · 5FqA…sThe → 5Dz3…N24U")
+        self.assertEqual(mapped[0]["summary"], "全链 · 13566.00 TAO · 5FqA…sThe → 5Dz3…N24U")
 
     def test_dict_parser_migration_rewinds_once(self) -> None:
         root = Path(__file__).resolve().parent.parent
@@ -850,7 +856,7 @@ class ChainShapeTests(unittest.TestCase):
         self.assertEqual(sell["details"]["address_action"], "sell")
         self.assertEqual(
             transfer["summary"],
-            "全链 · 2 TAO · 5Col…1234 → 5Oth…WXYZ",
+            "全链 · 2.00 TAO · 5Col…1234 → 5Oth…WXYZ",
         )
         self.assertEqual(transfer["details"]["address_action"], "transfer")
 
@@ -883,7 +889,7 @@ class ChainShapeTests(unittest.TestCase):
             spec_version=491,
             event_at="2026-11-18T00:00:00.000Z",
         )
-        self.assertEqual(event["summary"], "全链 · 1 TAO · 5Col…1234 → 5Oth…WXYZ")
+        self.assertEqual(event["summary"], "全链 · 1.00 TAO · 5Col…1234 → 5Oth…WXYZ")
         self.assertIn("【SN46项目方相关】", event["details"]["display_tags"])
         self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
 
@@ -919,7 +925,7 @@ class ChainShapeTests(unittest.TestCase):
             spec_version=491,
             event_at="2026-11-18T00:00:00.000Z",
         )
-        self.assertEqual(event["summary"], "SN46→SN78 · 1 TAO 等值 · 5Col…1234 → 5Des…WXYZ")
+        self.assertEqual(event["summary"], "SN46→SN78 · 1.00 TAO 等值 · 5Col…1234 → 5Des…WXYZ")
         self.assertIn("【SN46项目方相关】", event["details"]["display_tags"])
         self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
 
@@ -1012,7 +1018,7 @@ class ChainShapeTests(unittest.TestCase):
             event_at="2026-11-18T04:14:24.000Z",
         )
         self.assertEqual(event["details"]["primary_address"], owner)
-        self.assertEqual(event["summary"], "全链 · 13566 TAO · 5FqA…sThe → 5Dz3…N24U")
+        self.assertEqual(event["summary"], "全链 · 13566.00 TAO · 5FqA…sThe → 5Dz3…N24U")
         self.assertIn("【SN51 lium.io】", event["details"]["display_tags"])
         self.assertTrue(event["details"]["matched_addresses"][0]["official_owner"])
         self.assertFalse(event["details"]["matched_addresses"][1]["official_owner"])
@@ -1089,9 +1095,9 @@ class ChainShapeTests(unittest.TestCase):
         self.assertIsNone(address_event_record(transfer(500_000_000), **common))
         event = address_event_record(transfer(1_000_000_000), **common)
         self.assertIsNotNone(event)
-        self.assertTrue(event["summary"].startswith("全链 · 1 TAO · "))
+        self.assertTrue(event["summary"].startswith("全链 · 1.00 TAO · "))
         self.assertNotIn("SN不适用", event["summary"])
-        self.assertIn("1 TAO", event["summary"])
+        self.assertIn("1.00 TAO", event["summary"])
 
         stake = {
             "raw_id": "finney:0xblock:stake",
