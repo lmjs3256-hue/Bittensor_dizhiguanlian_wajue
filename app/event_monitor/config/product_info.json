@@ -1,11 +1,20 @@
 {
   "product": {
     "name": "Wallet Link · 事件监控",
-    "version": "1.0.13",
+    "version": "1.0.14",
     "released_at": "2026-11-18",
     "status": "合并稳定版"
   },
   "releases": [
+    {
+      "version": "1.0.14",
+      "date": "2026-11-18",
+      "title": "官方地址实色深紫",
+      "changes": [
+        "当前 SubnetOwner 官方地址在主事件流和浮窗中统一使用固定实色深紫 #4c1d95。",
+        "移除浅紫回退、文字渐变感和发光阴影，保持实心、加粗、清晰。"
+      ]
+    },
     {
       "version": "1.0.13",
       "date": "2026-11-18",

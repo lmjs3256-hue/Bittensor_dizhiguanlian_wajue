@@ -206,10 +206,12 @@ main { overflow: auto; }
 }
 
 .official-owner-address {
-  color:#d8b4fe !important;
+  color:#4c1d95 !important;
+  -webkit-text-fill-color:#4c1d95;
+  background:none !important;
   font-weight:900;
   letter-spacing:.01em;
-  text-shadow:0 0 9px rgba(192,132,252,.30);
+  text-shadow:none;
 }
 
 .event-side { display:grid; justify-items:end; gap:5px; }

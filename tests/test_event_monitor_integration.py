@@ -61,14 +61,14 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/styles.css?v=1.0.13" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.13" in page.text
+    assert "/static/event-monitor/styles.css?v=1.0.14" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.14" in page.text
     assert main_module.EVENT_MONITOR.settings.static_dir == main_module.EVENT_MONITOR_STATIC
 
     floating = client.get("/event-monitor/floating?mode=window")
     assert floating.status_code == 200
-    assert "/static/event-monitor/floating.css?v=1.0.13" in floating.text
-    assert "/static/event-monitor/floating.js?v=1.0.13" in floating.text
+    assert "/static/event-monitor/floating.css?v=1.0.14" in floating.text
+    assert "/static/event-monitor/floating.js?v=1.0.14" in floating.text
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
     assert client.get("/event-monitor/floating?mode=window").status_code == 200
@@ -81,7 +81,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.13"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.14"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
@@ -471,6 +471,10 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert ".detail-backdrop { backdrop-filter: none; }" in css
     assert ".chain-reset-button" in css
     assert ".official-owner-address" in css
+    official_rule = css.split(".official-owner-address {", 1)[1].split("}", 1)[0]
+    assert "color:#4c1d95 !important" in official_rule
+    assert "-webkit-text-fill-color:#4c1d95" in official_rule
+    assert "text-shadow:none" in official_rule
     assert ".event-library-tag" in css
     assert ".detail-summary.direction-buy" in css
     assert ".detail-summary.direction-sell" in css
@@ -493,6 +497,10 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert ".note-dialog-input" in floating_css
     assert ".floating-toast" in floating_css
     assert "--blue: #8fc4ff" in floating_css
+    floating_official = floating_css.split(".official-owner-address {", 1)[1].split("}", 1)[0]
+    assert "color:#4c1d95 !important" in floating_official
+    assert "-webkit-text-fill-color:#4c1d95" in floating_official
+    assert "text-shadow:none" in floating_official
     assert ".event.address-transfer .event-copy strong" in floating_css
     floating_transfer = floating_css.split(".event.address-transfer .event-copy strong {", 1)[1].split("}", 1)[0]
     assert "color: var(--blue)" in floating_transfer

@@ -1395,12 +1395,17 @@ body {
 .detail-summary.direction-sell { color:var(--event-red); }
 
 .official-owner-address {
-  color:var(--project-owner) !important;
+  color:#4c1d95 !important;
+  -webkit-text-fill-color:#4c1d95;
+  background:none !important;
   font-weight:900;
   letter-spacing:.01em;
-  text-shadow:0 0 8px color-mix(in srgb, var(--project-owner) 18%, transparent);
+  text-shadow:none;
 }
-.address-identity code.official-owner-address { color:var(--project-owner); }
+.address-identity code.official-owner-address {
+  color:#4c1d95;
+  -webkit-text-fill-color:#4c1d95;
+}
 
 /* 事件流使用纯主题底色，避免页面底纹透过半透明卡片影响文字。 */
 body {
