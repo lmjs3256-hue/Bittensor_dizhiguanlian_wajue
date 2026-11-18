@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
+from pathlib import Path
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -155,6 +157,7 @@ def address_event_record(
 ) -> dict[str, Any] | None:
     module = str(raw.get("module") or "")
     event_name = str(raw.get("event_name") or "")
+    display_event_name = event_name
     if (module, event_name) not in ADDRESS_EVENT_NAMES:
         return None
     values = _ordered_values(raw)
@@ -193,25 +196,56 @@ def address_event_record(
         display_tao_amount = _tao_amount_2(_field(values, "tao_amount", 2))
         alpha_amount = _amount(_field(values, "alpha_amount", 3))
         netuid = _integer(_field(values, "netuid", 4))
-        verb = "质押" if event_name == "StakeAdded" else "解质押"
-        summary_subnet = _subnet_label(netuid)
-        summary_amount = f"{display_tao_amount} TAO"
-        # 方向只通过绿色/红色表示，摘要不再写“买入/卖出”。
-        summary_action = ""
-        address_action = "buy" if event_name == "StakeAdded" else "sell"
-        event_type = (
-            "零号子网质押" if netuid == 0 and event_name == "StakeAdded"
-            else "零号子网解质押" if netuid == 0
-            else verb
-        )
-        accounts = [("coldkey", str(coldkey)), ("hotkey", str(hotkey))]
-        details = {
-            "coldkey": coldkey,
-            "hotkey": hotkey,
-            "tao_amount": tao_amount,
-            "alpha_amount": alpha_amount,
-            "netuid": netuid,
-        }
+        stake_transfer = _lookup_stake_transfer(raw)
+        # The destination side is rendered by the StakeRemoved record.
+        if event_name == "StakeAdded" and stake_transfer is not None:
+            return None
+        if event_name == "StakeRemoved" and stake_transfer is not None:
+            origin = str(stake_transfer.get("from_address") or coldkey)
+            destination = str(stake_transfer.get("to_address") or "")
+            amount_rao = _integer(stake_transfer.get("amount_rao"))
+            amount = _tao_amount_2(amount_rao)
+            event_type = "代币转移"
+            summary_subnet = _subnet_label(netuid)
+            summary_amount = f"{amount} TAO"
+            summary_action = "转移"
+            address_action = "transfer"
+            accounts = [
+                ("origin_coldkey", origin),
+                ("destination_coldkey", destination),
+                ("hotkey", str(hotkey)),
+            ]
+            details = {
+                "origin_coldkey": origin,
+                "destination_coldkey": destination,
+                "hotkey": hotkey,
+                "origin_netuid": netuid,
+                "destination_netuid": netuid,
+                "tao_amount": amount,
+                "amount_rao": amount_rao,
+                "transfer_kind": "stake_transfer",
+                "index_tx_hash": str(stake_transfer.get("tx_hash") or ""),
+            }
+            display_event_name = "StakeTransferred"
+        else:
+            verb = "质押" if event_name == "StakeAdded" else "解质押"
+            summary_subnet = _subnet_label(netuid)
+            summary_amount = f"{display_tao_amount} TAO"
+            summary_action = ""
+            address_action = "buy" if event_name == "StakeAdded" else "sell"
+            event_type = (
+                "零号子网质押" if netuid == 0 and event_name == "StakeAdded"
+                else "零号子网解质押" if netuid == 0
+                else verb
+            )
+            accounts = [("coldkey", str(coldkey)), ("hotkey", str(hotkey))]
+            details = {
+                "coldkey": coldkey,
+                "hotkey": hotkey,
+                "tao_amount": tao_amount,
+                "alpha_amount": alpha_amount,
+                "netuid": netuid,
+            }
     elif event_name == "StakeTransferred":
         origin = _field(values, "origin_coldkey", 0)
         destination = _field(values, "destination_coldkey", 1)
@@ -221,8 +255,13 @@ def address_event_record(
         tao_amount = _tao_amount_2(_field(values, "amount", 5))
         netuid = destination_netuid
         event_type = "代币转移"
-        summary_subnet = f"{_subnet_label(origin_netuid)}→{_subnet_label(destination_netuid)}"
-        summary_amount = f"{tao_amount} TAO 等值"
+        summary_subnet = (
+            _subnet_label(origin_netuid)
+            if origin_netuid == destination_netuid
+            else f"{_subnet_label(origin_netuid)}→{_subnet_label(destination_netuid)}"
+        )
+        summary_amount = f"{tao_amount} TAO"
+        summary_action = "转移"
         address_action = "transfer"
         accounts = [
             ("origin_coldkey", str(origin)),
@@ -357,7 +396,7 @@ def address_event_record(
         "network": network,
         "netuid": netuid,
         "event_type": event_type,
-        "event_name": f"{module}.{event_name}",
+        "event_name": f"{module}.{display_event_name}",
         "source": "address",
         "source_url": (
             "https://polkadot.js.org/apps/"
@@ -415,6 +454,52 @@ def _field(values: dict[str, Any], name: str, index: int) -> Any:
         if key in values:
             return values[key]
     return None
+
+
+
+def _lookup_stake_transfer(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Match a stake transfer event to the local index's precise transfer row."""
+
+    module = str(raw.get("module") or "")
+    event_name = str(raw.get("event_name") or "")
+    if module != "SubtensorModule" or event_name not in {"StakeAdded", "StakeRemoved"}:
+        return None
+    values = _ordered_values(raw)
+    raw_data = raw.get("raw") or {}
+    block_hash = str(raw_data.get("block_hash") or "").strip()
+    coldkey = str(_field(values, "coldkey", 0) or "").strip()
+    hotkey = str(_field(values, "hotkey", 1) or "").strip()
+    netuid = _integer(_field(values, "netuid", 4))
+    amount_rao = _integer(_field(values, "tao_amount", 2))
+    if not block_hash or not coldkey or netuid is None or amount_rao is None:
+        return None
+    try:
+        from ..config import database_path
+
+        path = Path(database_path())
+        if not path.exists():
+            return None
+        uri = f"file:{path.as_posix()}?mode=ro"
+        side = "from_address" if event_name == "StakeRemoved" else "to_address"
+        sql = f"""
+            SELECT from_address,to_address,amount_rao,amount_tao,netuid,hotkey,tx_hash
+            FROM transfers
+            WHERE block_hash=? AND edge_type='stake_transfer'
+              AND {side}=? AND hotkey=? AND netuid=? AND amount_rao=?
+            ORDER BY event_index ASC
+            LIMIT 1
+        """
+        with sqlite3.connect(uri, uri=True, timeout=2.0) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(sql, (block_hash, coldkey, hotkey, netuid, amount_rao)).fetchone()
+            if row is None:
+                sql = sql.replace("AND amount_rao=?", "AND amount_rao BETWEEN ? AND ?")
+                row = db.execute(
+                    sql, (block_hash, coldkey, hotkey, netuid, amount_rao - 1, amount_rao + 1)
+                ).fetchone()
+        return dict(row) if row is not None else None
+    except (OSError, sqlite3.Error, ImportError):
+        return None
 
 
 def _integer(value: Any) -> int | None:

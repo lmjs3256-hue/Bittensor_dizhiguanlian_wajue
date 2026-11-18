@@ -31,6 +31,7 @@ from . import taostats
 from .config import ROOT_DIR, database_path, settings
 from .event_monitor.default_watch import seed_default_subnet_watch
 from .event_monitor.runtime import EVENT_MONITOR, settings_from_env as event_monitor_settings
+from .event_monitor.address_monitor import _lookup_stake_transfer, _tao_amount_2, mask_address
 from .db import Database, install_seed_books
 from .inputs import InputError
 from .jobs import RelationJobManager
@@ -500,6 +501,60 @@ async def _job_scheduler() -> None:
             continue
 
 
+def _reconcile_stake_transfer_events() -> int:
+    """Backfill stake-transfer display after the local index catches up.
+
+    Chain events may arrive as StakeRemoved before the local index has written
+    the corresponding stake_transfer row. This pass upgrades recent address
+    events to 代币转移 once that precise row exists, including existing records.
+    """
+
+    if not EVENT_MONITOR.running or EVENT_MONITOR.context is None:
+        return 0
+    store = EVENT_MONITOR.context.store
+    rows = store.list_events(
+        {"network": "finney", "source": "address", "q": "StakeRemoved"},
+        limit=500,
+        offset=0,
+    )
+    updated = 0
+    for event in rows:
+        if str(event.get("event_type") or "") == "代币转移":
+            continue
+        transfer = _lookup_stake_transfer(event.get("raw_data") or {})
+        if transfer is None:
+            continue
+        origin = str(transfer.get("from_address") or "")
+        destination = str(transfer.get("to_address") or "")
+        if not origin or not destination:
+            continue
+        amount = _tao_amount_2(transfer.get("amount_rao"))
+        netuid = event.get("netuid")
+        subnet = f"SN{netuid}" if isinstance(netuid, int) else "SN待定"
+        details = dict(event.get("details") or {})
+        details.update({
+            "address_monitor": True,
+            "address_action": "transfer",
+            "summary_subnet": subnet,
+            "summary_amount": f"{amount} TAO",
+            "origin_coldkey": origin,
+            "destination_coldkey": destination,
+            "tao_amount": amount,
+            "amount_rao": transfer.get("amount_rao"),
+            "transfer_kind": "stake_transfer",
+            "index_tx_hash": str(transfer.get("tx_hash") or ""),
+        })
+        store.update_event(event["event_id"], "stake_transfer_enriched", {
+            "event_type": "代币转移",
+            "event_name": "SubtensorModule.StakeTransferred",
+            "summary": f"{subnet} · 转移 {amount} TAO · {mask_address(origin)} → {mask_address(destination)}",
+            "details": details,
+            "enrichment_status": "complete",
+        })
+        updated += 1
+    return updated
+
+
 def _sync_auto_import_rows_to_event(result: dict[str, Any]) -> dict[str, Any] | None:
     """把自动入库本轮新增地址同步到已经确认监控的地址库。"""
 
@@ -589,6 +644,7 @@ async def _watch_scheduler() -> None:
             async with WATCH_SWEEP_LOCK:
                 result = await asyncio.to_thread(WATCH.sweep_local_index)
                 await asyncio.to_thread(_sync_auto_import_rows_to_event, result)
+                await asyncio.to_thread(_reconcile_stake_transfer_events)
                 await asyncio.to_thread(_sync_event_monitor_library_state)
         except asyncio.CancelledError:
             raise
@@ -618,6 +674,7 @@ async def _local_scan_scheduler() -> None:
                     async with WATCH_SWEEP_LOCK:
                         result = await asyncio.to_thread(WATCH.sweep_local_index)
                         await asyncio.to_thread(_sync_auto_import_rows_to_event, result)
+                        await asyncio.to_thread(_reconcile_stake_transfer_events)
         except asyncio.CancelledError:
             raise
         except ScanBusyError:

@@ -42,6 +42,8 @@ from .validation import is_valid_ss58
 
 # Subtensor 的系统地址前缀（与 relation 里的默认 policy 保持一致）。
 SYSTEM_PREFIX = "5EYCAe5"
+# 链上当前 SubnetOwner 的地址库来源标记；项目方转出的地址不受普通金额门槛限制。
+PROJECT_OWNER_SOURCE = "bittensor:SubtensorModule.SubnetOwner"
 # 自动入库记录的来源标记；也是「这条是不是自动来的」的判断依据。
 AUTO_SOURCE = "auto-watch:local-index"
 AUTO_REVIEWED_SOURCE = "auto-watch:reviewed"
@@ -618,6 +620,14 @@ class WatchService:
                     if partner in revoked:
                         continue
                     partner_row = by_address.get(partner)
+                    # 项目方当前 Owner 转出的接收地址，按需求直接归入同一
+                    # 项目方地址库；不受普通 30 TAO 自动入库门槛影响。只在
+                    # 接收地址尚未入库时强制，避免把人工归属改来改去。
+                    project_owner_outbound = (
+                        str(owner_row.source or "") == PROJECT_OWNER_SOURCE
+                        and str(row.from_address or "") == owner
+                    )
+                    force_project_owner = project_owner_outbound and partner_row is None
                     if partner_row is not None:
                         # 已在库的自动地址仍要观察新往来，才能跨轮改判到累计
                         # 金额更高的库；人工/系统地址则保持原结论不动。
@@ -639,7 +649,7 @@ class WatchService:
                         partner,
                         owner_row.book or "",
                         edge,
-                        threshold,
+                        Decimal("0") if force_project_owner else threshold,
                         owner,
                         candidate_map=candidate_map,
                         valid_books=valid_books,

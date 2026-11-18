@@ -1008,7 +1008,7 @@ class ChainShapeTests(unittest.TestCase):
             spec_version=491,
             event_at="2026-11-18T00:00:00.000Z",
         )
-        self.assertEqual(event["summary"], "SN46→SN78 · 1.00 TAO 等值 · 5Col…1234 → 5Des…WXYZ")
+        self.assertEqual(event["summary"], "SN46→SN78 · 转移 1.00 TAO · 5Col…1234 → 5Des…WXYZ")
         self.assertIn("【SN46项目方相关】", event["details"]["display_tags"])
         self.assertEqual(event["details"]["project_owner_tags"], ["SN46项目方"])
 

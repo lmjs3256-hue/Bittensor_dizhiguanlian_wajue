@@ -190,6 +190,29 @@ def test_stake_transfer_is_counted_as_stake(database, service, config):
 
 
 # -- 谁会触发、谁不触发 ------------------------------------------------------
+def test_project_owner_outbound_is_imported_below_threshold(database, service, config):
+    """项目方当前 Owner 转出的接收地址不等待 30 TAO 门槛，直接进入项目方库。"""
+
+    _library(
+        database,
+        OWNER,
+        source=watch_module.PROJECT_OWNER_SOURCE,
+        book="SN54 Yanez",
+    )
+    _cursor(database, 1000)
+    service.sweep_local_index(config)
+
+    _transfer(database, 1, OWNER, PARTNER, "4.67", 1001, kind="stake_transfer")
+    result = service.sweep_local_index(config)
+
+    assert result["hits"] == 1
+    assert result["inserted"] == 1
+    assert _in_library(database, PARTNER)
+    with database.session() as session:
+        row = session.query(AddressLibrary).filter_by(address=PARTNER).one()
+        assert row.book == "SN54 Yanez"
+
+
 def test_exchange_address_does_not_trigger(database, service, config):
     """交易所地址不作为触发源：它的往来是噪音，会把库灌爆。"""
 

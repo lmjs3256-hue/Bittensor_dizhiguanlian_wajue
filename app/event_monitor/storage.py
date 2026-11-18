@@ -419,7 +419,7 @@ class Store:
     def update_event(self, event_id: str, change_type: str, patch: dict[str, Any]) -> dict[str, Any] | None:
         stamp = now_iso()
         safe = {key: value for key, value in patch.items() if key in {
-            "netuid", "event_type", "source_url", "event_at", "last_enriched_at", "summary",
+            "netuid", "event_type", "event_name", "source_url", "event_at", "last_enriched_at", "summary",
             "chain_status", "enrichment_status", "confidence", "runtime_spec_version", "block_number", "block_hash"
         }}
         for key in ("details", "raw_data"):
