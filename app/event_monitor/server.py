@@ -178,6 +178,7 @@ class AppContext:
         self.demo_enabled = demo_enabled
         self.env_path = env_path
         self.request_profile_sync: Any = None
+        self.request_subnet_lifecycle_sync: Any = None
         self.github_token_update: Any = None
 
 

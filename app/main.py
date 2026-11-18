@@ -31,7 +31,7 @@ from . import taostats
 from .config import ROOT_DIR, database_path, settings
 from .event_monitor.default_watch import seed_default_subnet_watch
 from .event_monitor.runtime import EVENT_MONITOR, settings_from_env as event_monitor_settings
-from .event_monitor.address_monitor import _lookup_stake_transfer, _tao_amount_2, mask_address
+from .event_monitor.address_monitor import address_event_record, derived_stake_transfer_buy_raw
 from .db import Database, install_seed_books
 from .inputs import InputError
 from .jobs import RelationJobManager
@@ -78,6 +78,11 @@ BUILTIN_STARTUP_RESULT: dict[str, Any] | None = None
 DEFAULT_SUBNET_WATCH_RESULT: dict[str, Any] | None = None
 EVENT_WATCH_AUTO_SYNC_RESULT: dict[str, Any] | None = None
 EVENT_WATCH_RECONCILE_RESULT: dict[str, Any] | None = None
+SUBNET_LIFECYCLE_RESULT: dict[str, Any] | None = None
+_SUBNET_LIFECYCLE_LOCK = threading.Lock()
+_SUBNET_LIFECYCLE_QUEUE: list[dict[str, Any]] = []
+_SUBNET_LIFECYCLE_RUNNING = False
+_SUBNET_LIFECYCLE_WATCH_STATE: dict[int, bool] = {}
 # 地址库自动入库的调度间隔：每 30 秒拿本地索引的新块撞一次地址库。
 # 不消耗任何 Taostats 额度（数据来自 RPC 直采的 transfers 表）。
 # 与 watch.py 的 SWEEP_TICK_SECONDS 同源：前端「距下一轮」倒计时依赖这个值，
@@ -238,6 +243,124 @@ def _sync_event_monitor_library_state() -> dict[str, Any] | None:
     return result
 
 
+def _subnet_has_watched_addresses(netuid: int) -> bool:
+    if not EVENT_MONITOR.running or EVENT_MONITOR.context is None:
+        return False
+    prefix = f"SN{int(netuid)} "
+    return any(
+        str(item.get("library_book") or "").startswith(prefix)
+        for item in EVENT_MONITOR.context.store.list_watched_addresses("finney")
+    )
+
+
+def _ensure_subnet_owner_watched(netuid: int) -> int:
+    if not EVENT_MONITOR.running or EVENT_MONITOR.context is None:
+        return 0
+    prefix = f"SN{int(netuid)} "
+    owners = [
+        item for item in SERVICE.library()
+        if str(item.get("book") or "").startswith(prefix)
+        and item.get("source") == SUBNET_OWNER_SOURCE
+    ]
+    store = EVENT_MONITOR.context.store
+    added = 0
+    for item in owners:
+        address = str(item.get("address") or "").strip()
+        book = str(item.get("book") or "").strip()
+        if not address or not book:
+            continue
+        try:
+            store.add_watched_address(
+                "finney",
+                address,
+                str(item.get("label") or f"SN{int(netuid)} 项目方")[:120],
+                0,
+                library_book=book,
+                address_role="project_owner",
+                clear_exclusion=True,
+            )
+            added += 1
+        except Exception:
+            continue
+    return added
+
+
+def _process_subnet_lifecycle_event(item: dict[str, Any]) -> dict[str, Any]:
+    global SUBNET_LIFECYCLE_RESULT
+    rule_id = str(item.get("rule_id") or "")
+    netuid = int(item.get("netuid"))
+    watched_before = _subnet_has_watched_addresses(netuid)
+    if rule_id == "network_removed":
+        with _SUBNET_LIFECYCLE_LOCK:
+            _SUBNET_LIFECYCLE_WATCH_STATE[netuid] = watched_before
+        result = SERVICE.archive_subnet_owner_library(
+            netuid, reason="network_removed_event",
+        )
+    elif rule_id == "network_registered":
+        result = SERVICE.sync_subnet_owner_addresses()
+        with _SUBNET_LIFECYCLE_LOCK:
+            restore_watch = _SUBNET_LIFECYCLE_WATCH_STATE.pop(netuid, False) or watched_before
+    else:
+        raise ValueError(f"unsupported subnet lifecycle event: {rule_id}")
+    reconcile = _sync_event_monitor_library_state()
+    if rule_id == "network_registered" and restore_watch:
+        result["watch_restored"] = _ensure_subnet_owner_watched(netuid)
+    else:
+        result["watch_restored"] = 0
+    SUBNET_LIFECYCLE_RESULT = {
+        "event": rule_id,
+        "netuid": netuid,
+        "event_id": str(item.get("event_id") or ""),
+        "result": result,
+        "reconcile": reconcile,
+        "processed_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        ).replace("+00:00", "Z"),
+    }
+    return SUBNET_LIFECYCLE_RESULT
+
+
+def _drain_subnet_lifecycle_queue() -> None:
+    global _SUBNET_LIFECYCLE_RUNNING, SUBNET_LIFECYCLE_RESULT
+    while True:
+        with _SUBNET_LIFECYCLE_LOCK:
+            if not _SUBNET_LIFECYCLE_QUEUE:
+                _SUBNET_LIFECYCLE_RUNNING = False
+                return
+            item = _SUBNET_LIFECYCLE_QUEUE.pop(0)
+        try:
+            _process_subnet_lifecycle_event(item)
+        except Exception as exc:  # noqa: BLE001 - 单次事件失败不能阻塞后续事件
+            SUBNET_LIFECYCLE_RESULT = {
+                **item,
+                "error": str(exc),
+                "processed_at": datetime.now(timezone.utc).isoformat(
+                    timespec="seconds"
+                ).replace("+00:00", "Z"),
+            }
+
+
+def _request_subnet_lifecycle_sync(rule_id: str, netuid: int, event: dict[str, Any]) -> dict[str, Any]:
+    global _SUBNET_LIFECYCLE_RUNNING
+    item = {
+        "rule_id": str(rule_id),
+        "netuid": int(netuid),
+        "event_id": str(event.get("event_id") or ""),
+    }
+    with _SUBNET_LIFECYCLE_LOCK:
+        _SUBNET_LIFECYCLE_QUEUE.append(item)
+        should_start = not _SUBNET_LIFECYCLE_RUNNING
+        if should_start:
+            _SUBNET_LIFECYCLE_RUNNING = True
+    if should_start:
+        threading.Thread(
+            target=_drain_subnet_lifecycle_queue,
+            name="subnet-lifecycle-sync",
+            daemon=True,
+        ).start()
+    return {"queued": True, **item}
+
+
 async def _auto_sync_subnet_owners() -> None:
     """每周检查一次链上子网项目方；失败只记录状态，不影响服务启动。"""
 
@@ -322,6 +445,8 @@ async def lifespan(_app: FastAPI):
                 f"事件库 {EVENT_MONITOR.settings.database if EVENT_MONITOR.settings else ''}",
                 file=sys.stderr,
             )
+            if EVENT_MONITOR.context is not None:
+                EVENT_MONITOR.context.request_subnet_lifecycle_sync = _request_subnet_lifecycle_sync
             _sync_event_monitor_library_state()
         except Exception as exc:  # noqa: BLE001 - 事件模块失败不应拖垮地址工具
             print(f"[event-monitor] 事件监控启动失败：{exc}", file=sys.stderr)
@@ -502,56 +627,117 @@ async def _job_scheduler() -> None:
 
 
 def _reconcile_stake_transfer_events() -> int:
-    """Backfill stake-transfer display after the local index catches up.
+    """Repair stake-transfer events after the local index catches up.
 
-    Chain events may arrive as StakeRemoved before the local index has written
-    the corresponding stake_transfer row. This pass upgrades recent address
-    events to 代币转移 once that precise row exists, including existing records.
+    A runtime may emit only StakeRemoved before the local index records the
+    destination. Once the precise stake_transfer row exists, the source event
+    stays a red sell event and a deterministic green buy event is added for the
+    destination coldkey.
     """
 
     if not EVENT_MONITOR.running or EVENT_MONITOR.context is None:
         return 0
     store = EVENT_MONITOR.context.store
-    rows = store.list_events(
-        {"network": "finney", "source": "address", "q": "StakeRemoved"},
-        limit=500,
+    hub = EVENT_MONITOR.context.hub
+    candidates = [
+        *store.list_events(
+            {"network": "finney", "source": "address", "q": "StakeRemoved"},
+            limit=500,
+            offset=0,
+        ),
+        *store.list_events(
+            {"network": "finney", "source": "address", "event_type": "代币转移"},
+            limit=500,
+            offset=0,
+        ),
+    ]
+    rows = list({event["event_id"]: event for event in candidates}.values())
+    recent = store.list_events(
+        {"network": "finney", "source": "address"},
+        limit=1000,
         offset=0,
     )
+    watched = store.list_watched_addresses("finney", enabled_only=True)
     updated = 0
     for event in rows:
-        if str(event.get("event_type") or "") == "代币转移":
+        raw_data = event.get("raw_data") or {}
+        stored_module, _, stored_name = str(event.get("event_name") or "").partition(".")
+        raw_module = str(raw_data.get("module") or stored_module)
+        raw_name = str(raw_data.get("event_name") or stored_name)
+        if raw_module != "SubtensorModule" or raw_name != "StakeRemoved":
             continue
-        transfer = _lookup_stake_transfer(event.get("raw_data") or {})
-        if transfer is None:
+        block_hash = str(event.get("block_hash") or raw_data.get("block_hash") or "")
+        if not block_hash:
             continue
-        origin = str(transfer.get("from_address") or "")
-        destination = str(transfer.get("to_address") or "")
-        if not origin or not destination:
+        raw = {
+            "raw_id": f"finney:{block_hash}:{event.get('event_index')}",
+            "event_index": event.get("event_index"),
+            "module": "SubtensorModule",
+            "event_name": "StakeRemoved",
+            "raw": raw_data,
+        }
+        source_event = address_event_record(
+            raw,
+            network="finney",
+            watched_addresses=watched,
+            block_hash=block_hash,
+            height=int(event.get("block_number") or raw_data.get("height") or 0),
+            spec_version=event.get("runtime_spec_version"),
+            event_at=str(event.get("event_at") or ""),
+        )
+        if source_event is None:
             continue
-        amount = _tao_amount_2(transfer.get("amount_rao"))
-        netuid = event.get("netuid")
-        subnet = f"SN{netuid}" if isinstance(netuid, int) else "SN待定"
-        details = dict(event.get("details") or {})
-        details.update({
-            "address_monitor": True,
-            "address_action": "transfer",
-            "summary_subnet": subnet,
-            "summary_amount": f"{amount} TAO",
-            "origin_coldkey": origin,
-            "destination_coldkey": destination,
-            "tao_amount": amount,
-            "amount_rao": transfer.get("amount_rao"),
-            "transfer_kind": "stake_transfer",
-            "index_tx_hash": str(transfer.get("tx_hash") or ""),
-        })
-        store.update_event(event["event_id"], "stake_transfer_enriched", {
-            "event_type": "代币转移",
-            "event_name": "SubtensorModule.StakeTransferred",
-            "summary": f"{subnet} · 转移 {amount} TAO · {mask_address(origin)} → {mask_address(destination)}",
-            "details": details,
+        source_patch = {
+            "event_type": source_event["event_type"],
+            "event_name": source_event["event_name"],
+            "summary": source_event["summary"],
+            "details": source_event["details"],
             "enrichment_status": "complete",
-        })
-        updated += 1
+        }
+        changed = any(event.get(key) != value for key, value in source_patch.items())
+        if changed:
+            updated_event = store.update_event(
+                event["event_id"], "stake_transfer_source_split", source_patch,
+            )
+            if updated_event is not None:
+                hub.publish(updated_event, "stake_transfer_source_split")
+                updated += 1
+
+        derived_raw = derived_stake_transfer_buy_raw(raw)
+        if derived_raw is None:
+            continue
+        buy_event = address_event_record(
+            derived_raw,
+            network="finney",
+            watched_addresses=watched,
+            block_hash=block_hash,
+            height=int(event.get("block_number") or raw_data.get("height") or 0),
+            spec_version=event.get("runtime_spec_version"),
+            event_at=str(event.get("event_at") or ""),
+        )
+        if buy_event is None:
+            continue
+        buy_details = buy_event.get("details") or {}
+        duplicate = False
+        for candidate in recent:
+            if candidate.get("block_number") != event.get("block_number"):
+                continue
+            details = candidate.get("details") or {}
+            if (
+                str(candidate.get("event_type") or "") in {"质押", "零号子网质押"}
+                and str(details.get("coldkey") or "") == str(buy_details.get("coldkey") or "")
+                and str(details.get("hotkey") or "") == str(buy_details.get("hotkey") or "")
+                and int(details.get("netuid") if details.get("netuid") is not None else -1)
+                == int(buy_details.get("netuid") if buy_details.get("netuid") is not None else -2)
+            ):
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        stored, created = store.create_event(buy_event)
+        if created:
+            hub.publish(stored, "discovered")
+            updated += 1
     return updated
 
 
@@ -1284,6 +1470,7 @@ def health(svc: Annotated[LinkService, Depends(service)]):
         "default_subnet_watch": DEFAULT_SUBNET_WATCH_RESULT,
         "event_watch_auto_sync": EVENT_WATCH_AUTO_SYNC_RESULT,
         "event_watch_reconcile": EVENT_WATCH_RECONCILE_RESULT,
+        "subnet_lifecycle": SUBNET_LIFECYCLE_RESULT,
     }
 
 

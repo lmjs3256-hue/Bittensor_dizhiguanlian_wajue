@@ -3261,6 +3261,34 @@ class LinkService:
         )
         return result
 
+    def archive_subnet_owner_library(
+        self, netuid: int, *, reason: str = "network_removed_event",
+    ) -> dict[str, Any]:
+        """Archive one netuid immediately and delete its entire SNx library."""
+
+        netuid = int(netuid)
+        stamp = utcnow()
+        with self.database.session() as db:
+            state = db.scalar(
+                select(SubnetOwnerEntry).where(SubnetOwnerEntry.netuid == netuid)
+            )
+            name = state.name if state is not None else ""
+            owner = state.owner_address if state is not None else ""
+            was_active = bool(state is not None and state.active)
+            if state is not None:
+                state.active = False
+                state.archived_at = state.archived_at or stamp
+                state.synced_at = stamp
+            cleared = self._remove_subnet_owner_library(db, netuid)
+        return {
+            "netuid": netuid,
+            "name": name,
+            "address": owner,
+            "active_before": was_active,
+            "cleared_addresses": cleared,
+            "reason": reason,
+        }
+
     def subnet_owner_sync_status(self) -> dict[str, Any]:
         """项目方地址同步状态与当前活跃/归档子网数量。"""
 

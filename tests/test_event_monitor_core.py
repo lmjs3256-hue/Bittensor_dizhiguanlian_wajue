@@ -260,6 +260,14 @@ class StoreTests(unittest.TestCase):
             "summary": "SN不适用 · TAO 转账 · 5HCF…gDHh → 5FHn…94ty · 1 TAO",
         })
         store.create_event(transfer_event)
+        removed_event = make_event("4" * 64, netuid=109)
+        removed_event.update({
+            "event_type": "子网移除",
+            "event_name": "SubtensorModule.NetworkRemoved",
+            "source": "chain",
+            "summary": "SN待定 子网已从网络中移除",
+        })
+        store.create_event(removed_event)
 
         reopened = Store(path)
         repaired_chain = reopened.get_event(chain_event["event_id"])
@@ -272,6 +280,10 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(
             reopened.get_event(transfer_event["event_id"])["summary"],
             "TAO 转账 · 5HCF…gDHh → 5FHn…94ty · 1 TAO",
+        )
+        self.assertEqual(
+            reopened.get_event(removed_event["event_id"])["summary"],
+            "SN109 子网已从网络中移除",
         )
 
     def test_block_replay_and_reorg_retraction(self) -> None:

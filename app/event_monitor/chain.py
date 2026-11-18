@@ -19,6 +19,7 @@ import xxhash
 from .address_monitor import (
     address_event_record,
     append_project_owner_suffix,
+    derived_stake_transfer_buy_raw,
     mask_address,
     project_owner_tags_for_raw_event,
 )
@@ -137,7 +138,8 @@ class ChainCollector:
     def __init__(self, *, url: str, network: str, store: Store,
                  rules: dict[tuple[str, str], dict[str, Any]], publish: Any,
                  status: Any, poll_seconds: float = 2.0, max_blocks_per_poll: int = 100,
-                 fetch_workers: int = 3, profile_sync_seconds: int = 604800):
+                 fetch_workers: int = 3, profile_sync_seconds: int = 604800,
+                 subnet_lifecycle_callback: Any = None):
         self.url = url
         self.network = network
         self.store = store
@@ -147,6 +149,7 @@ class ChainCollector:
         self.poll_seconds = poll_seconds
         self.profile_sync_seconds = max(300, profile_sync_seconds)
         self.max_blocks_per_poll = max_blocks_per_poll
+        self.subnet_lifecycle_callback = subnet_lifecycle_callback
         self.substrate: Any = None
         self._connection_generation = 0
         self.last_spec_version: int | None = None
@@ -743,9 +746,41 @@ class ChainCollector:
                     stake_extrinsics.add(extrinsic_index)
             prepared.append((raw, address_event))
 
+        # Some runtime stake transfers emit only StakeRemoved. Once the local
+        # index confirms the destination coldkey, add a deterministic StakeAdded
+        # event so the UI shows both source sell and destination buy.
+        actual_added = {
+            self._raw_stake_added_signature(raw)
+            for raw, _ in prepared
+            if raw["event_name"] == "StakeAdded"
+        }
+        synthetic_raw_ids: set[str] = set()
+        for raw, address_event in list(prepared):
+            if address_event is None or raw["event_name"] != "StakeRemoved":
+                continue
+            derived_raw = derived_stake_transfer_buy_raw(raw)
+            if derived_raw is None:
+                continue
+            if self._raw_stake_added_signature(derived_raw) in actual_added:
+                continue
+            derived_event = address_event_record(
+                derived_raw,
+                network=self.network,
+                watched_addresses=watched_addresses,
+                block_hash=block_hash,
+                height=height,
+                spec_version=spec_version,
+                event_at=event_at,
+            )
+            if derived_event is None:
+                continue
+            prepared.append((derived_raw, derived_event))
+            synthetic_raw_ids.add(str(derived_raw["raw_id"]))
+
         raws: list[dict[str, Any]] = []
         mapped: list[dict[str, Any]] = []
         for raw, address_event in prepared:
+            synthetic = str(raw["raw_id"]) in synthetic_raw_ids
             if (
                 address_event is not None
                 and raw["module"] == "Balances"
@@ -755,12 +790,18 @@ class ChainCollector:
                 address_event = None
             raw_added = False
             if address_event is not None:
-                raws.append(raw)
+                if not synthetic:
+                    raws.append(raw)
                 mapped.append(address_event)
                 raw_added = True
+            if synthetic:
+                continue
             normalized = self._event_record(raw, block_hash, height, spec_version, event_at)
+            normalized_rule = str((normalized or {}).get("details", {}).get("rule_id") or "")
+            lifecycle_event = normalized_rule in {"network_registered", "network_removed"}
             if normalized and (
-                normalized.get("netuid") is None
+                lifecycle_event
+                or normalized.get("netuid") is None
                 or int(normalized["netuid"]) not in disabled_netuids
             ):
                 owner_tags = project_owner_tags_for_raw_event(raw, watched_addresses)
@@ -775,6 +816,26 @@ class ChainCollector:
                     raws.append(raw)
                 mapped.append(normalized)
         return raws, mapped
+
+    @staticmethod
+    def _raw_stake_added_signature(raw: dict[str, Any]) -> tuple[str, str, int, int] | None:
+        data = raw.get("raw") or {}
+        values = data.get("attributes") or {}
+        def field(name: str, index: int) -> Any:
+            if isinstance(values, dict):
+                return values.get(name, values.get(str(index), values.get(index)))
+            if isinstance(values, list) and 0 <= index < len(values):
+                return values[index]
+            return None
+        try:
+            return (
+                str(field("coldkey", 0) or ""),
+                str(field("hotkey", 1) or ""),
+                int(field("netuid", 4)),
+                int(field("tao_amount", 2)),
+            )
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _raw_extrinsic_index(raw: dict[str, Any]) -> int | None:
@@ -812,6 +873,15 @@ class ChainCollector:
                 self.store.deactivate_chain_repositories_for_netuid(
                     self.network, int(netuid)
                 )
+            if (
+                rule_id in {"network_registered", "network_removed"}
+                and netuid is not None
+                and callable(self.subnet_lifecycle_callback)
+            ):
+                try:
+                    self.subnet_lifecycle_callback(rule_id, int(netuid), dict(event))
+                except Exception:
+                    LOG.exception("Subnet lifecycle callback failed for SN%s", netuid)
             if (
                 event.get("enrichment_status") == "pending"
                 and (netuid is not None or rule_id == "coldkey_swapped")

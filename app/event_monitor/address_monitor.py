@@ -197,55 +197,34 @@ def address_event_record(
         alpha_amount = _amount(_field(values, "alpha_amount", 3))
         netuid = _integer(_field(values, "netuid", 4))
         stake_transfer = _lookup_stake_transfer(raw)
-        # The destination side is rendered by the StakeRemoved record.
-        if event_name == "StakeAdded" and stake_transfer is not None:
-            return None
-        if event_name == "StakeRemoved" and stake_transfer is not None:
-            origin = str(stake_transfer.get("from_address") or coldkey)
+        verb = "质押" if event_name == "StakeAdded" else "解质押"
+        summary_subnet = _subnet_label(netuid)
+        summary_amount = f"{display_tao_amount} TAO"
+        summary_action = ""
+        address_action = "buy" if event_name == "StakeAdded" else "sell"
+        event_type = (
+            "零号子网质押" if netuid == 0 and event_name == "StakeAdded"
+            else "零号子网解质押" if netuid == 0
+            else verb
+        )
+        accounts = [("coldkey", str(coldkey)), ("hotkey", str(hotkey))]
+        details = {
+            "coldkey": coldkey,
+            "hotkey": hotkey,
+            "tao_amount": tao_amount,
+            "alpha_amount": alpha_amount,
+            "netuid": netuid,
+        }
+        if stake_transfer is not None:
+            origin = str(stake_transfer.get("from_address") or "")
             destination = str(stake_transfer.get("to_address") or "")
-            amount_rao = _integer(stake_transfer.get("amount_rao"))
-            amount = _tao_amount_2(amount_rao)
-            event_type = "代币转移"
-            summary_subnet = _subnet_label(netuid)
-            summary_amount = f"{amount} TAO"
-            summary_action = "转移"
-            address_action = "transfer"
-            accounts = [
-                ("origin_coldkey", origin),
-                ("destination_coldkey", destination),
-                ("hotkey", str(hotkey)),
-            ]
-            details = {
-                "origin_coldkey": origin,
-                "destination_coldkey": destination,
-                "hotkey": hotkey,
-                "origin_netuid": netuid,
-                "destination_netuid": netuid,
-                "tao_amount": amount,
-                "amount_rao": amount_rao,
+            details.update({
                 "transfer_kind": "stake_transfer",
+                "stake_transfer_from": origin,
+                "stake_transfer_to": destination,
+                "stake_transfer_amount_rao": _integer(stake_transfer.get("amount_rao")),
                 "index_tx_hash": str(stake_transfer.get("tx_hash") or ""),
-            }
-            display_event_name = "StakeTransferred"
-        else:
-            verb = "质押" if event_name == "StakeAdded" else "解质押"
-            summary_subnet = _subnet_label(netuid)
-            summary_amount = f"{display_tao_amount} TAO"
-            summary_action = ""
-            address_action = "buy" if event_name == "StakeAdded" else "sell"
-            event_type = (
-                "零号子网质押" if netuid == 0 and event_name == "StakeAdded"
-                else "零号子网解质押" if netuid == 0
-                else verb
-            )
-            accounts = [("coldkey", str(coldkey)), ("hotkey", str(hotkey))]
-            details = {
-                "coldkey": coldkey,
-                "hotkey": hotkey,
-                "tao_amount": tao_amount,
-                "alpha_amount": alpha_amount,
-                "netuid": netuid,
-            }
+            })
     elif event_name == "StakeTransferred":
         origin = _field(values, "origin_coldkey", 0)
         destination = _field(values, "destination_coldkey", 1)
@@ -455,6 +434,47 @@ def _field(values: dict[str, Any], name: str, index: int) -> Any:
             return values[key]
     return None
 
+
+
+def derived_stake_transfer_buy_raw(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a deterministic StakeAdded record for the destination wallet."""
+
+    module = str(raw.get("module") or "")
+    event_name = str(raw.get("event_name") or "")
+    if module != "SubtensorModule" or event_name != "StakeRemoved":
+        return None
+    transfer = _lookup_stake_transfer(raw)
+    if transfer is None:
+        return None
+    destination = str(transfer.get("to_address") or "").strip()
+    hotkey = str(transfer.get("hotkey") or "").strip()
+    amount_rao = _integer(transfer.get("amount_rao"))
+    netuid = _integer(transfer.get("netuid"))
+    if not destination or not hotkey or amount_rao is None or netuid is None:
+        return None
+    values = _ordered_values(raw)
+    alpha_amount = _integer(_field(values, "alpha_amount", 3)) or amount_rao
+    raw_data = dict(raw.get("raw") or {})
+    raw_data.update({
+        "module": "SubtensorModule",
+        "event_name": "StakeAdded",
+        "attributes": {
+            "0": destination,
+            "1": hotkey,
+            "2": amount_rao,
+            "3": alpha_amount,
+            "4": netuid,
+            "5": 0,
+        },
+    })
+    raw_data.pop("value", None)
+    return {
+        **raw,
+        "raw_id": f"{raw.get('raw_id')}:stake-transfer-buy",
+        "module": "SubtensorModule",
+        "event_name": "StakeAdded",
+        "raw": raw_data,
+    }
 
 
 def _lookup_stake_transfer(raw: dict[str, Any]) -> dict[str, Any] | None:

@@ -39,12 +39,16 @@ def _event_summary_with_subnet_prefix(
             if "TAO 转账" in remainder:
                 return remainder.strip()
         return text
-    if not text or text.startswith("SN"):
-        return text
     try:
         number = int(netuid)
     except (TypeError, ValueError):
         number = None
+    if not text:
+        return text
+    if text.startswith("SN待定") and number is not None:
+        return text.replace("SN待定", f"SN{number}", 1)
+    if text.startswith("SN"):
+        return text
     if name.endswith(("StakeAdded", "StakeRemoved")) and number is not None:
         marker = f"SN{number}"
         text = text.replace(f" · {marker} ", " · ", 1)

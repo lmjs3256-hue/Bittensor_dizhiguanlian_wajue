@@ -134,6 +134,38 @@ def test_owner_in_regular_book_is_reassigned_to_project_owner_book(monkeypatch):
             database.engine.dispose()
 
 
+def test_network_removed_can_archive_entire_library_without_live_sync(monkeypatch):
+    patch_registry(monkeypatch, registry(netuid=109, name="Old Project", owner=OWNER_A))
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.sync_subnet_owner_addresses()
+            with database.session() as db:
+                db.add(AddressLibrary(
+                    address=OWNER_C,
+                    label="旧项目方关联地址",
+                    category="其他",
+                    categories='["其他"]',
+                    note="由旧项目方触发",
+                    source="auto-watch:local-index",
+                    book="SN109 Old Project",
+                ))
+
+            result = service.archive_subnet_owner_library(
+                109, reason="network_removed_event",
+            )
+
+            assert result["active_before"] is True
+            assert result["cleared_addresses"] == 2
+            assert service.library() == []
+            assert service.address_books() == []
+            archived = service.subnet_owner_entries(include_archived=True)
+            assert archived[0]["netuid"] == 109
+            assert archived[0]["active"] is False
+        finally:
+            database.engine.dispose()
+
+
 def test_project_owner_books_sort_by_subnet_number(monkeypatch):
     value = {
         0: {"netuid": 0, "name": "root", "owner_address": "", "active": True},

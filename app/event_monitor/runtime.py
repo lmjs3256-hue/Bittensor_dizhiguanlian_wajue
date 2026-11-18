@@ -290,6 +290,13 @@ class EventMonitorRuntime:
         for worker_name, worker in workers:
             if worker_name == "chain":
                 context.request_profile_sync = worker.start_repository_sync
+                worker.subnet_lifecycle_callback = (
+                    lambda rule_id, netuid, event, context=context: (
+                        context.request_subnet_lifecycle_sync(rule_id, netuid, event)
+                        if callable(context.request_subnet_lifecycle_sync)
+                        else None
+                    )
+                )
             elif worker_name == "github":
                 context.github_token_update = worker.update_token
         return context, workers
