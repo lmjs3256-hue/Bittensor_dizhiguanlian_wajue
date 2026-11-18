@@ -368,6 +368,8 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert ".chain-reset-button" in css
     assert ".official-owner-tag" in css
     assert ".event-library-tag" in css
+    assert ".detail-summary.direction-buy" in css
+    assert ".detail-summary.direction-sell" in css
 
     floating_js = (Path(__file__).resolve().parents[1] / "app" / "static" / "event-monitor" / "floating.js").read_text(
         encoding="utf-8"

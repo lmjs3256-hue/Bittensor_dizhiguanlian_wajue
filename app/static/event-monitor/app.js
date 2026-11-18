@@ -1066,7 +1066,8 @@ function renderDetail(data) {
   time.dateTime = event.event_at;
   time.textContent = formatFullTime(event.event_at);
   const summary = document.createElement("h2");
-  summary.className = "detail-summary";
+  const detailDirection = eventAddressAction(event);
+  summary.className = `detail-summary${detailDirection ? ` direction-${detailDirection}` : ""}`;
   renderEventSummary(summary, event);
   const meta = document.createElement("div");
   meta.className = "detail-meta";
