@@ -876,6 +876,7 @@ class ChainShapeTests(unittest.TestCase):
                 "address": coldkey,
                 "label": "SN46 项目方",
                 "library_book": "SN46项目方相关",
+                "address_role": "project_owner",
             }],
             block_hash="0x" + "a" * 64,
             height=100,
@@ -911,6 +912,7 @@ class ChainShapeTests(unittest.TestCase):
                 "address": coldkey,
                 "label": "SN46 项目方",
                 "library_book": "SN46项目方相关",
+                "address_role": "project_owner",
             }],
             block_hash="0x" + "d" * 64,
             height=103,
@@ -971,6 +973,7 @@ class ChainShapeTests(unittest.TestCase):
                 "address": coldkey,
                 "label": "SN46 项目方",
                 "library_book": "SN46项目方相关",
+                "address_role": "project_owner",
             }],
             disabled_netuids=set(),
             block_hash="0x" + "c" * 64,
@@ -1012,6 +1015,7 @@ class ChainShapeTests(unittest.TestCase):
         self.assertEqual(event["summary"], "全链 · 13566 TAO · 5FqA…sThe → 5Dz3…N24U")
         self.assertIn("【SN51 lium.io】", event["details"]["display_tags"])
         self.assertTrue(event["details"]["matched_addresses"][0]["official_owner"])
+        self.assertFalse(event["details"]["matched_addresses"][1]["official_owner"])
 
     def test_address_monitor_masks_addresses_and_builds_concise_events(self) -> None:
         watched = [{
@@ -1456,6 +1460,7 @@ class ServerTests(unittest.TestCase):
                         "address": "5HCFWvRqzSHWRPecN7q8J6c7aKQnrCZTMHstPv39xL1wgDHh",
                         "label": "Browser Test",
                         "library_book": "SN46项目方相关",
+                        "address_role": "project_owner",
                         "min_transfer_tao": "0.5",
                     }).encode(),
                     headers={"Content-Type": "application/json"},

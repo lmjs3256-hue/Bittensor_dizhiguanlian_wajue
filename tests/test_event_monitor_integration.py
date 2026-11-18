@@ -366,7 +366,7 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert ".event-note-placeholder" in css
     assert ".detail-backdrop { backdrop-filter: none; }" in css
     assert ".chain-reset-button" in css
-    assert ".official-owner-tag" in css
+    assert ".official-owner-address" in css
     assert ".event-library-tag" in css
     assert ".detail-summary.direction-buy" in css
     assert ".detail-summary.direction-sell" in css
@@ -375,6 +375,9 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
         encoding="utf-8"
     )
     assert "data-note-event-id" in floating_js
+    assert "data-copy-event-id" in floating_js
+    assert "official-owner-address" in floating_js
+    assert "【备注】" in floating_js
     assert "openNoteEditor" in floating_js
     assert "/event-api/addresses" in floating_js
     assert "manual_note" in floating_js

@@ -1364,3 +1364,10 @@ body {
 
 .detail-summary.direction-buy { color:var(--event-green); }
 .detail-summary.direction-sell { color:var(--event-red); }
+
+.official-owner-address {
+  color:var(--project-owner) !important;
+  font-weight:750;
+  text-shadow:0 0 10px color-mix(in srgb, var(--project-owner) 22%, transparent);
+}
+.address-identity code.official-owner-address { color:var(--project-owner); }

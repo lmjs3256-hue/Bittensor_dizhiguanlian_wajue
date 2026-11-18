@@ -200,3 +200,19 @@ main { overflow: auto; }
   .note-dialog-meta code { width: 100%; }
   .note-dialog-actions { gap: 6px; }
 }
+
+.official-owner-address {
+  color:#d8b4fe !important;
+  font-weight:750;
+  text-shadow:0 0 10px rgba(192,132,252,.24);
+}
+
+.event-side { display:grid; justify-items:end; gap:5px; }
+.event-address-copy {
+  min-height:24px; padding:0 7px; border:1px solid rgba(119,225,193,.28); border-radius:6px;
+  background:rgba(119,225,193,.07); color:var(--mint); font-size:9px; cursor:pointer;
+}
+.event-address-copy:hover { border-color:rgba(119,225,193,.52); background:rgba(119,225,193,.13); }
+@media (max-width:460px) {
+  .event-side { grid-column:2; display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:4px; }
+}

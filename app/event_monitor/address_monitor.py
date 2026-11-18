@@ -36,6 +36,11 @@ def _subnet_label(value: Any) -> str:
 
 
 def _project_owner_netuid(item: dict[str, Any]) -> int | None:
+    # Project-owner libraries also collect ordinary auto-imported addresses.
+    # Only the current SubnetOwner row is official; a matching SN book alone is
+    # not enough to colour every member purple.
+    if str(item.get("address_role") or "") != "project_owner":
+        return None
     book = str(item.get("library_book") or "").strip()
     match = PROJECT_OWNER_BOOK.match(book)
     if not match:

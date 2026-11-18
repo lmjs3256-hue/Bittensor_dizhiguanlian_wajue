@@ -80,16 +80,48 @@ function addressSummaryHtml(event) {
     : manualTags(item.manual_note);
   const eventId = esc(event.event_id);
   const noteHtml = notes.length
-    ? notes.map((tag) => `<button type="button" class="event-note-tag event-note-tag-editable" data-note-event-id="${eventId}" title="点击编辑手动备注">${esc(tag)}</button>`).join("")
-    : `<button type="button" class="event-note-placeholder" data-note-event-id="${eventId}" title="点击添加手动备注">【手动备注】</button>`;
+    ? notes.map((tag) => `<button type="button" class="event-note-tag event-note-tag-editable" data-note-event-id="${eventId}" title="点击编辑备注">${esc(tag)}</button>`).join("")
+    : `<button type="button" class="event-note-placeholder" data-note-event-id="${eventId}" title="点击添加备注">【备注】</button>`;
   const libraryHtml = primaryTag
-    ? `<span class="${official ? "project-owner-suffix official-owner-tag" : "event-library-tag"}">${esc(primaryTag)}</span>`
-    : "";
-  const officialHtml = official
-    ? '<span class="project-owner-suffix official-owner-tag">【官方】</span>'
+    ? `<span class="event-library-tag">${esc(primaryTag)}</span>`
     : "";
   const base = String(event.summary || "").replace(TRAILING_NOTE_TAGS, "").replace(/\s*·\s*$/, "").trim();
-  return `${esc(base)} · ${noteHtml}${libraryHtml}${officialHtml}`;
+  let baseHtml = esc(base);
+  const maskedPrimary = primary.length > 8 ? `${primary.slice(0, 4)}…${primary.slice(-4)}` : primary;
+  if (official && maskedPrimary && base.includes(maskedPrimary)) {
+    baseHtml = baseHtml.replace(
+      esc(maskedPrimary),
+      `<span class="official-owner-address">${esc(maskedPrimary)}</span>`,
+    );
+  }
+  return `${baseHtml} · ${noteHtml}${libraryHtml}`;
+}
+
+function eventPrimaryAddress(event) {
+  return String(
+    event.details?.primary_address
+      || event.details?.matched_addresses?.find((item) => item?.address)?.address
+      || ""
+  ).trim();
+}
+
+async function copyAddressText(value) {
+  const text = String(value || "");
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {}
+  const helper = document.createElement("textarea");
+  helper.value = text;
+  helper.setAttribute("readonly", "");
+  helper.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;";
+  document.body.append(helper);
+  helper.select();
+  const copied = document.execCommand("copy");
+  helper.remove();
+  if (!copied) throw new Error("浏览器未允许复制");
 }
 
 function showToast(message) {
@@ -129,7 +161,7 @@ async function openNoteEditor(event) {
     return;
   }
   if (!watched?.address_id) {
-    showToast("该地址已不在事件监控中，无法编辑手动备注");
+    showToast("该地址已不在事件监控中，无法编辑备注");
     return;
   }
 
@@ -139,7 +171,7 @@ async function openNoteEditor(event) {
   head.className = "note-dialog-head";
   const titleWrap = document.createElement("div");
   const title = document.createElement("strong");
-  title.textContent = "编辑手动备注";
+  title.textContent = "编辑备注";
   const subtitle = document.createElement("small");
   subtitle.textContent = "原备注保留；多个备注可用逗号分隔";
   titleWrap.append(title, subtitle);
@@ -201,7 +233,7 @@ async function openNoteEditor(event) {
       watched.manual_note = value;
       dialog.close();
       await loadEvents();
-      showToast(value ? "手动备注已保存" : "手动备注已清空");
+      showToast(value ? "备注已保存" : "备注已清空");
     } catch (cause) {
       error.textContent = cause.message;
       save.disabled = false;
@@ -359,7 +391,10 @@ async function loadEvents() {
       return `<article class="event tone-${tone}${priorityClass}${direction ? ` address-${direction}` : ""}${latest ? " is-latest-event" : ""}" data-latest-until="${latest ? eventTimestamp + 30000 : ""}">
         <i></i>
         <div class="event-copy"><strong>${summaryHtml(event)}</strong><small>${esc(source)} · ${esc(event.event_type)} · ${esc(event.event_name)}</small></div>
-        <time>${esc(time(event.event_at))}</time>
+        <div class="event-side">
+          <time>${esc(time(event.event_at))}</time>
+          ${eventPrimaryAddress(event) ? `<button type="button" class="event-address-copy" data-copy-event-id="${esc(event.event_id)}" title="复制完整地址">复制</button>` : ""}
+        </div>
       </article>`;
     }).join("");
     const latestNode = list.querySelector(".is-latest-event");
@@ -467,7 +502,21 @@ function applyCompact(value, options = {}) {
   }
 }
 
-list.addEventListener("click", (clickEvent) => {
+list.addEventListener("click", async (clickEvent) => {
+  const copyButton = clickEvent.target.closest?.("[data-copy-event-id]");
+  if (copyButton) {
+    const event = currentEvents.find((item) => item.event_id === copyButton.dataset.copyEventId);
+    const address = event ? eventPrimaryAddress(event) : "";
+    if (address) {
+      try {
+        await copyAddressText(address);
+        showToast(`已复制 ${address.slice(0, 4)}…${address.slice(-4)}`);
+      } catch (error) {
+        showToast(error.message);
+      }
+    }
+    return;
+  }
   const button = clickEvent.target.closest?.("[data-note-event-id]");
   if (!button) return;
   const event = currentEvents.find((item) => item.event_id === button.dataset.noteEventId);

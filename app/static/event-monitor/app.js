@@ -738,7 +738,6 @@ function addressEventNoteDetails(event) {
     ? `【${libraryName}】`
     : (!isSystemAutoAddressLabel(label, primaryAddress) ? `【${label}】` : "");
   const officialOwner = item.address_role === "project_owner" || item.official_owner === true;
-  const officialTag = officialOwner ? "【官方】" : "";
   const manualTags = Array.isArray(item.manual_note_tags)
     ? item.manual_note_tags.filter(Boolean).map((tag) => {
       const clean = String(tag).trim().replace(/^[【\[]+|[】\]]+$/g, "").trim();
@@ -747,7 +746,7 @@ function addressEventNoteDetails(event) {
     : manualNoteTags(item.manual_note);
   const seen = new Set();
   const tags = [];
-  for (const tag of [...manualTags, primaryTag, officialTag]) {
+  for (const tag of [...manualTags, primaryTag]) {
     const key = compactTag(tag);
     if (key && !seen.has(key)) {
       seen.add(key);
@@ -757,7 +756,6 @@ function addressEventNoteDetails(event) {
   return {
     base: stripAddressEventTags(event.summary),
     primaryTag,
-    officialTag,
     officialOwner,
     manualTags,
     tags,
@@ -769,7 +767,7 @@ function addressEventNoteDetails(event) {
 function eventSummaryText(event) {
   if (event.source === "address") {
     const note = addressEventNoteDetails(event);
-    const tags = note.tags.length ? note.tags : ["【手动备注】"];
+    const tags = note.tags.length ? note.tags : ["【备注】"];
     return [note.base, " · ", tags.join("")].filter(Boolean).join("");
   }
   let summary = String(event.summary || "").replace(
@@ -788,8 +786,8 @@ function eventSummaryText(event) {
 function appendEditableManualTag(element, event, tag) {
   const button = infoElement("button", "event-note-tag event-note-tag-editable", tag);
   button.type = "button";
-  button.title = "点击编辑该地址的手动备注";
-  button.setAttribute("aria-label", `编辑手动备注 ${tag}`);
+  button.title = "点击编辑该地址的备注";
+  button.setAttribute("aria-label", `编辑备注 ${tag}`);
   button.addEventListener("click", (clickEvent) => {
     clickEvent.preventDefault();
     clickEvent.stopPropagation();
@@ -799,29 +797,41 @@ function appendEditableManualTag(element, event, tag) {
   element.append(button);
 }
 
+function appendAddressEventBase(element, note) {
+  const text = String(note.base || "");
+  const masked = maskAddress(note.address || "");
+  if (!note.officialOwner || !masked) {
+    element.append(document.createTextNode(text));
+    return;
+  }
+  const index = text.lastIndexOf(masked);
+  if (index < 0) {
+    element.append(document.createTextNode(text));
+    return;
+  }
+  element.append(
+    document.createTextNode(text.slice(0, index)),
+    infoElement("span", "official-owner-address", masked),
+    document.createTextNode(text.slice(index + masked.length)),
+  );
+}
+
 function renderEventSummary(element, event) {
   if (event.source === "address") {
     const note = addressEventNoteDetails(event);
-    element.append(document.createTextNode(note.base));
+    appendAddressEventBase(element, note);
     element.append(document.createTextNode(" · "));
     if (note.manualTags.length) {
       for (const tag of note.manualTags) appendEditableManualTag(element, event, tag);
     }
     if (note.primaryTag) {
-      element.append(infoElement(
-        "span",
-        note.officialOwner ? "project-owner-suffix official-owner-tag" : "event-library-tag",
-        note.primaryTag,
-      ));
-    }
-    if (note.officialTag) {
-      element.append(infoElement("span", "project-owner-suffix official-owner-tag", note.officialTag));
+      element.append(infoElement("span", "event-library-tag", note.primaryTag));
     }
     if (!note.manualTags.length) {
-      const placeholder = infoElement("button", "event-note-placeholder", "【手动备注】");
+      const placeholder = infoElement("button", "event-note-placeholder", "【备注】");
       placeholder.type = "button";
-      placeholder.title = "点击添加手动备注，例如 回购、官方、出货";
-      placeholder.setAttribute("aria-label", "为该地址添加手动备注");
+      placeholder.title = "点击添加备注，例如 回购、官方、出货";
+      placeholder.setAttribute("aria-label", "为该地址添加备注");
       placeholder.addEventListener("click", (clickEvent) => {
         clickEvent.preventDefault();
         clickEvent.stopPropagation();
@@ -2591,7 +2601,7 @@ async function openManualNoteEditor(event) {
     }
   }
   if (!watched?.address_id) {
-    showToast("该地址已不在事件监控中，无法编辑手动备注");
+    showToast("该地址已不在事件监控中，无法编辑备注");
     return;
   }
 
@@ -2600,7 +2610,7 @@ async function openManualNoteEditor(event) {
   const title = infoElement("div");
   title.append(
     infoElement("p", "eyebrow", "ADDRESS NOTE"),
-    infoElement("h2", "", "编辑手动备注"),
+    infoElement("h2", "", "编辑备注"),
   );
   const close = infoElement("button", "icon-button", "×");
   close.type = "button";
@@ -2652,7 +2662,7 @@ async function openManualNoteEditor(event) {
       const selectedId = state.selectedId;
       await loadEvents(state.currentPage);
       if (selectedId) await selectEvent(selectedId);
-      showToast(value ? "手动备注已保存" : "手动备注已清空");
+      showToast(value ? "备注已保存" : "备注已清空");
     } catch (cause) {
       error.textContent = cause.message;
       save.disabled = false;
@@ -2701,7 +2711,11 @@ function renderAddressRow(item, reload) {
   const row = infoElement("article", `address-row${item.enabled ? "" : " disabled"}`);
   const identity = infoElement("div", "address-identity");
   const codeLine = infoElement("div", "address-code-line");
-  const addressCode = infoElement("code", "", maskAddress(item.address));
+  const addressCode = infoElement(
+    "code",
+    item.address_role === "project_owner" ? "official-owner-address" : "",
+    maskAddress(item.address),
+  );
   const copy = infoElement("button", "address-copy-button", "复制");
   copy.type = "button";
   copy.title = "复制完整 SS58 地址";
@@ -2720,11 +2734,7 @@ function renderAddressRow(item, reload) {
     ? ""
     : String(item.label || "").trim();
   const displayName = manualDisplay || String(item.library_book || "").trim() || fallbackLabel || maskAddress(item.address);
-  identity.append(infoElement("strong", "", displayName));
-  if (item.address_role === "project_owner") {
-    identity.append(infoElement("span", "address-official-badge", "官方项目方"));
-  }
-  identity.append(codeLine);
+  identity.append(infoElement("strong", "", displayName), codeLine);
   const labelEditor = infoElement("div", "address-label-editor");
   const label = infoElement("input", "address-label-input");
   label.value = item.label || "";
@@ -2733,8 +2743,8 @@ function renderAddressRow(item, reload) {
   const manualNote = infoElement("input", "address-manual-note-input");
   manualNote.value = item.manual_note || "";
   manualNote.maxLength = 240;
-  manualNote.placeholder = "手动备注，例如 回购、官方、出货（逗号分隔）";
-  manualNote.setAttribute("aria-label", "地址手动备注，多个备注可用逗号分隔");
+  manualNote.placeholder = "备注，例如 回购、官方、出货（逗号分隔）";
+  manualNote.setAttribute("aria-label", "地址备注，多个标签可用逗号分隔");
   const notePreview = infoElement("div", "address-note-preview");
   const refreshNotePreview = () => {
     const tags = addressDisplayTags(label.value, manualNote.value);
@@ -2765,7 +2775,7 @@ function renderAddressRow(item, reload) {
         method: "PUT",
         body: JSON.stringify({ manual_note: manualNote.value.trim() }),
       });
-      showToast("地址手动备注已保存；后续新事件使用新备注");
+      showToast("地址备注已保存；后续新事件使用新备注");
       await reload();
     } catch (error) {
       showToast(error.message);
