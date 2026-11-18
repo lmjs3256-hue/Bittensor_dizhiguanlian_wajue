@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import struct
 import time
@@ -27,6 +28,8 @@ from .storage import Store, now_iso
 from .substrate_adapter import AsyncSubstrateAdapter
 
 LOG = logging.getLogger(__name__)
+EVENT_PARSER_STATE = "chain:dict-event-parser:v2"
+EVENT_PARSER_BACKFILL_BLOCKS = max(0, int(os.getenv("WALLET_LINK_EVENT_BACKFILL_BLOCKS", "200")))
 
 
 def _json_value(value: Any) -> Any:
@@ -60,23 +63,32 @@ def _height(header: dict[str, Any]) -> int:
 
 
 def _attributes(event: Any) -> dict[str, Any]:
-    params = getattr(event, "params", None)
-    if not isinstance(params, (dict, list, tuple)):
-        value = getattr(event, "value", {})
-        if callable(value):
-            value = value()
-        if isinstance(value, dict):
-            candidate = value.get("attributes", value.get("params"))
-            if isinstance(candidate, (dict, list, tuple)):
-                params = candidate
-            elif candidate is not None:
-                params = [candidate]
-            else:
+    if isinstance(event, dict):
+        candidate = event.get("attributes")
+        if not isinstance(candidate, (dict, list, tuple)):
+            nested = event.get("event")
+            candidate = nested.get("attributes") if isinstance(nested, dict) else None
+        params = candidate
+    else:
+        params = getattr(event, "params", None)
+        if not isinstance(params, (dict, list, tuple)):
+            value = getattr(event, "value", {})
+            if callable(value):
+                value = value()
+            if isinstance(value, dict):
+                candidate = value.get("attributes", value.get("params"))
+                if isinstance(candidate, (dict, list, tuple)):
+                    params = candidate
+                elif candidate is not None:
+                    params = [candidate]
+                else:
+                    params = []
+            elif params is None:
                 params = []
-        elif params is None:
-            params = []
-        else:
-            params = [params]
+            else:
+                params = [params]
+    if not isinstance(params, (dict, list, tuple)):
+        params = []
     if isinstance(params, dict):
         return {str(k): _json_value(v) for k, v in params.items()}
     result: dict[str, Any] = {}
@@ -224,35 +236,35 @@ class ChainCollector:
             )
 
     def _event_name(self, event: Any, name: str) -> str:
-        def resolve(candidate: Any) -> Any:
-            if isinstance(candidate, dict):
-                for key in ("event_id", "eventId", "event", "module_id", "moduleId", "name"):
-                    nested = candidate.get(key)
-                    if nested and nested is not candidate:
-                        return nested
-                return None
-            return candidate
-
-        part = resolve(getattr(event, name, None))
-        if part is None:
-            value = getattr(event, "value", {})
-            if callable(value):
-                value = value()
-            if isinstance(value, dict):
-                aliases = {
-                    "event_module": ("event_module", "module_id", "moduleId"),
-                    "event": ("event_id", "eventId", "event"),
-                }.get(name, (name, name.replace("_", "")))
-                for alias in aliases:
-                    part = resolve(value.get(alias))
-                    if part is not None:
-                        break
-        return str(getattr(part, "name", part or "unknown"))
+        aliases = {
+            "event_module": ("event_module", "module_id", "moduleId"),
+            "event": ("event_id", "eventId", "event"),
+        }.get(name, (name, name.replace("_", "")))
+        payload = event if isinstance(event, dict) else getattr(event, "value", {})
+        if callable(payload):
+            payload = payload()
+        candidates: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            candidates.append(payload)
+            nested = payload.get("event")
+            if isinstance(nested, dict):
+                candidates.append(nested)
+        for candidate in candidates:
+            for alias in aliases:
+                part = candidate.get(alias)
+                if part is None or part is candidate or isinstance(part, dict):
+                    continue
+                return str(getattr(part, "name", part))
+        if not isinstance(event, dict):
+            part = getattr(event, name, None)
+            if part is not None and not isinstance(part, dict):
+                return str(getattr(part, "name", part))
+        return "unknown"
 
     def _event_index(self, event: Any, fallback: int) -> int:
-        value = getattr(event, "event_index", None)
+        value = event.get("event_index") if isinstance(event, dict) else getattr(event, "event_index", None)
         if value is None:
-            raw_value = getattr(event, "value", {})
+            raw_value = event if isinstance(event, dict) else getattr(event, "value", {})
             if callable(raw_value):
                 raw_value = raw_value()
             if isinstance(raw_value, dict):
@@ -266,7 +278,7 @@ class ChainCollector:
     def _raw_record(self, event: Any, block_hash: str, height: int, event_index: int) -> dict[str, Any]:
         module = self._event_name(event, "event_module")
         name = self._event_name(event, "event")
-        value = getattr(event, "value", {})
+        value = event if isinstance(event, dict) else getattr(event, "value", {})
         if callable(value):
             value = value()
         return {
@@ -886,6 +898,88 @@ class ChainCollector:
     def process_block(self, height: int) -> list[dict[str, Any]]:
         return self._persist_block(self._fetch_block(height))
 
+    def _ensure_event_parser_backfill(self, *, backfill_blocks: int | None = None) -> None:
+        """One-time rewind after fixing the dict-event parser.
+
+        Older releases received plain dict events from the Substrate client but only
+        normalized ScaleValue objects, so live chain events were silently skipped.
+        Replaying a recent window restores the most recent missed address events.
+        """
+
+        state = self.store.get_cursor(EVENT_PARSER_STATE) or {}
+        try:
+            version = int(state.get("version") or 0)
+        except (TypeError, ValueError):
+            version = 0
+        if version >= 2:
+            return
+        cursor = self.store.get_cursor(f"chain:{self.network}")
+        if not cursor:
+            self.store.set_collector_state(EVENT_PARSER_STATE, {
+                "version": 2,
+                "reason": "fresh event database",
+                "updated_at": now_iso(),
+            })
+            return
+        limit = EVENT_PARSER_BACKFILL_BLOCKS if backfill_blocks is None else max(0, int(backfill_blocks))
+        if limit <= 0:
+            self.store.set_collector_state(EVENT_PARSER_STATE, {
+                "version": 2,
+                "reason": "backfill disabled",
+                "updated_at": now_iso(),
+            })
+            return
+        best = self.rpc("chain_getHeader", [])
+        if not isinstance(best, dict):
+            raise RuntimeError("chain_getHeader returned no best header during parser backfill")
+        target = _height(best)
+        rewind_to = max(1, target - limit)
+        anchor_height = rewind_to - 1
+        if anchor_height < 1:
+            self.store.set_collector_state(EVENT_PARSER_STATE, {
+                "version": 2,
+                "reason": "chain too short",
+                "updated_at": now_iso(),
+            })
+            return
+        anchor_hash = self.hash_at(anchor_height)
+        anchor_header = self.rpc("chain_getHeader", [anchor_hash])
+        anchor_version = self.version_at(anchor_hash)
+        self.store.process_chain_block(
+            self.network,
+            anchor_height,
+            anchor_hash,
+            str((anchor_header or {}).get("parentHash", "")),
+            anchor_version,
+            [],
+            [],
+        )
+        self.store.set_collector_state(EVENT_PARSER_STATE, {
+            "version": 2,
+            "reason": "dict event parser migration",
+            "anchor_height": anchor_height,
+            "rewind_to": rewind_to,
+            "target_at_reset": target,
+            "backfill_blocks": limit,
+            "updated_at": now_iso(),
+        })
+        self.status("chain", "connected", {
+            "network": self.network,
+            "best_height": target,
+            "last_processed": anchor_height,
+            "finalized_height": None,
+            "lag_blocks": max(0, target - anchor_height),
+            "processed": 0,
+            "syncing": True,
+            "parser_backfill": True,
+            "updated_at": now_iso(),
+            "state": "connected",
+        })
+        LOG.info(
+            "Rewound event cursor from %s to %s to replay %s blocks after dict-event parser fix",
+            cursor.get("height"), anchor_height, limit,
+        )
+
     def _report_progress(self, target: int, processed: int) -> None:
         fresh = self.store.get_cursor(f"chain:{self.network}") or {}
         current_height = int(fresh.get("height") or 0)
@@ -1031,6 +1125,7 @@ class ChainCollector:
             try:
                 if self.substrate is None:
                     self.connect()
+                self._ensure_event_parser_backfill()
                 if time.monotonic() - self.last_trading_sync >= 5:
                     self.start_trading_sync(None)
                 self.poll_once()

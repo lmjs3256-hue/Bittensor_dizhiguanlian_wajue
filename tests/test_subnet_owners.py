@@ -82,6 +82,24 @@ def test_sync_creates_subnet_owner_book_with_number_name_and_note(monkeypatch):
             database.engine.dispose()
 
 
+def test_project_owner_books_sort_by_subnet_number(monkeypatch):
+    value = {
+        0: {"netuid": 0, "name": "root", "owner_address": "", "active": True},
+        100: {"netuid": 100, "name": "Hundred", "owner_address": OWNER_A, "active": True},
+        2: {"netuid": 2, "name": "Two", "owner_address": OWNER_B, "active": True},
+        10: {"netuid": 10, "name": "Ten", "owner_address": OWNER_C, "active": True},
+    }
+    patch_registry(monkeypatch, value)
+    with TemporaryDirectory() as directory:
+        database, service = build_service(directory)
+        try:
+            service.sync_subnet_owner_addresses()
+            names = [book["name"] for book in service.address_books()]
+            assert names == ["SN2 Two", "SN10 Ten", "SN100 Hundred"]
+        finally:
+            database.engine.dispose()
+
+
 def test_deregistered_subnet_is_archived_and_hidden(monkeypatch):
     patch_registry(monkeypatch, registry())
     with TemporaryDirectory() as directory:

@@ -12,7 +12,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.event_monitor.address_monitor import address_event_record, mask_address
-from app.event_monitor.chain import ChainCollector, _decode_identity_v3, _identity_to_profile
+from app.event_monitor.chain import (
+    EVENT_PARSER_STATE,
+    ChainCollector,
+    _decode_identity_v3,
+    _identity_to_profile,
+)
 from app.event_monitor.github import (
     GitHubBacklogError, GitHubClient, GitHubCollector, GitHubError,
     _commit_change_brief, _commit_progress_points, parse_github_repository,
@@ -453,6 +458,104 @@ class ChainShapeTests(unittest.TestCase):
         assert details["syncing"] is True
         assert details["updated_at"]
 
+    def test_plain_dict_substrate_event_matches_watched_address(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        rules, _ = load_rules(root / "app" / "event_monitor" / "config" / "event_rules.json")
+        collector = ChainCollector(
+            url="unused", network="finney", store=object(), rules=rules,
+            publish=lambda *args: None, status=lambda *args: None,
+        )
+        address = "5FqACMtcegZxxopgu1g7TgyrnyD8skurr9QDPLPhxNQzsThe"
+        event = {
+            "phase": "ApplyExtrinsic",
+            "extrinsic_idx": 20,
+            "event": {
+                "event_index": "0502",
+                "module_id": "Balances",
+                "event_id": "Transfer",
+                "attributes": {
+                    "from": address,
+                    "to": "5Dz3KtBgvqgDxFsJkfeMj6QdpDL2QfZsuZ75mcJy3xYoN24U",
+                    "amount": 13_566_000_000_000,
+                },
+            },
+            "event_index": 181,
+            "module_id": "Balances",
+            "event_id": "Transfer",
+            "attributes": {
+                "from": address,
+                "to": "5Dz3KtBgvqgDxFsJkfeMj6QdpDL2QfZsuZ75mcJy3xYoN24U",
+                "amount": 13_566_000_000_000,
+            },
+        }
+        try:
+            raws, mapped = collector._map_block_events(
+                [event],
+                watched_addresses=[{
+                    "address": address,
+                    "label": "SN51项目方",
+                    "library_book": "SN51 lium.io",
+                    "min_transfer_tao": 0,
+                }],
+                disabled_netuids=set(),
+                block_hash="0x" + "a" * 64,
+                height=9530960,
+                spec_version=491,
+                event_at="2026-11-18T04:14:24.000Z",
+            )
+        finally:
+            collector.close()
+        self.assertEqual(len(raws), 1)
+        self.assertEqual(len(mapped), 1)
+        self.assertEqual(mapped[0]["source"], "address")
+        self.assertEqual(mapped[0]["event_name"], "Balances.Transfer")
+        self.assertEqual(mapped[0]["summary"], "全链 · 13566 TAO · 5FqA…sThe")
+
+    def test_dict_parser_migration_rewinds_once(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        rules, _ = load_rules(root / "app" / "event_monitor" / "config" / "event_rules.json")
+        processed = []
+        states = {}
+
+        class StoreStub:
+            def get_cursor(self, name):
+                if name == EVENT_PARSER_STATE:
+                    return states.get(name)
+                if name == "chain:finney":
+                    return {"height": 1000, "hash": "0xold", "spec_version": 491}
+                return None
+
+            def process_chain_block(self, network, height, block_hash, parent_hash, spec_version, raws, events):
+                processed.append((network, height, block_hash, parent_hash, spec_version))
+                return []
+
+            def set_collector_state(self, name, state):
+                states[name] = dict(state)
+
+        statuses = []
+        collector = ChainCollector(
+            url="unused", network="finney", store=StoreStub(), rules=rules,
+            publish=lambda *args: None,
+            status=lambda *args: statuses.append(args),
+        )
+        collector.rpc = lambda method, params=None: (
+            {"number": hex(1000)} if not params else {"parentHash": "0xparent"}
+        )
+        collector.hash_at = lambda height: "0x" + "b" * 64
+        collector.version_at = lambda hash_value: 491
+        try:
+            collector._ensure_event_parser_backfill(backfill_blocks=200)
+            first_count = len(processed)
+            collector._ensure_event_parser_backfill(backfill_blocks=200)
+        finally:
+            collector.close()
+        self.assertEqual(first_count, 1)
+        self.assertEqual(len(processed), 1)
+        self.assertEqual(processed[0][1], 799)
+        self.assertEqual(states[EVENT_PARSER_STATE]["version"], 2)
+        self.assertEqual(states[EVENT_PARSER_STATE]["rewind_to"], 800)
+        self.assertTrue(statuses[-1][2]["syncing"])
+
     def test_balance_transfer_is_suppressed_inside_matching_stake_extrinsic(self) -> None:
         root = Path(__file__).resolve().parent.parent
         rules, _ = load_rules(root / "app" / "event_monitor" / "config" / "event_rules.json")
@@ -868,6 +971,36 @@ class ChainShapeTests(unittest.TestCase):
         swap = next(item for item in mapped if item["event_name"].endswith("ColdkeySwapped"))
         self.assertTrue(swap["summary"].endswith("【SN46项目方】"))
         self.assertEqual(swap["details"]["project_owner_tags"], ["SN46项目方"])
+
+    def test_project_owner_wins_primary_address_when_counterparty_is_watched(self) -> None:
+        owner = "5FqACMtcegZxxopgu1g7TgyrnyD8skurr9QDPLPhxNQzsThe"
+        counterparty = "5Dz3KtBgvqgDxFsJkfeMj6QdpDL2QfZsuZ75mcJy3xYoN24U"
+        raw = {
+            "raw_id": "finney:block:owner-transfer",
+            "event_index": 181,
+            "module": "Balances",
+            "event_name": "Transfer",
+            "raw": {"attributes": {
+                "from": owner,
+                "to": counterparty,
+                "amount": 13_566_000_000_000,
+            }},
+        }
+        event = address_event_record(
+            raw,
+            network="finney",
+            watched_addresses=[
+                {"address": counterparty, "label": "自动入库对手方", "library_book": "SN51 lium.io", "created_at": "2026-11-18T04:15:00Z"},
+                {"address": owner, "label": "SN51 项目方", "library_book": "SN51 lium.io", "created_at": "2026-11-17T07:00:00Z"},
+            ],
+            block_hash="0x" + "a" * 64,
+            height=9530960,
+            spec_version=491,
+            event_at="2026-11-18T04:14:24.000Z",
+        )
+        self.assertEqual(event["details"]["primary_address"], owner)
+        self.assertEqual(event["summary"], "全链 · 13566 TAO · 5FqA…sThe")
+        self.assertIn("【SN51 项目方】", event["details"]["display_tags"])
 
     def test_address_monitor_masks_addresses_and_builds_concise_events(self) -> None:
         watched = [{

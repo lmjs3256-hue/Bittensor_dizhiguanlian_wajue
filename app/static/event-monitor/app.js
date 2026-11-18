@@ -2133,6 +2133,31 @@ async function renderRecordsView() {
   applyFilter();
 }
 
+function subnetBookNumber(name) {
+  const match = String(name || "").trim().match(/^SN\s*(\d+)/i);
+  return match ? Number(match[1]) : null;
+}
+
+function compareBookNames(left, right) {
+  const leftNumber = subnetBookNumber(left);
+  const rightNumber = subnetBookNumber(right);
+  if (leftNumber != null && rightNumber != null && leftNumber !== rightNumber) {
+    return leftNumber - rightNumber;
+  }
+  if (leftNumber != null && rightNumber == null) return -1;
+  if (leftNumber == null && rightNumber != null) return 1;
+  return String(left || "").localeCompare(String(right || ""), "zh-CN", { numeric: true });
+}
+
+function bookNameMatches(name, needle) {
+  const text = String(name || "").toLocaleLowerCase("zh-CN");
+  if (!needle) return false;
+  if (text.includes(needle)) return true;
+  const compact = String(needle).trim().replace(/^sn/i, "").replace(/\s+/g, "");
+  const number = subnetBookNumber(name);
+  return /^\d+$/.test(compact) && number != null && number === Number(compact);
+}
+
 async function renderAddressesView() {
   const intro = infoElement(
     "p",
@@ -2160,6 +2185,9 @@ async function renderAddressesView() {
 
   const load = async () => {
     const requestVersion = ++loadVersion;
+    try {
+      await request("/api/event-monitor/watch/reconcile", { method: "POST" });
+    } catch {}
     const data = await request("/event-api/addresses");
     if (requestVersion !== loadVersion) return;
     state.watchedAddresses = data.addresses || [];
@@ -2176,7 +2204,7 @@ async function renderAddressesView() {
       groups.get(name).push(item);
     }
     [...groups.entries()]
-      .sort(([left], [right]) => left.localeCompare(right, "zh-CN"))
+      .sort(([left], [right]) => compareBookNames(left, right))
       .forEach(([name, items]) => {
         const group = infoElement("details", "monitor-book-group");
         group.open = true;
@@ -2221,8 +2249,8 @@ async function openSharedAddressPicker(reload) {
   const toolbar = infoElement("div", "shared-library-toolbar");
   const search = infoElement("input");
   search.type = "search";
-  search.placeholder = "优先搜索地址库名，或输入地址后 4 位反查所属库";
-  search.setAttribute("aria-label", "搜索地址库名或地址后四位");
+  search.placeholder = "输入 SN 编号、地址库名，或地址后 4 位";
+  search.setAttribute("aria-label", "按 SN 编号、地址库名或地址后四位搜索");
   const selectVisible = infoElement("button", "button ghost", "全选当前地址库");
   selectVisible.type = "button";
   const clear = infoElement("button", "button ghost", "清空选择");
@@ -2263,14 +2291,14 @@ async function openSharedAddressPicker(reload) {
     if (!needle) return groups;
     return groups
       .map((group) => {
-        const nameMatch = group.name.toLocaleLowerCase("zh-CN").includes(needle);
+        const nameMatch = bookNameMatches(group.name, needle);
         const matchedItems = group.items.filter((item) => addressMatches(item, needle));
         return { ...group, nameMatch, matchedItems, matched: nameMatch || matchedItems.length > 0 };
       })
       .filter((group) => group.matched)
       .sort((left, right) => {
         if (left.nameMatch !== right.nameMatch) return left.nameMatch ? -1 : 1;
-        return left.name.localeCompare(right.name, "zh-CN");
+        return compareBookNames(left.name, right.name);
       });
   };
   const groupState = (group) => {
@@ -2302,7 +2330,7 @@ async function openSharedAddressPicker(reload) {
     }
     if (!calls.length) {
       list.append(infoElement("p", "address-empty", groups.length
-        ? "没有匹配的地址库。可输入地址库名，或输入地址后 4 位反查。"
+        ? "没有匹配的地址库。可输入 SN 编号、地址库名，或输入地址后 4 位反查。"
         : "还没有命名地址库。请先在左侧“已知地址库”建立地址库，再回来选择。"));
       updateConfirm();
       return;
@@ -2447,7 +2475,7 @@ async function openSharedAddressPicker(reload) {
     }
     groups = [...byBook.entries()]
       .map(([name, bookItems]) => ({ name, items: bookItems }))
-      .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
+      .sort((left, right) => compareBookNames(left.name, right.name));
     render();
   } catch (cause) {
     summary.textContent = "读取失败";

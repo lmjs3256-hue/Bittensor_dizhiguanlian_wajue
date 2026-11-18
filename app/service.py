@@ -3915,7 +3915,15 @@ class LinkService:
             for name in names
         ]
         items.sort(key=lambda item: (item["created_at"] or "", item["name"]), reverse=True)
-        return items
+        project_items = [item for item in items if item["name"] in project_books]
+        other_items = [item for item in items if item["name"] not in project_books]
+
+        def project_order(item: dict[str, Any]) -> tuple[int, str]:
+            match = re.match(r"^SN\s*(\d+)\b", str(item.get("name") or ""), re.IGNORECASE)
+            return (int(match.group(1)) if match else 10**9, str(item.get("name") or ""))
+
+        project_items.sort(key=project_order)
+        return [*project_items, *other_items]
 
     def adopt_note_only(self, ids: list[int], book: str) -> dict[str, Any]:
         """把「仅备注」的地址归入地址库（已有库或新建）。

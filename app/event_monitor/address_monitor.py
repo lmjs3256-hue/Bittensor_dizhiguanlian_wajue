@@ -264,6 +264,13 @@ def address_event_record(
         ]
         if not matched:
             return None
+    # When both the project owner and an ordinary auto-imported counterparty
+    # are watched, show the project owner as the primary address. Otherwise the
+    # faster newly-added counterparty row can hide who actually triggered the event.
+    matched.sort(key=lambda item: (
+        0 if project_owner_tags([item]) else 1,
+        str(item.get("created_at") or ""),
+    ))
     owner_tags = project_owner_tags(matched)
     primary = matched[0]
     primary_address = str(primary.get("address") or "").strip()

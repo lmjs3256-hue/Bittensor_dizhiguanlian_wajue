@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import threading
 import time
@@ -34,7 +35,7 @@ from .inputs import InputError
 from .jobs import RelationJobManager
 from .relation_config import DEFAULT_RELATION_DEPTH, MAX_RELATION_DEPTH
 from .validation import is_valid_ss58
-from .service import LinkService, ScanBusyError
+from .service import LinkService, SUBNET_OWNER_SOURCE, ScanBusyError
 from .shared_chain import (
     configure_shared_chain,
     reset_shared_chain,
@@ -74,6 +75,7 @@ BUILTIN_ADDRESSES_ENABLED = True
 BUILTIN_STARTUP_RESULT: dict[str, Any] | None = None
 DEFAULT_SUBNET_WATCH_RESULT: dict[str, Any] | None = None
 EVENT_WATCH_AUTO_SYNC_RESULT: dict[str, Any] | None = None
+EVENT_WATCH_RECONCILE_RESULT: dict[str, Any] | None = None
 # 地址库自动入库的调度间隔：每 30 秒拿本地索引的新块撞一次地址库。
 # 不消耗任何 Taostats 额度（数据来自 RPC 直采的 transfers 表）。
 # 与 watch.py 的 SWEEP_TICK_SECONDS 同源：前端「距下一轮」倒计时依赖这个值，
@@ -135,6 +137,69 @@ def _seed_default_event_subnet_watch() -> dict[str, Any] | None:
         return DEFAULT_SUBNET_WATCH_RESULT
 
 
+def _reconcile_event_monitor_watch() -> dict[str, Any] | None:
+    """移除已解散地址库的旧监听地址，并把迁移地址更新到当前库名。"""
+
+    global EVENT_WATCH_RECONCILE_RESULT
+    if not EVENT_MONITOR.running or EVENT_MONITOR.context is None:
+        return None
+    try:
+        shared_items = SERVICE.library()
+        shared_by_address = {
+            str(item.get("address") or "").strip(): item
+            for item in shared_items
+            if str(item.get("address") or "").strip()
+        }
+        current_books = {
+            str(item.get("book") or "").strip()
+            for item in shared_items
+            if str(item.get("book") or "").strip()
+        }
+        store = EVENT_MONITOR.context.store
+        watched = store.list_watched_addresses("finney")
+        removed = 0
+        updated = 0
+        unchanged = 0
+        for row in watched:
+            watched_book = str(row.get("library_book") or "").strip()
+            if not watched_book:
+                continue
+            address = str(row.get("address") or "").strip()
+            current = shared_by_address.get(address)
+            current_book = str((current or {}).get("book") or "").strip()
+            if current is not None and current_book in current_books:
+                label = str(current.get("label") or current_book)[:120]
+                if current_book != watched_book or label != str(row.get("label") or ""):
+                    changed = store.update_watched_address(
+                        int(row["address_id"]),
+                        label=label,
+                        library_book=current_book,
+                    )
+                    if changed is not None:
+                        updated += 1
+                else:
+                    unchanged += 1
+                continue
+            if store.delete_watched_address(int(row["address_id"])):
+                removed += 1
+        EVENT_WATCH_RECONCILE_RESULT = {
+            "removed": removed,
+            "updated": updated,
+            "unchanged": unchanged,
+            "checked": len(watched),
+        }
+        if removed or updated:
+            print(
+                f"[event-monitor] 地址库对账：移除旧监听 {removed} 个、更新归属 {updated} 个",
+                file=sys.stderr,
+            )
+        return EVENT_WATCH_RECONCILE_RESULT
+    except Exception as exc:  # noqa: BLE001 - 对账失败不应影响主服务
+        EVENT_WATCH_RECONCILE_RESULT = {"error": str(exc)}
+        print(f"[event-monitor] 地址库对账失败：{exc}", file=sys.stderr)
+        return EVENT_WATCH_RECONCILE_RESULT
+
+
 async def _auto_sync_subnet_owners() -> None:
     """每周检查一次链上子网项目方；失败只记录状态，不影响服务启动。"""
 
@@ -144,6 +209,7 @@ async def _auto_sync_subnet_owners() -> None:
             min_interval_minutes=SUBNET_OWNER_SYNC_INTERVAL_SECONDS // 60,
         )
         await asyncio.to_thread(_seed_default_event_subnet_watch)
+        await asyncio.to_thread(_reconcile_event_monitor_watch)
     except Exception as exc:  # noqa: BLE001 - 后台同步失败不影响服务
         print(f"[subnet-owner-sync] 子网项目方同步失败：{exc}", file=sys.stderr)
 
@@ -220,6 +286,7 @@ async def lifespan(_app: FastAPI):
                 file=sys.stderr,
             )
             _seed_default_event_subnet_watch()
+            _reconcile_event_monitor_watch()
         except Exception as exc:  # noqa: BLE001 - 事件模块失败不应拖垮地址工具
             print(f"[event-monitor] 事件监控启动失败：{exc}", file=sys.stderr)
     else:
@@ -481,6 +548,7 @@ async def _watch_scheduler() -> None:
             async with WATCH_SWEEP_LOCK:
                 result = await asyncio.to_thread(WATCH.sweep_local_index)
                 await asyncio.to_thread(_sync_auto_import_rows_to_event, result)
+                await asyncio.to_thread(_reconcile_event_monitor_watch)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 流水线失败不能拖垮服务
@@ -877,6 +945,18 @@ def reset_event_monitor_chain():
     }
 
 
+@app.post("/api/event-monitor/watch/reconcile")
+def reconcile_event_monitor_watch():
+    """按当前共享地址库清理已解散库的旧监听地址并修正迁移归属。"""
+
+    result = _reconcile_event_monitor_watch()
+    if result is None:
+        raise HTTPException(503, "事件监控尚未就绪，请稍后重试")
+    if result.get("error"):
+        raise HTTPException(500, result["error"])
+    return {"ok": True, **result}
+
+
 @app.get("/api/event-monitor/runtime")
 def event_monitor_runtime_status():
     """合并服务里事件采集线程和内部端口的状态，便于排障。"""
@@ -896,6 +976,22 @@ def event_monitor_shared_library(
 
     items = svc.library()
     books = [item for item in items if str(item.get("book") or "").strip()]
+    project_books = {
+        str(item.get("book") or "").strip()
+        for item in books
+        if item.get("source") == SUBNET_OWNER_SOURCE
+    }
+
+    def book_order(item: dict[str, Any]) -> tuple[int, int, str]:
+        name = str(item.get("book") or "").strip()
+        match = re.match(r"^SN\s*(\d+)\b", name, re.IGNORECASE)
+        if name in project_books and match:
+            return (0, int(match.group(1)), name)
+        if name in project_books:
+            return (0, 10**9, name)
+        return (1, 0, name)
+
+    books.sort(key=book_order)
     return {
         "items": books,
         # 未归入命名地址库的单条资料不直接作为监控对象；用户应先建立地址库。
@@ -1089,6 +1185,7 @@ def health(svc: Annotated[LinkService, Depends(service)]):
         "shared_chain": shared_chain_stats(),
         "default_subnet_watch": DEFAULT_SUBNET_WATCH_RESULT,
         "event_watch_auto_sync": EVENT_WATCH_AUTO_SYNC_RESULT,
+        "event_watch_reconcile": EVENT_WATCH_RECONCILE_RESULT,
     }
 
 
@@ -1535,7 +1632,9 @@ def dissolve_address_book(name: str, svc: Annotated[LinkService, Depends(service
     """解散地址库：库名和库里的地址一起删除（可用「撤回上次导入」恢复）。"""
 
     try:
-        return svc.dissolve_address_book(name)
+        result = svc.dissolve_address_book(name)
+        _reconcile_event_monitor_watch()
+        return result
     except InputError as exc:
         raise HTTPException(404, str(exc)) from exc
 

@@ -11,6 +11,7 @@ const state = {
   lastResult: null,
   library: [],
   books: [],
+  bookSearch: "",
   categories: [],
   bookFilter: "",
   librarySearch: "",
@@ -3257,13 +3258,26 @@ function bookCard(book) {
   </article>`;
 }
 
+function bookMatchesQuickSearch(book, query) {
+  const needle = String(query || "").trim().toLocaleLowerCase("zh-CN");
+  if (!needle) return true;
+  const name = String(book?.name || "").toLocaleLowerCase("zh-CN");
+  if (name.includes(needle)) return true;
+  const match = name.match(/^sn\s*(\d+)/i);
+  const compact = needle.replace(/^sn/i, "").replace(/\s+/g, "");
+  return /^\d+$/.test(compact) && match && Number(match[1]) === Number(compact);
+}
+
 function renderBooks() {
   const list = $("#book-list");
   if (!list) return;
-  $("#book-count").textContent = `${state.books.length} 个`;
-  list.innerHTML = state.books.length
-    ? state.books.map(bookCard).join("")
-    : '<div class="placeholder">还没有自建地址库。完成一次关联查询后，在结果区填写库名即可创建。</div>';
+  const books = state.books.filter((book) => bookMatchesQuickSearch(book, state.bookSearch));
+  $("#book-count").textContent = state.bookSearch
+    ? `${books.length} / ${state.books.length} 个`
+    : `${state.books.length} 个`;
+  list.innerHTML = books.length
+    ? books.map(bookCard).join("")
+    : `<div class="placeholder">${state.books.length ? "没有匹配的地址库，可输入 SN 编号或地址库名称。" : "还没有自建地址库。完成一次关联查询后，在结果区填写库名即可创建。"}</div>`;
 }
 
 function renderBookFilter() {
@@ -6428,6 +6442,10 @@ $("#new-category-name").addEventListener("keydown", (event) => {
 });
 $("#book-name").addEventListener("keydown", (event) => {
   if (event.key === "Enter") createBookFromResult();
+});
+$("#book-search").addEventListener("input", (event) => {
+  state.bookSearch = event.target.value;
+  renderBooks();
 });
 $("#book-filter").addEventListener("change", (event) => selectBook(event.target.value));
 $("#library-role-filter").addEventListener("change", (event) => selectLibraryRole(event.target.value));

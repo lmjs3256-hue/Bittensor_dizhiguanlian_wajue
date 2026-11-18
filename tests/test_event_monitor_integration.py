@@ -61,7 +61,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.7" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.8" in page.text
 
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
@@ -75,7 +75,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.7"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.8"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
@@ -143,6 +143,39 @@ def test_event_monitor_chain_reset_endpoint(merged_client, monkeypatch):
     assert body["ok"] is True
     assert body["collector"]["state"] == "connecting"
     assert body["shared_chain"]["resets"] == 1
+
+
+def test_event_watch_reconcile_removes_dissolved_books_and_updates_moved_address(merged_client):
+    client, _ = merged_client
+    create_book(client, "SN51 lium.io", [ADDRESS])
+    created = client.post(
+        "/event-api/addresses",
+        json={
+            "network": "finney",
+            "addresses": [ADDRESS, ADDRESS_TWO],
+            "label": "SN51项目方",
+            "library_book": "SN51项目方",
+            "min_transfer_tao": "0",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["created"] == 2
+
+    response = client.post("/api/event-monitor/watch/reconcile")
+    assert response.status_code == 200, response.text
+    assert response.json()["removed"] == 1
+    assert response.json()["updated"] == 1
+
+    watched = client.get("/event-api/addresses").json()["addresses"]
+    assert [(item["address"], item["library_book"]) for item in watched] == [
+        (ADDRESS, "SN51 lium.io"),
+    ]
+    with sqlite3.connect(main_module.EVENT_MONITOR.settings.database) as db:
+        excluded = db.execute(
+            "SELECT COUNT(*) FROM watched_address_exclusions WHERE address=?",
+            (ADDRESS_TWO,),
+        ).fetchone()[0]
+    assert excluded == 1
 
 
 def test_shared_library_does_not_auto_populate_monitor_list(merged_client):
@@ -309,7 +342,14 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "openManualNoteEditor" in app_js
     assert "chain-reset-button" in app_js
     assert "/api/event-monitor/chain/reset" in app_js
+    assert "compareBookNames" in app_js
+    assert "bookNameMatches" in app_js
     assert "address-${direction}" in app_js
+    main_app_js = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    assert "bookMatchesQuickSearch" in main_app_js
+    assert 'id="book-search"' in (Path(__file__).resolve().parents[1] / "app" / "templates" / "index.html").read_text(encoding="utf-8")
     css = (Path(__file__).resolve().parents[1] / "app" / "static" / "event-monitor" / "styles.css").read_text(
         encoding="utf-8"
     )
