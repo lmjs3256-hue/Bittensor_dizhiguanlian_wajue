@@ -64,6 +64,58 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.get_global_transfer_threshold(), 7.25)
         self.assertEqual(self.store.set_global_transfer_threshold(0), 0.0)
 
+    def test_global_transfer_threshold_overrides_per_address_values(self) -> None:
+        self.store.add_watched_address(
+            "finney",
+            "5GlobalThresholdAddressABCDEFGHIJKLMNOPQRSTUV",
+            "SN51 lium.io",
+            min_transfer_tao=0.5,
+            library_book="SN51 lium.io",
+        )
+        self.store.set_global_transfer_threshold(5.0)
+        watched = self.store.watched_addresses_with_global_threshold(
+            "finney", enabled_only=True,
+        )
+        self.assertEqual(watched[0]["min_transfer_tao"], 5.0)
+
+    def test_event_stream_hides_historical_dust_with_global_threshold(self) -> None:
+        dust = make_event("e" * 64, height=21, netuid=None)
+        dust.update({
+            "event_type": "普通转账",
+            "event_name": "Balances.Transfer",
+            "source": "address",
+            "summary": "全链 · 1.00 TAO · 5Aaa…1111 → 5Bbb…2222",
+            "details": {"amount_tao": "1.00"},
+        })
+        accepted = make_event("f" * 64, height=22, netuid=None)
+        accepted.update({
+            "event_type": "普通转账",
+            "event_name": "Balances.Transfer",
+            "source": "address",
+            "summary": "全链 · 5.00 TAO · 5Aaa…1111 → 5Bbb…2222",
+            "details": {"amount_tao": "5.00"},
+        })
+        stake = make_event("1" * 64, height=23, netuid=51)
+        stake.update({
+            "event_type": "解质押",
+            "event_name": "SubtensorModule.StakeRemoved",
+            "source": "address",
+            "summary": "SN51 · 1.00 TAO · 5Aaa…1111",
+            "details": {"tao_amount": "1.00"},
+        })
+        for event in (dust, accepted, stake):
+            self.store.create_event(event)
+
+        visible = self.store.list_events({"network": "finney"})
+        self.assertEqual(
+            {event["event_id"] for event in visible},
+            {accepted["event_id"], stake["event_id"]},
+        )
+        self.assertEqual(self.store.count_events({"network": "finney"}), 2)
+
+        self.store.set_global_transfer_threshold(0)
+        self.assertEqual(self.store.count_events({"network": "finney"}), 3)
+
     def test_old_watched_address_schema_gains_manual_note_column(self) -> None:
         path = Path(self.temp.name) / "old-schema.db"
         db = sqlite3.connect(path)
@@ -1427,7 +1479,7 @@ class ServerTests(unittest.TestCase):
             )
             context = AppContext(
                 store=store, hub=EventHub(), status=WorkerStatus(),
-                static_dir=root / "app" / "event_monitor" / "static", product_info={"product": {"version": "0.2.0"}},
+                static_dir=root / "app" / "static" / "event-monitor", product_info={"product": {"version": "0.2.0"}},
                 simulation_signals=load_simulation_signals(
                     root / "app" / "event_monitor" / "config" / "event_rules.json"
                 ),

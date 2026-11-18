@@ -23,7 +23,7 @@ from .storage import Store
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = PACKAGE_ROOT / "config"
-STATIC_DIR = PACKAGE_ROOT / "static"
+STATIC_DIR = PACKAGE_ROOT.parent / "static" / "event-monitor"
 
 
 @dataclass(frozen=True)

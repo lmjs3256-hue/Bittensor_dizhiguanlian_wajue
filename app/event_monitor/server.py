@@ -988,7 +988,9 @@ class MonitorHandler(SimpleHTTPRequestHandler):
 
     def _simulate_address_event(self, body: dict[str, Any], signal: dict[str, Any]) -> None:
         network = str(body.get("network") or "finney")
-        watched = self.server.context.store.list_watched_addresses(network, enabled_only=True)
+        watched = self.server.context.store.watched_addresses_with_global_threshold(
+            network, enabled_only=True
+        )
         try:
             address_id = int(body.get("address_id"))
         except (TypeError, ValueError) as exc:
@@ -1003,7 +1005,12 @@ class MonitorHandler(SimpleHTTPRequestHandler):
         counterparty = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
         netuid: int | None = None
         if event_name == "Transfer":
-            attributes = [watched_address, counterparty, 1_000_000_000]
+            threshold_tao = Decimal(str(selected.get("min_transfer_tao") or 0))
+            simulated_rao = max(
+                1_000_000_000,
+                int(threshold_tao * Decimal(1_000_000_000)),
+            )
+            attributes = [watched_address, counterparty, simulated_rao]
         elif event_name in {"StakeAdded", "StakeRemoved"}:
             try:
                 netuid = int(body.get("netuid"))

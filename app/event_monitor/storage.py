@@ -53,7 +53,9 @@ def _event_summary_with_subnet_prefix(
     return f"{marker} · {text}".strip()
 
 
-def _event_filter_clause(filters: dict[str, Any]) -> tuple[str, list[Any]]:
+def _event_filter_clause(
+    filters: dict[str, Any], *, address_transfer_threshold_tao: float = 0.0,
+) -> tuple[str, list[Any]]:
     where: list[str] = []
     params: list[Any] = []
     for name in (
@@ -76,6 +78,14 @@ def _event_filter_clause(filters: dict[str, Any]) -> tuple[str, list[Any]]:
             "e.event_type LIKE ? OR CAST(e.netuid AS TEXT) LIKE ?)"
         )
         params.extend([needle, needle, needle, needle])
+    if address_transfer_threshold_tao > 0:
+        where.append(
+            "NOT (e.source='address' AND e.event_type='普通转账' AND "
+            "COALESCE("
+            "CAST(json_extract(e.details_json,'$.amount_tao') AS REAL),"
+            "CAST(json_extract(e.details_json,'$.tao_amount') AS REAL),0) < ?)"
+        )
+        params.append(float(address_transfer_threshold_tao))
     return (" WHERE " + " AND ".join(where) if where else ""), params
 
 
@@ -577,7 +587,10 @@ class Store:
         return changed
 
     def list_events(self, filters: dict[str, Any], *, ascending: bool = False, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-        clause, params = _event_filter_clause(filters)
+        clause, params = _event_filter_clause(
+            filters,
+            address_transfer_threshold_tao=self.get_global_transfer_threshold(),
+        )
         direction = "ASC" if ascending else "DESC"
         with self.connect() as db:
             rows = db.execute(f"""SELECT e.*,COALESCE(p.priority_level,0) AS priority_level,
@@ -618,7 +631,10 @@ class Store:
             return {int(row["netuid"]): dict(row) for row in rows}
 
     def count_events(self, filters: dict[str, Any]) -> int:
-        clause, params = _event_filter_clause(filters)
+        clause, params = _event_filter_clause(
+            filters,
+            address_transfer_threshold_tao=self.get_global_transfer_threshold(),
+        )
         with self.connect() as db:
             row = db.execute(
                 f"SELECT COUNT(*) AS total FROM events e{clause}",
@@ -1206,6 +1222,16 @@ class Store:
             {"min_transfer_tao": threshold},
         )
         return threshold
+
+    def watched_addresses_with_global_threshold(
+        self, network: str, *, enabled_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return watch rows with the one global transfer threshold applied."""
+        threshold = self.get_global_transfer_threshold()
+        return [
+            {**item, "min_transfer_tao": threshold}
+            for item in self.list_watched_addresses(network, enabled_only=enabled_only)
+        ]
 
     def list_watched_addresses(self, network: str,
                                *, enabled_only: bool = False) -> list[dict[str, Any]]:

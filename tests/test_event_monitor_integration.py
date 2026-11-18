@@ -61,8 +61,14 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.9" in page.text
+    assert "/static/event-monitor/styles.css?v=1.0.10" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.10" in page.text
+    assert main_module.EVENT_MONITOR.settings.static_dir == main_module.EVENT_MONITOR_STATIC
 
+    floating = client.get("/event-monitor/floating?mode=window")
+    assert floating.status_code == 200
+    assert "/static/event-monitor/floating.css?v=1.0.10" in floating.text
+    assert "/static/event-monitor/floating.js?v=1.0.10" in floating.text
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
     assert client.get("/event-monitor/floating?mode=window").status_code == 200
@@ -75,7 +81,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.9"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.10"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
@@ -160,6 +166,40 @@ def test_global_address_transfer_filter_defaults_to_five(merged_client):
     assert updated.status_code == 200
     assert updated.json()["min_transfer_tao"] == 6.5
     assert client.get("/event-api/settings/address-filter").json()["min_transfer_tao"] == 6.5
+
+
+def test_address_transfer_simulation_uses_global_threshold(merged_client):
+    client, _ = merged_client
+    created = client.post(
+        "/event-api/addresses",
+        json={
+            "network": "finney",
+            "addresses": [ADDRESS],
+            "label": "SN51 lium.io",
+            "library_book": "SN51 lium.io",
+            "min_transfer_tao": "0",
+        },
+    )
+    assert created.status_code == 201, created.text
+    address_id = created.json()["address"]["address_id"]
+    saved = client.put(
+        "/event-api/settings/address-filter",
+        json={"min_transfer_tao": "6.5"},
+    )
+    assert saved.status_code == 200, saved.text
+
+    simulated = client.post(
+        "/event-api/simulation/events",
+        json={
+            "netuid": 51,
+            "signal_id": "address_transfer",
+            "address_id": address_id,
+        },
+    )
+    assert simulated.status_code == 202, simulated.text
+    event = simulated.json()["event"]
+    assert float(event["details"]["amount_tao"]) == 6.5
+    assert "6.50 TAO" in event["summary"]
 
 
 def test_event_watch_reconcile_removes_dissolved_books_and_updates_moved_address(merged_client):
@@ -368,6 +408,9 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "刷新同步" in app_js
     assert "global-transfer-filter" in app_js
     assert "/event-api/settings/address-filter" in app_js
+    assert "official-owner-address" in app_js
+    assert "【备注】" in app_js
+    assert "【官方】" not in app_js
     assert "address-${direction}" in app_js
     main_app_js = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(
         encoding="utf-8"
@@ -395,6 +438,7 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "data-copy-event-id" in floating_js
     assert "official-owner-address" in floating_js
     assert "【备注】" in floating_js
+    assert "【官方】" not in floating_js
     assert "openNoteEditor" in floating_js
     assert "/event-api/addresses" in floating_js
     assert "manual_note" in floating_js

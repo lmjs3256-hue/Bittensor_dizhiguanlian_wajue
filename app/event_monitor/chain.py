@@ -701,14 +701,9 @@ class ChainCollector:
         events = self._block_events(block_hash, substrate)
         block_at = self._block_time(block_hash, substrate)
         disabled_netuids = self.store.disabled_netuids(self.network)
-        watched_addresses = self.store.list_watched_addresses(
+        watched_addresses = self.store.watched_addresses_with_global_threshold(
             self.network, enabled_only=True
         )
-        global_min_transfer_tao = self.store.get_global_transfer_threshold()
-        watched_addresses = [
-            {**item, "min_transfer_tao": global_min_transfer_tao}
-            for item in watched_addresses
-        ]
         raws, mapped = self._map_block_events(
             events,
             watched_addresses=watched_addresses,
