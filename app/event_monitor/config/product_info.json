@@ -1,11 +1,21 @@
 {
   "product": {
     "name": "Wallet Link · 事件监控",
-    "version": "1.0.17",
+    "version": "1.0.18",
     "released_at": "2026-11-19",
     "status": "合并稳定版"
   },
   "releases": [
+    {
+      "version": "1.0.18",
+      "date": "2026-11-19",
+      "title": "子网身份名称事件同步",
+      "changes": [
+        "SN109 当前链上 SubnetIdentitiesV3 为 null，暂无正式名称可同步。",
+        "SubnetIdentitySet 事件将立即触发 Owner/名称同步和事件监控恢复。",
+        "名称变化后自动更新对应 SNx 项目方地址库。"
+      ]
+    },
     {
       "version": "1.0.17",
       "date": "2026-11-19",

@@ -1,5 +1,24 @@
 # 变更记录
 
+## 1.0.18 · 子网身份名称事件同步 · 2026-11-19
+
+### 排查事实
+
+- 直接查询链上 `SubnetIdentitiesV3(109)` 返回 `null`。
+- SN109 重新注册后只观察到旧的 `SubnetIdentityRemoved`，尚无新的 `SubnetIdentitySet`，因此当前没有可同步的新名称。
+- 当前 `SN109 SN109` 是按 NETUID 生成的兜底名称，不代表链上已经发布正式名称。
+
+### 修复
+
+- 检测到 `SubnetIdentitySet` 事件后立即触发项目方/名称同步，不再等待每周同步或手动刷新。
+- 名称变化时自动更新对应 `SNx 名称` 地址库，并恢复已监控 NETUID 的新 Owner 监控。
+- 子网身份设置事件不受普通事件禁用开关影响。
+
+### 测试
+
+- 新增 `SubnetIdentitySet` 立即同步和事件监控恢复测试。
+- 全量 **825 passed**；Python 编译、JavaScript 语法、JSON 与 `pip check` 通过。
+
 ## 1.0.17 · SN109 新 Owner 与手动同步联动 · 2026-11-19
 
 ### 修复

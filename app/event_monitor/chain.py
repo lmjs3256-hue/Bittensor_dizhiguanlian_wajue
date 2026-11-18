@@ -798,7 +798,9 @@ class ChainCollector:
                 continue
             normalized = self._event_record(raw, block_hash, height, spec_version, event_at)
             normalized_rule = str((normalized or {}).get("details", {}).get("rule_id") or "")
-            lifecycle_event = normalized_rule in {"network_registered", "network_removed"}
+            lifecycle_event = normalized_rule in {
+                "network_registered", "network_removed", "subnet_identity_set",
+            }
             if normalized and (
                 lifecycle_event
                 or normalized.get("netuid") is None
@@ -874,7 +876,7 @@ class ChainCollector:
                     self.network, int(netuid)
                 )
             if (
-                rule_id in {"network_registered", "network_removed"}
+                rule_id in {"network_registered", "network_removed", "subnet_identity_set"}
                 and netuid is not None
                 and callable(self.subnet_lifecycle_callback)
             ):

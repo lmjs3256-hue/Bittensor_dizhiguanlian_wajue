@@ -301,14 +301,14 @@ def _process_subnet_lifecycle_event(item: dict[str, Any]) -> dict[str, Any]:
         result = SERVICE.archive_subnet_owner_library(
             netuid, reason="network_removed_event",
         )
-    elif rule_id == "network_registered":
+    elif rule_id in {"network_registered", "subnet_identity_set"}:
         result = SERVICE.sync_subnet_owner_addresses()
         with _SUBNET_LIFECYCLE_LOCK:
             restore_watch = _SUBNET_LIFECYCLE_WATCH_STATE.pop(netuid, False) or watched_before
     else:
         raise ValueError(f"unsupported subnet lifecycle event: {rule_id}")
     reconcile = _sync_event_monitor_library_state()
-    if rule_id == "network_registered" and restore_watch:
+    if rule_id in {"network_registered", "subnet_identity_set"} and restore_watch:
         result["watch_restored"] = _ensure_subnet_owner_watched(netuid)
     else:
         result["watch_restored"] = 0

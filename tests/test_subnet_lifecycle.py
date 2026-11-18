@@ -33,6 +33,28 @@ def test_removed_event_archives_library_and_reconciles_watch(monkeypatch):
     assert main_module._SUBNET_LIFECYCLE_WATCH_STATE[109] is True
 
 
+def test_identity_set_event_syncs_owner_reconciles_and_restores_watch(monkeypatch):
+    sync = Mock(return_value={"inserted": 0, "updated": 1, "restored": 0})
+    reconcile = Mock(return_value={"removed": 0, "added": 1})
+    ensure = Mock(return_value=1)
+    monkeypatch.setattr(main_module.SERVICE, "sync_subnet_owner_addresses", sync)
+    monkeypatch.setattr(main_module, "_sync_event_monitor_library_state", reconcile)
+    monkeypatch.setattr(main_module, "_ensure_subnet_owner_watched", ensure)
+    monkeypatch.setattr(main_module, "_subnet_has_watched_addresses", lambda _netuid: True)
+
+    result = main_module._process_subnet_lifecycle_event({
+        "rule_id": "subnet_identity_set",
+        "netuid": 109,
+        "event_id": "d" * 64,
+    })
+
+    sync.assert_called_once_with()
+    reconcile.assert_called_once_with()
+    ensure.assert_called_once_with(109)
+    assert result["event"] == "subnet_identity_set"
+    assert result["result"]["watch_restored"] == 1
+
+
 def test_registered_event_syncs_owner_reconciles_and_restores_watch(monkeypatch):
     sync = Mock(return_value={"inserted": 1, "updated": 0, "restored": 0})
     reconcile = Mock(return_value={"removed": 1, "added": 1})
