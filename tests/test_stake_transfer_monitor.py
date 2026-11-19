@@ -119,7 +119,7 @@ def test_stake_removed_stays_sell_and_derives_destination_buy(tmp_path, monkeypa
     buy_event = address_event_record(
         derived_raw,
         network="finney",
-        watched_addresses=[_watched_destination()],
+        watched_addresses=[*_watched_owner(), _watched_destination()],
         block_hash=BLOCK_HASH,
         height=9534717,
         spec_version=491,
@@ -130,6 +130,7 @@ def test_stake_removed_stays_sell_and_derives_destination_buy(tmp_path, monkeypa
     assert buy_event["event_name"] == "SubtensorModule.StakeAdded"
     assert buy_event["details"]["address_action"] == "buy"
     assert buy_event["details"]["coldkey"] == DESTINATION
+    assert buy_event["details"]["primary_address"] == DESTINATION
     assert buy_event["details"]["stake_transfer_from"] == OWNER
     assert buy_event["summary"] == "SN54 · 4.67 TAO · 5G41…EABv"
     assert buy_event["event_id"] != source_event["event_id"]
@@ -172,6 +173,67 @@ def test_chain_mapping_emits_sell_and_buy_for_one_stake_removed(tmp_path, monkey
     assert sell["summary"] == "SN54 · 4.67 TAO · 5FUf…Defk"
     assert buy["summary"] == "SN54 · 4.67 TAO · 5G41…EABv"
     assert len(raws) == 1
+
+
+def test_chain_mapping_uses_extrinsic_destination_before_local_index(tmp_path, monkeypatch):
+    missing_wallet = tmp_path / "missing-wallet.db"
+    monkeypatch.setenv("WALLET_LINK_DB", str(missing_wallet))
+    root = Path(__file__).resolve().parents[1]
+    rules, _ = load_rules(root / "app" / "event_monitor" / "config" / "event_rules.json")
+    collector = ChainCollector(
+        url="unused", network="finney", store=object(), rules=rules,
+        publish=lambda *args: None, status=lambda *args: None,
+    )
+    raw_event = {
+        "phase": "ApplyExtrinsic",
+        "extrinsic_idx": 6,
+        "event_index": 7,
+        "module_id": "SubtensorModule",
+        "event_id": "StakeRemoved",
+        "attributes": [OWNER, HOTKEY, 4671597050, 1059145730702, 54, 0],
+    }
+    transfer_call = {
+        "extrinsic_hash": "0x" + "f" * 64,
+        "call": {
+            "call_module": "Proxy",
+            "call_function": "proxy",
+            "call_args": [
+                {"name": "real", "value": OWNER},
+                {
+                    "name": "call",
+                    "value": {
+                        "call_module": "SubtensorModule",
+                        "call_function": "transfer_stake",
+                        "call_args": [
+                            {"name": "destination_coldkey", "value": DESTINATION},
+                            {"name": "hotkey", "value": HOTKEY},
+                            {"name": "origin_netuid", "value": 54},
+                            {"name": "destination_netuid", "value": 54},
+                            {"name": "alpha_amount", "value": 1059145730702},
+                        ],
+                    },
+                },
+            ],
+        },
+    }
+    try:
+        _raws, mapped = collector._map_block_events(
+            [raw_event],
+            watched_addresses=[*_watched_owner(), _watched_destination()],
+            disabled_netuids=set(),
+            block_hash=BLOCK_HASH,
+            height=9534717,
+            spec_version=491,
+            event_at="2026-11-18T16:45:48Z",
+            extrinsics=[None, None, None, None, None, None, transfer_call],
+        )
+    finally:
+        collector.close()
+    address_events = [item for item in mapped if item["source"] == "address"]
+    assert len(address_events) == 2
+    buy = next(item for item in address_events if item["details"]["address_action"] == "buy")
+    assert buy["details"]["primary_address"] == DESTINATION
+    assert buy["summary"] == "SN54 · 4.67 TAO · 5G41…EABv"
 
 
 def test_reconcile_upgrades_existing_unstake_and_adds_destination_buy(tmp_path, monkeypatch):

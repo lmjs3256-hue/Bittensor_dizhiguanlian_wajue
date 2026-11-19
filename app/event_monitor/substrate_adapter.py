@@ -68,6 +68,12 @@ class AsyncSubstrateAdapter:
             **kwargs,
         )
 
+    def get_block(self, block_number: int) -> Any:
+        return self._gateway.get_block_sync(
+            block_number,
+            priority=PRIORITY_EVENT,
+        )
+
     def get_events(self, block_hash: str | None = None) -> Any:
         if not block_hash:
             raise ValueError("block_hash is required for shared get_events")

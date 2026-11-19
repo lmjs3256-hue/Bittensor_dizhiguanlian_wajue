@@ -753,6 +753,13 @@ class ChainCollector:
                 f"运行时元数据保存失败：{exc}"[:400],
             )
         events = self._block_events(block_hash, substrate)
+        extrinsics: list[Any] = []
+        if any(self._event_name(item, "event_name") == "StakeRemoved" for item in events):
+            try:
+                block = substrate.get_block(height)
+                extrinsics = list((block or {}).get("extrinsics") or [])
+            except Exception as exc:
+                LOG.warning("Could not load extrinsics for instant stake transfer: %s", exc)
         block_at = self._block_time(block_hash, substrate)
         disabled_netuids = self.store.disabled_netuids(self.network)
         watched_addresses = self.store.watched_addresses_with_global_threshold(
@@ -766,6 +773,7 @@ class ChainCollector:
             height=height,
             spec_version=spec_version,
             event_at=block_at,
+            extrinsics=extrinsics,
         )
         return {
             "height": height, "block_hash": block_hash, "parent_hash": parent_hash,
@@ -774,8 +782,10 @@ class ChainCollector:
 
     def _map_block_events(self, events: list[Any], *, watched_addresses: list[dict[str, Any]],
                           disabled_netuids: set[int], block_hash: str, height: int,
-                          spec_version: int | None, event_at: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+                          spec_version: int | None, event_at: str,
+                          extrinsics: list[Any] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         prepared: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+        transfer_fallbacks = self._stake_transfer_fallbacks(extrinsics or [])
         stake_extrinsics: set[int] = set()
         for fallback, item in enumerate(events):
             event_index = self._event_index(item, fallback)
@@ -809,7 +819,11 @@ class ChainCollector:
         for raw, address_event in list(prepared):
             if address_event is None or raw["event_name"] != "StakeRemoved":
                 continue
-            derived_raw = derived_stake_transfer_buy_raw(raw)
+            extrinsic_index = self._raw_extrinsic_index(raw)
+            fallback = transfer_fallbacks.get(extrinsic_index)
+            derived_raw = derived_stake_transfer_buy_raw(
+                raw, self._stake_transfer_fallback(raw, fallback),
+            )
             if derived_raw is None:
                 continue
             if self._raw_stake_added_signature(derived_raw) in actual_added:
@@ -869,6 +883,67 @@ class ChainCollector:
                     raws.append(raw)
                 mapped.append(normalized)
         return raws, mapped
+
+    @staticmethod
+    def _stake_transfer_fallbacks(extrinsics: list[Any]) -> dict[int, dict[str, Any]]:
+        found: dict[int, dict[str, Any]] = {}
+
+        def walk(call: Any, extrinsic_hash: str) -> None:
+            if not isinstance(call, dict):
+                return
+            if (
+                call.get("call_module") == "SubtensorModule"
+                and call.get("call_function") == "transfer_stake"
+            ):
+                args = {
+                    str(arg.get("name") or ""): arg.get("value")
+                    for arg in (call.get("call_args") or [])
+                    if isinstance(arg, dict)
+                }
+                if args.get("destination_coldkey"):
+                    found[current_index] = {
+                        "destination_coldkey": str(args.get("destination_coldkey") or ""),
+                        "hotkey": str(args.get("hotkey") or ""),
+                        "origin_netuid": args.get("origin_netuid"),
+                        "destination_netuid": args.get("destination_netuid"),
+                        "alpha_amount": args.get("alpha_amount"),
+                        "tx_hash": extrinsic_hash,
+                    }
+            walk(call.get("call"), extrinsic_hash)
+            for arg in call.get("call_args") or []:
+                if isinstance(arg, dict) and isinstance(arg.get("value"), dict):
+                    walk(arg["value"], extrinsic_hash)
+
+        for current_index, extrinsic in enumerate(extrinsics):
+            if not isinstance(extrinsic, dict):
+                continue
+            walk(extrinsic.get("call"), str(extrinsic.get("extrinsic_hash") or ""))
+        return found
+
+    @staticmethod
+    def _stake_transfer_fallback(
+        raw: dict[str, Any], fallback: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not fallback:
+            return None
+        values = (raw.get("raw") or {}).get("attributes") or {}
+        def field(name: str, index: int) -> Any:
+            if isinstance(values, dict):
+                return values.get(name, values.get(str(index), values.get(index)))
+            if isinstance(values, list) and 0 <= index < len(values):
+                return values[index]
+            return None
+        try:
+            return {
+                "from_address": str(field("coldkey", 0) or ""),
+                "to_address": str(fallback.get("destination_coldkey") or ""),
+                "amount_rao": int(field("tao_amount", 2)),
+                "netuid": int(fallback.get("origin_netuid")),
+                "hotkey": str(fallback.get("hotkey") or field("hotkey", 1) or ""),
+                "tx_hash": str(fallback.get("tx_hash") or ""),
+            }
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _raw_stake_added_signature(raw: dict[str, Any]) -> tuple[str, str, int, int] | None:

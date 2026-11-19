@@ -298,10 +298,15 @@ def address_event_record(
         ]
         if not matched:
             return None
-    # When both the project owner and an ordinary auto-imported counterparty
-    # are watched, show the project owner as the primary address. Otherwise the
-    # faster newly-added counterparty row can hide who actually triggered the event.
+    # For stake add/remove the coldkey is the wallet whose position changed.
+    # A project owner can also appear as the hotkey; it must not steal the buy
+    # event from the destination coldkey.
+    preferred_coldkey = (
+        str(coldkey or "").strip()
+        if event_name in {"StakeAdded", "StakeRemoved"} else ""
+    )
     matched.sort(key=lambda item: (
+        0 if preferred_coldkey and _same_account(item.get("address"), preferred_coldkey) else 1,
         0 if (
             item.get("address_role") == "project_owner"
             or project_owner_tags([item])
@@ -436,14 +441,16 @@ def _field(values: dict[str, Any], name: str, index: int) -> Any:
 
 
 
-def derived_stake_transfer_buy_raw(raw: dict[str, Any]) -> dict[str, Any] | None:
+def derived_stake_transfer_buy_raw(
+    raw: dict[str, Any], fallback_transfer: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Build a deterministic StakeAdded record for the destination wallet."""
 
     module = str(raw.get("module") or "")
     event_name = str(raw.get("event_name") or "")
     if module != "SubtensorModule" or event_name != "StakeRemoved":
         return None
-    transfer = _lookup_stake_transfer(raw)
+    transfer = _lookup_stake_transfer(raw) or fallback_transfer
     if transfer is None:
         return None
     destination = str(transfer.get("to_address") or "").strip()

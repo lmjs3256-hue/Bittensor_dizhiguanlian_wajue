@@ -723,7 +723,7 @@ def _reconcile_stake_transfer_events() -> int:
         if buy_event is None:
             continue
         buy_details = buy_event.get("details") or {}
-        duplicate = False
+        duplicate = None
         for candidate in recent:
             if candidate.get("block_number") != event.get("block_number"):
                 continue
@@ -735,9 +735,21 @@ def _reconcile_stake_transfer_events() -> int:
                 and int(details.get("netuid") if details.get("netuid") is not None else -1)
                 == int(buy_details.get("netuid") if buy_details.get("netuid") is not None else -2)
             ):
-                duplicate = True
+                duplicate = candidate
                 break
-        if duplicate:
+        if duplicate is not None:
+            patch = {}
+            if duplicate.get("summary") != buy_event.get("summary"):
+                patch["summary"] = buy_event.get("summary")
+            if duplicate.get("details") != buy_event.get("details"):
+                patch["details"] = buy_event.get("details")
+            if patch:
+                corrected = store.update_event(
+                    duplicate["event_id"], "stake_transfer_buy_repair", patch,
+                )
+                if corrected is not None:
+                    hub.publish(corrected, "stake_transfer_buy_repair")
+                    updated += 1
             continue
         stored, created = store.create_event(buy_event)
         if created:

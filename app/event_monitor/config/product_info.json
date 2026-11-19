@@ -1,11 +1,21 @@
 {
   "product": {
     "name": "Wallet Link · 事件监控",
-    "version": "1.0.21",
+    "version": "1.0.22",
     "released_at": "2026-11-19",
     "status": "合并稳定版"
   },
   "releases": [
+    {
+      "version": "1.0.22",
+      "date": "2026-11-19",
+      "title": "分钱包买入主地址与即时解析",
+      "changes": [
+        "质押买入主地址优先使用目标冷键，不再被项目方热键覆盖。",
+        "从同区块 transfer_stake extrinsic 即时解析目标地址，支持 Proxy 调用。",
+        "历史错误买入记录会自动原位修正。"
+      ]
+    },
     {
       "version": "1.0.21",
       "date": "2026-11-19",

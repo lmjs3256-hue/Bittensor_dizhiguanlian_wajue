@@ -264,6 +264,14 @@ class SharedChainGateway:
             lambda client: client.get_events(block_hash=block_hash),
         )
 
+    def get_block_sync(
+        self, block_number: int, *, priority: int = PRIORITY_EVENT,
+    ) -> Any:
+        return self.run_sync(
+            priority,
+            lambda client: client.get_block(block_number=block_number),
+        )
+
     def rpc_request_sync(
         self,
         method: str,
