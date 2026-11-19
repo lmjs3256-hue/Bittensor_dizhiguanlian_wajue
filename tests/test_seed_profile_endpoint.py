@@ -337,3 +337,11 @@ def test_frontend_keeps_successful_profile_when_scan_returns_placeholder():
     assert "querySeedProfileOnly" in js
     assert 'id="query-seed-profile"' in html
     assert "只查询当前输入地址的画像，不扫描关联" in html
+    assert '<div class="side-seed-head">' in html
+    assert html.index('id="query-seed-profile"') < html.index('class="side-seed-addr-row"')
+    css = (Path(__file__).resolve().parents[1] / "app" / "static" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+    assert ".side-seed-head" in css
+    assert "min-width:8.5em" in css
+    assert "overflow:visible" in css.split(".side-seed-addr {", 1)[1].split("}", 1)[0]

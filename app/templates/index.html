@@ -7,7 +7,7 @@
   <title>Bittensor 地址关联挖掘</title>
   <link rel="icon" href="data:,">
   <script>try { const saved = localStorage.getItem("wallet-link-theme"); const mode = saved || (localStorage.getItem("wallet-link-eye-mode") === "on" ? "warm" : "system"); if (mode === "warm") document.documentElement.dataset.theme = "eye"; else if (mode === "darkgray") document.documentElement.dataset.theme = "darkgray"; } catch (_) {}</script>
-  <link rel="stylesheet" href="/static/styles.css?v=1.0.23">
+  <link rel="stylesheet" href="/static/styles.css?v=1.0.24">
 </head>
 <body>
   <div class="license-gate hidden" id="license-gate">
@@ -53,11 +53,13 @@
         <button class="nav" data-nav="release">更新日志</button>
       </nav>
       <section class="side-seed hidden" id="side-seed">
-        <span class="side-seed-label">起始地址 · 地址画像</span>
+        <div class="side-seed-head">
+          <span class="side-seed-label">起始地址 · 地址画像</span>
+          <button class="side-seed-query" id="query-seed-profile" type="button" title="只查询当前输入地址的画像，不扫描关联">查询画像</button>
+        </div>
         <div class="side-seed-addr-row">
           <code class="side-seed-addr" id="seed-result-address">-</code>
           <button class="side-seed-copy" id="copy-seed-address" type="button" title="复制完整起始地址">复制</button>
-          <button class="side-seed-query" id="query-seed-profile" type="button" title="只查询当前输入地址的画像，不扫描关联">查询画像</button>
         </div>
         <dl class="side-seed-metrics">
           <div><dt>注册日期</dt><dd><b id="seed-result-registered">未获取</b><small id="seed-result-registered-note"></small></dd></div>
@@ -397,6 +399,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js?v=1.0.23"></script>
+  <script src="/static/app.js?v=1.0.24"></script>
 </body>
 </html>
