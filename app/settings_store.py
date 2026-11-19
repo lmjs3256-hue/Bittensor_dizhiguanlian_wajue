@@ -349,6 +349,9 @@ def save_scan_thresholds(
 
 # -- 地址库巡检（自动发现新地址并入库） --------------------------------------
 _WATCH_FIELD = "address_watch"
+_WATCH_DEFAULTS_VERSION_FIELD = "address_watch_defaults_version"
+_WATCH_DEFAULTS_VERSION = 1
+_LEGACY_DEFAULT_WATCH_THRESHOLD = 30.0
 
 # 0.9.0 起，逐地址问 API 的巡检整条链路已移除：地址的新往来全部由本地索引
 # 流水线从链上 RPC 采到的转账里撞出来，零 Taostats 额度。配置只剩三个真正
@@ -356,7 +359,7 @@ _WATCH_FIELD = "address_watch"
 # 旧的 key（interval_minutes / daily_budget / addresses_per_tick 等）留在
 # 用户已有的 settings.json 里也无害：load 只读这里声明过的 key。
 DEFAULT_WATCH_CONFIG: dict[str, Any] = {
-    "threshold_tao": 30.0,
+    "threshold_tao": 15.0,
     "auto_import": True,
     # 本地索引流水线：拿本地索引的新块去撞地址库，命中即入库，零 API。
     "sweep_enabled": True,
@@ -365,8 +368,44 @@ DEFAULT_WATCH_CONFIG: dict[str, Any] = {
 }
 
 
+def _migrate_watch_defaults(data: dict[str, Any]) -> None:
+    """把旧版未改动的默认 30 TAO 一次性迁到 15 TAO。
+
+    迁移完成后写入版本标记；用户以后主动把阈值改回 30 TAO 时，后续读取
+    必须尊重用户选择，不能每次都重新迁移。
+    """
+
+    try:
+        current_version = int(data.get(_WATCH_DEFAULTS_VERSION_FIELD) or 0)
+    except (TypeError, ValueError):
+        current_version = 0
+    if current_version >= _WATCH_DEFAULTS_VERSION:
+        return
+
+    raw = data.get(_WATCH_FIELD)
+    if not isinstance(raw, dict):
+        return
+
+    watched = dict(raw)
+    try:
+        uses_legacy_default = (
+            float(watched.get("threshold_tao")) == _LEGACY_DEFAULT_WATCH_THRESHOLD
+        )
+    except (TypeError, ValueError):
+        uses_legacy_default = False
+    if uses_legacy_default:
+        watched["threshold_tao"] = DEFAULT_WATCH_CONFIG["threshold_tao"]
+
+    data[_WATCH_FIELD] = watched
+    data[_WATCH_DEFAULTS_VERSION_FIELD] = _WATCH_DEFAULTS_VERSION
+    data["version"] = 1
+    _write(data)
+
+
 def load_watch_config() -> dict[str, Any]:
-    raw = _read().get(_WATCH_FIELD)
+    data = _read()
+    _migrate_watch_defaults(data)
+    raw = data.get(_WATCH_FIELD)
     config = dict(DEFAULT_WATCH_CONFIG)
     if isinstance(raw, dict):
         for key in DEFAULT_WATCH_CONFIG:
@@ -396,6 +435,7 @@ def save_watch_config(config: dict[str, Any]) -> bool:
     data = _read()
     data["version"] = 1
     data[_WATCH_FIELD] = merged
+    data[_WATCH_DEFAULTS_VERSION_FIELD] = _WATCH_DEFAULTS_VERSION
     return _write(data)
 
 

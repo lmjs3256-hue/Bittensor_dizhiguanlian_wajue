@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from pathlib import Path
+
 import pytest
 
 import app.watch as watch_module
@@ -526,6 +528,53 @@ def test_config_has_sweep_enabled_default_on():
     from app.settings_store import DEFAULT_WATCH_CONFIG as DEFAULTS
 
     assert DEFAULTS.get("sweep_enabled") is True, "新链路默认应开启"
+    assert DEFAULTS.get("threshold_tao") == 15.0, "自动入库默认阈值应为 15 TAO"
+
+
+def test_legacy_default_watch_threshold_migrates_to_15_once(tmp_path, monkeypatch):
+    import json
+
+    from app import settings_store
+
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "address_watch": {
+                    "threshold_tao": 30,
+                    "auto_import": True,
+                    "sweep_enabled": True,
+                    "candidate_window_days": 30,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WALLET_LINK_SETTINGS", str(path))
+
+    assert settings_store.load_watch_config()["threshold_tao"] == 15.0
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["address_watch"]["threshold_tao"] == 15.0
+    assert (
+        persisted[settings_store._WATCH_DEFAULTS_VERSION_FIELD]
+        == settings_store._WATCH_DEFAULTS_VERSION
+    )
+
+    # 迁移只做一次；用户升级后主动选择 30 TAO 时必须保留。
+    persisted["address_watch"]["threshold_tao"] = 30
+    path.write_text(json.dumps(persisted), encoding="utf-8")
+    assert settings_store.load_watch_config()["threshold_tao"] == 30.0
+
+
+def test_watch_threshold_default_15_is_synced_to_html_and_js():
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "app" / "templates" / "index.html").read_text(encoding="utf-8")
+    js = (root / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="watch-threshold"' in html
+    assert 'type="number" min="0" step="1" value="15"' in html
+    assert "config.threshold_tao ?? 15" in js
 
 
 # -- 前端契约：开关 + 独立动态面板 ------------------------------------------
@@ -656,3 +705,16 @@ def test_watch_tick_seconds_is_single_source_of_truth():
     import app.main as main_module
 
     assert main_module.WATCH_TICK_SECONDS == watch_module.SWEEP_TICK_SECONDS
+
+def test_watch_config_editing_is_not_overwritten_by_status_polling():
+    js = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    assert "let watchConfigDirty = false;" in js
+    assert "function markWatchConfigDirty()" in js
+    assert "if (watchConfigDirty && options.force !== true) return;" in js
+    assert "control.addEventListener(\"input\", markWatchConfigDirty);" in js
+    assert "control.addEventListener(\"change\", markWatchConfigDirty);" in js
+    assert "clearWatchConfigDirty();" in js
+    assert "fillWatchConfig(saved, { force: true });" in js
+    assert 'Number($("#watch-threshold")?.value || 30)' not in js

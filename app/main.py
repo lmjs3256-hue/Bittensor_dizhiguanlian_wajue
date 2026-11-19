@@ -2419,7 +2419,7 @@ def watch_status():
 
 @app.post("/api/watch/config")
 def watch_config(payload: WatchConfigInput):
-    """保存自动入库设置：阈值（默认 30 TAO）、自动入库、流水线开关。"""
+    """保存自动入库设置：阈值（默认 15 TAO）、自动入库、流水线开关。"""
 
     values = payload.model_dump(exclude_none=True)
     if not values:

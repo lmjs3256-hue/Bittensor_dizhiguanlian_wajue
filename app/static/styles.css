@@ -223,6 +223,10 @@ button.refresh-result-btn.is-armed:not(:disabled)::after { content:""; position:
 .app-footer .version-stale { color:var(--warn); font-weight:750; }
 .app-footer { display:flex; justify-content:center; align-items:center; gap:14px; flex-wrap:wrap; padding:18px 0 0; color:var(--muted); font-size:12px; }
 .footer-release-link { border:0; padding:0; background:transparent; color:var(--accent); font-size:12px; }
+.watch-actions #watch-save.is-dirty {
+  border-color:var(--warn); color:var(--warn); background:color-mix(in srgb, var(--warn) 8%, transparent);
+}
+
 /* 起始地址画像：从结果区移到左侧栏空白处（导航与状态之间），不占结果阅读宽度。
    地址只显示头 4 + 尾 4，完整值放在 title 与 dataset 里供复制。 */
 .side-seed {

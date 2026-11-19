@@ -5076,17 +5076,43 @@ function autoImportStatusText(data) {
   return `自动入库：${parts.join(" · ")}`;
 }
 
-function fillWatchConfig(config) {
+// 用户正在编辑这四个字段时，后台轮询不能把输入值改回旧状态。
+let watchConfigDirty = false;
+const WATCH_CONFIG_SELECTORS = [
+  "#watch-threshold", "#watch-window-days", "#watch-auto-import", "#watch-sweep",
+];
+
+function markWatchConfigDirty() {
+  watchConfigDirty = true;
+  const button = $("#watch-save");
+  if (button) button.classList.add("is-dirty");
+}
+
+function clearWatchConfigDirty() {
+  watchConfigDirty = false;
+  const button = $("#watch-save");
+  if (button) button.classList.remove("is-dirty");
+}
+
+function fillWatchConfig(config, options = {}) {
   if (!config) return;
+  if (watchConfigDirty && options.force !== true) return;
   const threshold = $("#watch-threshold");
-  if (threshold) threshold.value = config.threshold_tao ?? 30;
+  if (threshold) threshold.value = String(config.threshold_tao ?? 15);
   const windowDays = $("#watch-window-days");
-  if (windowDays) windowDays.value = config.candidate_window_days ?? 30;
+  if (windowDays) windowDays.value = String(config.candidate_window_days ?? 30);
   const autoImport = $("#watch-auto-import");
   if (autoImport) autoImport.checked = config.auto_import !== false;
   const sweep = $("#watch-sweep");
   if (sweep) sweep.checked = config.sweep_enabled !== false;
 }
+
+WATCH_CONFIG_SELECTORS.forEach((selector) => {
+  const control = $(selector);
+  if (!control) return;
+  control.addEventListener("input", markWatchConfigDirty);
+  control.addEventListener("change", markWatchConfigDirty);
+});
 
 async function loadWatchStatus() {
   const label = $("#watch-status");
@@ -5104,24 +5130,48 @@ async function loadWatchStatus() {
 }
 
 async function saveWatchConfig() {
+  const thresholdValue = $("#watch-threshold")?.value.trim() ?? "";
+  const windowValue = $("#watch-window-days")?.value.trim() ?? "";
+  const threshold = thresholdValue === "" ? Number.NaN : Number(thresholdValue);
+  const windowDays = windowValue === "" ? Number.NaN : Number(windowValue);
+  if (!Number.isFinite(threshold) || threshold < 0) {
+    toast("自动入库阈值必须是大于等于 0 的数字。", true);
+    return;
+  }
+  if (!Number.isInteger(windowDays) || windowDays < 1 || windowDays > 365) {
+    toast("候选保留天数必须是 1–365 的整数。", true);
+    return;
+  }
   const payload = {
-    threshold_tao: Number($("#watch-threshold")?.value || 30),
-    candidate_window_days: Number($("#watch-window-days")?.value || 30),
+    threshold_tao: threshold,
+    candidate_window_days: windowDays,
     auto_import: Boolean($("#watch-auto-import")?.checked),
     sweep_enabled: Boolean($("#watch-sweep")?.checked),
   };
+  const button = $("#watch-save");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "保存中…";
+  }
   try {
-    await api("/api/watch/config", { method: "POST", body: JSON.stringify(payload) });
+    const saved = await api("/api/watch/config", { method: "POST", body: JSON.stringify(payload) });
+    clearWatchConfigDirty();
+    fillWatchConfig(saved, { force: true });
     await loadWatchStatus();
     scheduleWatchPolling(3000);
     toast(
-      `设置已保存：阈值 ${payload.threshold_tao} TAO，` +
-        `候选保留 ${payload.candidate_window_days} 天，` +
-        `${payload.auto_import ? "开启" : "关闭"}自动入库，` +
-        `${payload.sweep_enabled ? "开启" : "关闭"}本地索引流水线。`,
+      `设置已保存：阈值 ${saved.threshold_tao} TAO，` +
+        `候选保留 ${saved.candidate_window_days} 天，` +
+        `${saved.auto_import ? "开启" : "关闭"}自动入库，` +
+        `${saved.sweep_enabled ? "开启" : "关闭"}本地索引流水线。`,
     );
   } catch (error) {
     toast(`保存设置失败：${error.message}`, true);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "保存设置";
+    }
   }
 }
 
