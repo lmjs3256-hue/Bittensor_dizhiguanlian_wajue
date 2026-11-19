@@ -320,3 +320,20 @@ def test_job_payload_exposes_prefetched_requests(monkeypatch):
             assert payload["prefetched_requests"] == 2
         finally:
             database.engine.dispose()
+
+def test_frontend_keeps_successful_profile_when_scan_returns_placeholder():
+    js = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    html = (Path(__file__).resolve().parents[1] / "app" / "templates" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "seedProfile: { address: \"\", profile: null" in js
+    assert "function hasSeedProfileValues" in js
+    assert "function rememberSeedProfile" in js
+    assert "function restoreSeedProfile" in js
+    assert "if (hasSeedProfileValues(resultProfile))" in js
+    assert "else if (!restoreSeedProfile(data.seed))" in js
+    assert "querySeedProfileOnly" in js
+    assert 'id="query-seed-profile"' in html
+    assert "只查询当前输入地址的画像，不扫描关联" in html

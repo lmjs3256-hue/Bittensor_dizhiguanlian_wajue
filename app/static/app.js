@@ -9,6 +9,8 @@ const state = {
   // 本机专属接口（口令 / key 池）在远程会被后端 403，记下来避免反复重试。
   localOnlyBlocked: false,
   lastResult: null,
+  // 最近一次成功取得的起始地址画像；扫描结果中的空占位不能覆盖它。
+  seedProfile: { address: "", profile: null, rpcBalance: null, apiRequests: 0 },
   library: [],
   books: [],
   bookSearch: "",
@@ -130,6 +132,39 @@ function setSeedAddress(address) {
   code.title = full || "";
 }
 
+function hasSeedProfileValues(profile) {
+  if (!profile || typeof profile !== "object") return false;
+  return [
+    profile.registered_on,
+    profile.stake_event_count,
+    profile.transfer_count,
+    profile.daily_frequency,
+    profile.balance_total_tao,
+    profile.balance_free_tao,
+    profile.balance_staked_tao,
+  ].some((value) => value !== null && value !== undefined && value !== "");
+}
+
+function rememberSeedProfile(seed, profile, rpcBalance = null, apiRequests = 0) {
+  const address = String(seed || "").trim();
+  if (!address || !hasSeedProfileValues(profile)) return false;
+  state.seedProfile = {
+    address,
+    profile: { ...profile },
+    rpcBalance,
+    apiRequests: Number(apiRequests) || 0,
+  };
+  return true;
+}
+
+function restoreSeedProfile(seed) {
+  const address = String(seed || "").trim();
+  const cached = state.seedProfile;
+  if (!address || !cached.profile || cached.address !== address) return false;
+  renderSeedProfile(cached.profile, cached.rpcBalance);
+  return true;
+}
+
 function renderSeedProfile(profile, rpcBalance) {
   const placeholder = "未获取";
 
@@ -201,13 +236,50 @@ async function prefetchSeedProfile(seed, dataSource) {
       method: "POST",
       body: JSON.stringify({ seed, data_source: dataSource }),
     });
-    renderSeedProfile(data.seed_profile || {}, null);
+    const profile = data.seed_profile || {};
+    if (rememberSeedProfile(seed, profile, null, data.api_requests)) {
+      renderSeedProfile(profile, null);
+    } else {
+      restoreSeedProfile(seed);
+    }
     (data.warnings || []).forEach((text) => toast(text, true));
     return Number(data.api_requests) || 0;
   } catch (error) {
-    renderSeedProfile({}, null);
+    if (!restoreSeedProfile(seed)) renderSeedProfile({}, null);
     toast(`起始地址画像未获取：${error.message}`, true);
     return 0;
+  }
+}
+
+async function querySeedProfileOnly() {
+  const seed = $("#seed").value.trim();
+  if (!seed) {
+    toast("请先输入起始地址。", true);
+    return;
+  }
+  if (!/^[1-9A-HJ-NP-Za-km-z]{47,48}$/.test(seed)) {
+    toast("起始地址不是有效的 SS58 地址。", true);
+    return;
+  }
+  const button = $("#query-seed-profile");
+  if (!button) return;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "查询中…";
+  $("#side-seed").classList.remove("hidden");
+  setSeedAddress(seed);
+  try {
+    const dataSource = $("#taostats-source")?.checked ? "taostats" : "local";
+    const requests = await prefetchSeedProfile(seed, dataSource);
+    if (requests >= 0) {
+      toast(hasSeedProfileValues(state.seedProfile.profile)
+        ? "起始地址画像查询完成。"
+        : "画像查询完成，但服务未返回可显示字段，请查看提示。",
+        !hasSeedProfileValues(state.seedProfile.profile));
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
   }
 }
 
@@ -2005,7 +2077,13 @@ function renderResult(data) {
   $("#result-subtitle").textContent = `${shortAddr(data.seed)} · 最多 ${data.max_depth} 级 · 来源 ${sourcesLabel}${apiUsage}${stakeUsage} · 数据截止 ${data.data_cutoff_block ? number(data.data_cutoff_block) : "未采集"} 区块`;
   setSeedAddress(data.seed);
   $("#side-seed").classList.remove("hidden");
-  renderSeedProfile(data.seed_profile || {}, data.seed_balance_tao);
+  const resultProfile = data.seed_profile || {};
+  if (hasSeedProfileValues(resultProfile)) {
+    rememberSeedProfile(data.seed, resultProfile, data.seed_balance_tao, data.seed_profile_requests);
+    renderSeedProfile(resultProfile, data.seed_balance_tao);
+  } else if (!restoreSeedProfile(data.seed)) {
+    renderSeedProfile({}, data.seed_balance_tao);
+  }
   const paginationBadge = data.data_source === "taostats" && data.pagination_complete === false
     ? '<span class="badge warn">分页未完整</span>' : "";
   const windowBadge = data.provider_window_truncated
@@ -5952,6 +6030,7 @@ $("#keypool-new-key").addEventListener("keydown", (event) => {
 });
 $("#toggle-api-key").addEventListener("click", () => setApiKeyFolded(state.apiKeyBodyOpen));
 $("#run-scan").addEventListener("click", () => runRelations(false));
+$("#query-seed-profile")?.addEventListener("click", querySeedProfileOnly);
 // 远程面板折叠/展开（状态记在 localStorage，见 setRemoteFolded）。
 // 「你的名字」：输入即存（不需要"保存"按钮，改完立刻生效）。
 // 说明：这个名字只决定"查询记录归谁看"，不是权限；地址库仍全机共享。
