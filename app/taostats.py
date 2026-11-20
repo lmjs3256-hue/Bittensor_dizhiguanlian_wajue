@@ -11,6 +11,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -321,27 +322,56 @@ def reset_key_pool_for_tests() -> None:
 # 这里按下述顺序决定出站路径，传输层失败时自动换下一条能用的：
 #
 #   1. WALLET_LINK_HTTP_PROXY 环境变量（"none"/"off" 强制直连）
-#   2. Windows 系统代理（WinINET 注册表，ProxyEnable=1 时；Clash 写在这里）
-#   3. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY 环境变量
-#   4. 直连
+#   2. 页面「出站代理」里手动保存的那条（settings.json 的 outbound_proxy）
+#   3. 自检自动发现的可用路径（本机常见代理端口里真的能连上 taostats.io 的那条）
+#   4. Windows 系统代理（WinINET 注册表，ProxyEnable=1 时；Clash 写在这里）
+#   5. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY 环境变量
+#   6. 直连
 #
 # 某条路失败后会被「拉黑」10 分钟，期间优先走其他路；全部失败再从头试。
+#
+# 为什么要有 2、3 两条：v2rayN 默认只开 SOCKS 入站（10808），HTTP 入站和
+# 系统代理都关着，于是「浏览器能打开、程序一直超时」。只有读系统代理的实现
+# 在这类机器上永远找不到路，所以补了手动一条 + 自动探测本机端口。
 
 _PROXY_OVERRIDE_ENV = "WALLET_LINK_HTTP_PROXY"
 _PROXY_BAN_SECONDS = 600.0
 _PROBE_TIMEOUT_SECONDS = 6.0
+
+# 出站熔断（远程 1.0.19 引入）：连续传输层失败后 45 秒内请求直接失败，避免
+# 每个请求都重复长超时把扫描队列看起来卡死。与目标地址探测共用同一套状态。
 _OUTBOUND_CIRCUIT_SECONDS = 45.0
 _outbound_circuit_until = 0.0
 _outbound_circuit_reason = ""
+
+# 自动发现用的短超时：扫的是本机回环地址，端口没开是立刻拒绝，超时只可能是
+# 端口开着但转发不通，2 秒足够，不能让一次自检卡上半分钟。
+_DISCOVER_TIMEOUT_SECONDS = 2.0
+
+# httpx 认的代理协议；socks5/socks5h 需要 socksio（requirements 已带）。
+_PROXY_SCHEMES = {"http", "https", "socks5", "socks5h"}
+
+# 本机常见代理端口，按「最可能先命中」排列。只在别的路径都不通时才用：
+# 7890/7891 Clash 系，10809/10808 v2rayN 的 HTTP/SOCKS 入站，1080 通用 SOCKS。
+LOCAL_PROXY_CANDIDATES: tuple[str, ...] = (
+    "http://127.0.0.1:7890",
+    "http://127.0.0.1:10809",
+    "socks5://127.0.0.1:10808",
+    "http://127.0.0.1:7891",
+    "socks5://127.0.0.1:1080",
+    "http://127.0.0.1:1080",
+)
 
 _proxy_state_lock = threading.Lock()
 _proxy_state: dict[str, Any] = {
     "url": None,
     "source": "undecided",
     "banned": {},  # url(None 表示直连) -> 拉黑截止时刻（单调时钟）
+    "discovered": None,  # 自动探测出来、实测能连上 taostats.io 的路径
 }
 _proxy_clients: dict[str | None, httpx.Client] = {}
 _wininet_cache: tuple[float, str | None] | None = None
+_configured_proxy: str | None = None
 
 
 def _normalize_proxy_server(server: str) -> str | None:
@@ -397,6 +427,48 @@ def _wininet_proxy_url() -> str | None:
         value = None
     _wininet_cache = (now, value)
     return value
+
+
+def normalize_outbound_proxy(value: str | None) -> str | None:
+    """把用户填的代理规整成 httpx 认的 URL；空值/非法值返回 None（= 自动）。
+
+    只写 ``127.0.0.1:10808`` 时按 ``http://`` 处理（和系统代理的写法一致）；
+    要走 SOCKS 必须自己写协议头，否则用户以为配了 SOCKS、实际发的是 HTTP。
+    """
+
+    text = str(value or "").strip()
+    if not text or text.lower() in {"auto", "none", "off", "direct", "no"}:
+        return None
+    if "://" not in text:
+        text = "http://" + text
+    if urlsplit(text).scheme.lower() not in _PROXY_SCHEMES:
+        return None
+    return text
+
+
+def configure_outbound_proxy(value: str | None) -> str | None:
+    """设置手动出站代理（None/空 = 回到自动），返回真正生效的 URL。
+
+    会顺带重置当前决策与自动发现结果：改了设置就该按新设置重新选路，
+    不能继续沿用旧进程里记着的那条。
+    """
+
+    global _configured_proxy
+    _configured_proxy = normalize_outbound_proxy(value)
+    _reset_proxy_decision()
+    return _configured_proxy
+
+
+def outbound_proxy_setting() -> str | None:
+    """当前手动设置的代理（诊断接口用来回显输入框）。"""
+
+    return _configured_proxy
+
+
+def discovered_proxy() -> str | None:
+    """自检自动发现的那条可用路径（没有就是 None）。"""
+
+    return _proxy_state.get("discovered")
 
 
 def _proxy_candidates() -> list[tuple[str | None, str]]:
