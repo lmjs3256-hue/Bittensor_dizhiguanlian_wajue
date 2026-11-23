@@ -125,7 +125,7 @@ async def _auto_sync_exchanges() -> None:
 
 
 def _seed_default_event_subnet_watch() -> dict[str, Any] | None:
-    """把现有 SN1-SN128 地址库一次性加入事件监控（默认关闭）。
+    """把现有 SN1-SN160 地址库一次性加入事件监控（默认关闭）。
 
     1.0.28 起默认不执行：项目方库改由「选择地址库」弹窗默认预选、用户确认
     后加入。后端强制 seed 会把用户取消的监控冲回去，故只在显式开启时运行。

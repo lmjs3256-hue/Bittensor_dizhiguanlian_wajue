@@ -1,5 +1,36 @@
 # 变更记录
 
+## 1.0.29 · 一键清除真正清空勾选与子网上限提高到160 · 2026-11-24
+
+### 现象与根因
+
+用户反馈「一键清除没有效果」。浏览器实测复现：点一键清除后统计虽然显示「已选 0」，但仍有 **120 个 checkbox 显示为勾选态**。
+
+根因是弹窗渲染里 `checkbox.checked = state.selectable.length === 0 || state.selectedCount === state.selectable.length`——全库已监控（`selectable.length===0`）时，checkbox 被强制 checked=true 当作"已完成"标记。这与"待加入勾选"的语义混在一起，导致清除后视觉上仍是一片勾选，用户以为没生效。
+
+### 修复
+
+- 全库已监控时 checkbox 改为 **unchecked + disabled**，"已监控"改由文字（`已监控 N`）和 `aria-label` 表达，并用 `shared-book-fully-watched` class 区分样式。
+- `checkbox.checked` / `indeterminate` 都加了 `!fullyWatched` 前提，只有真正可勾选且有选中时才显示勾选态。
+- 浏览器复测：清除后 checked 从 128 → 0，indeterminate 0，确认按钮正确禁用；截图确认视觉一片空白勾选框。
+
+### 子网上限 128 → 160
+
+用户要求子网上限改为 160，SN1–SN160 默认加入监控地址库、可人工取消、一键清除有效。逐处同步：
+
+- `app/event_monitor/default_watch.py`：新增 `MAX_DEFAULT_SUBNET = 160`，`eligible_default_subnet_items()` 按它判断。
+- `app/event_monitor/address_monitor.py`：`PROJECT_OWNER_MAX_NETUID` 127 → 160（项目方事件尾注范围，否则 SN128-160 没有尾注，与"这些库是项目方"的新口径矛盾）。
+- 前端弹窗：`bookNumber > 160` 才跳过，SN1-160 默认预选。
+- `docs/项目规则.md` 第15、16条同步为 160，并记录上限以 `MAX_DEFAULT_SUBNET` 为准、改上限要同步尾注规则和测试。
+
+「默认加入、可人工取消、一键清除有效」的口径不变：仍由弹窗预选 + 用户确认写库，后端强制 seed 默认关闭。
+
+### 测试
+
+- 更新 `tests/test_library_bulk_select.py`：SN 上限断言改 160；新增全监控库不显示 checked 的回归测试；新增 `TestSubnetLimit160` 覆盖 `MAX_DEFAULT_SUBNET`、尾注上限一致性、SN160/SN161 边界、项目方 netuid 判定边界。
+- 更新 `tests/test_event_monitor_integration.py` 的 seed 测试：SN160 入选、SN161 忽略，数量断言同步。
+- 全量 **849 passed**（1.0.28 基线 845，本版净增 4）。
+
 ## 1.0.28 · 地址库一键全选清除与项目方默认预选可取消 · 2026-11-24
 
 ### 需求与口径确认

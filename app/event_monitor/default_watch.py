@@ -1,4 +1,4 @@
-"""Seed event monitoring from named SN1-SN128 address books exactly once."""
+"""Seed event monitoring from named SN1-SN160 address books exactly once."""
 
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ DEFAULT_SUBNET_WATCH_STATE = "watch:default-subnet-books:v1"
 SUBNET_BOOK = re.compile(r"^SN\s*(\d+)", re.IGNORECASE)
 
 
+# 子网编号上限（1.0.29）：从 128 提高到 160，与链上当前子网上限保持一致。
+# 前端弹窗默认预选、项目方同步等处都按这个口径，改这里要同步改前端与规则文档。
+MAX_DEFAULT_SUBNET = 160
+
+
 def eligible_default_subnet_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     eligible: list[dict[str, Any]] = []
     for item in items:
@@ -18,7 +23,7 @@ def eligible_default_subnet_items(items: list[dict[str, Any]]) -> list[dict[str,
         if not match:
             continue
         netuid = int(match.group(1))
-        if 1 <= netuid <= 128:
+        if 1 <= netuid <= MAX_DEFAULT_SUBNET:
             eligible.append(item)
     return eligible
 

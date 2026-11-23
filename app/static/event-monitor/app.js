@@ -2601,10 +2601,16 @@ async function openSharedAddressPicker(reload) {
       const checkbox = infoElement("input");
       checkbox.type = "checkbox";
       checkbox.className = "shared-book-checkbox";
-      checkbox.disabled = state.selectable.length === 0;
-      checkbox.checked = state.selectable.length === 0 || state.selectedCount === state.selectable.length;
-      checkbox.indeterminate = state.selectedCount > 0 && state.selectedCount < state.selectable.length;
-      checkbox.setAttribute("aria-label", `整库选择 ${group.name}`);
+      const fullyWatched = state.selectable.length === 0;
+      checkbox.disabled = fullyWatched;
+      // 全库已监控时不要勾上 checkbox：那会让「一键清除」后仍有 100+ 个勾选框
+      // 显示为已选，用户以为清除没生效。已监控状态用文字和样式表达，不用 checked。
+      checkbox.checked = !fullyWatched && state.selectedCount === state.selectable.length;
+      checkbox.indeterminate = !fullyWatched && state.selectedCount > 0 && state.selectedCount < state.selectable.length;
+      checkbox.setAttribute("aria-label", fullyWatched
+        ? `${group.name} 已全部监控，无需选择`
+        : `整库选择 ${group.name}`);
+      if (fullyWatched) checkbox.classList.add("shared-book-fully-watched");
       checkbox.addEventListener("change", () => {
         setGroupChecked(group, checkbox.checked);
         render();
@@ -2761,14 +2767,14 @@ async function openSharedAddressPicker(reload) {
       .map(([name, bookItems]) => ({ name, items: bookItems }))
       .sort((left, right) => compareBookNames(left.name, right.name));
 
-    // 项目方库默认预选（1.0.28）：SN1–SN128 命名库整库预选其「尚未监控」的地址。
+    // 项目方库默认预选（1.0.29）：SN1–SN160 命名库整库预选其「尚未监控」的地址。
     // 判定按库名（与后端 SUBNET_BOOK / 项目规则一致），库内全部地址都算项目方库成员；
     // 已监控的不重复选。用户可点「一键清除」或逐个取消，取消后不点确认就不会加入监控。
     // 后端不再强制写监控名单（SEED_SUBNET_WATCH_ENABLED 默认关），
     // 所以这里的预选是"待确认"状态，不是既成事实，也不写死。
     for (const group of groups) {
       const bookNumber = subnetBookNumber(group.name);
-      if (bookNumber == null || bookNumber < 1 || bookNumber > 128) continue;
+      if (bookNumber == null || bookNumber < 1 || bookNumber > 160) continue;
       for (const item of group.items) {
         if (!watched.has(String(item.address))) selected.add(item.address);
       }

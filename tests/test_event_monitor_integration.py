@@ -60,21 +60,21 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
 
     版本断言跟随 VERSION 走。1.0.26（出站代理增强）曾只改 CHANGELOG/
     README/HTML 的 ?v=，漏改本测试与 product_info.json；1.0.27 首次补齐，
-    1.0.28 继续同步，避免测试长期落后于实际版本。
+    1.0.29 继续同步，避免测试长期落后于实际版本。
     """
     client, _ = merged_client
 
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/styles.css?v=1.0.28" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.28" in page.text
+    assert "/static/event-monitor/styles.css?v=1.0.29" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.29" in page.text
     assert main_module.EVENT_MONITOR.settings.static_dir == main_module.EVENT_MONITOR_STATIC
 
     floating = client.get("/event-monitor/floating?mode=window")
     assert floating.status_code == 200
-    assert "/static/event-monitor/floating.css?v=1.0.28" in floating.text
-    assert "/static/event-monitor/floating.js?v=1.0.28" in floating.text
+    assert "/static/event-monitor/floating.css?v=1.0.29" in floating.text
+    assert "/static/event-monitor/floating.js?v=1.0.29" in floating.text
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
     assert client.get("/event-monitor/floating?mode=window").status_code == 200
@@ -87,7 +87,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.28"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.29"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
@@ -568,24 +568,26 @@ def test_legacy_subnet_profiles_are_inherited_once(tmp_path):
     assert second["tables"]["subnet_profiles"]["skipped"] is True
 
 
-def test_default_sn1_to_sn128_books_are_seeded_once_without_resurrection(tmp_path):
+def test_default_sn1_to_sn160_books_are_seeded_once_without_resurrection(tmp_path):
     store = Store(tmp_path / "event_monitor.db")
+    # 1.0.29：上限从 128 提到 160。SN160 应入选，SN161 才被忽略。
     items = [
         {"book": "SN1 Apex", "address": "5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt", "label": "SN1"},
         {"book": "SN2 DaniLabs", "address": "5DceuTr7XPqw67PNHW9ewzzo2cZ7Cm8HgfjwUqEpd8Mh8QNg", "label": "SN2"},
-        {"book": "SN129 ignored", "address": "5FURtzHeFURtzHeFURtzHeFURtzHeFURtzHeFURt", "label": "SN129"},
+        {"book": "SN160 Boundary", "address": "5CMLA2Sw94BXGVWGHZMGKsGCe7Bg45DRdeVwcZJoydS2SMZW", "label": "SN160"},
+        {"book": "SN161 ignored", "address": "5FURtzHeFURtzHeFURtzHeFURtzHeFURtzHeFURt", "label": "SN161"},
     ]
     first = seed_default_subnet_watch(store, items)
-    assert first["added"] == 2
-    assert first["book_count"] == 2
+    assert first["added"] == 3
+    assert first["book_count"] == 3
     watched = store.list_watched_addresses("finney")
-    assert {item["library_book"] for item in watched} == {"SN1 Apex", "SN2 DaniLabs"}
+    assert {item["library_book"] for item in watched} == {"SN1 Apex", "SN2 DaniLabs", "SN160 Boundary"}
 
     removed = next(item for item in watched if item["library_book"] == "SN1 Apex")
     assert store.delete_watched_address(removed["address_id"])
     second = seed_default_subnet_watch(store, items)
     assert second["added"] == 0
-    assert len(store.list_watched_addresses("finney")) == 1
+    assert len(store.list_watched_addresses("finney")) == 2
 
     third = seed_default_subnet_watch(
         store,
@@ -597,7 +599,7 @@ def test_default_sn1_to_sn128_books_are_seeded_once_without_resurrection(tmp_pat
     )
     assert third["added"] == 1
     assert "SN3 New" in third["new_books"]
-    assert len(store.list_watched_addresses("finney")) == 2
+    assert len(store.list_watched_addresses("finney")) == 3
 
 
 def test_auto_import_rows_sync_only_monitored_books_and_respect_exclusions(merged_client):

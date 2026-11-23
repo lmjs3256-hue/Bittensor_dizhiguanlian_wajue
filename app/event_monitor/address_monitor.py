@@ -10,7 +10,7 @@ from typing import Any
 
 PROJECT_OWNER_BOOK = re.compile(r"^SN\s*(\d+)", re.IGNORECASE)
 PROJECT_OWNER_MIN_NETUID = 1
-PROJECT_OWNER_MAX_NETUID = 127
+PROJECT_OWNER_MAX_NETUID = 160  # 1.0.29：子网上限从 127 提高到 160（与 default_watch.MAX_DEFAULT_SUBNET 一致）
 MANUAL_NOTE_SEPARATOR = re.compile(r"[,，;；、\n]+")
 TAG_EDGE = "【】[] "
 
