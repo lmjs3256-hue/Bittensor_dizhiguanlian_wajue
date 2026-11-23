@@ -65,6 +65,10 @@ _EVENT_PROXY_CLIENT: Any | None = None
 VERSION_INFO = read_version_info()
 # 预置地址库只在真实启动时导入；测试里换成临时库后关掉，避免污染用例数据。
 SEED_BOOKS_ENABLED = True
+# SN 项目方库「后端强制加入监控」默认关闭（1.0.28）：改由选择地址库弹窗
+# 默认预选、用户确认后加入，避免后端把用户已取消的监控又写回去。
+# 需要旧版「启动时强制 seed」行为时可显式设为 True。
+SEED_SUBNET_WATCH_ENABLED = False
 # 官方交易所名单默认导入：每次启动在后台静默同步一次（有 key 才发请求）。
 AUTO_EXCHANGE_SYNC_ENABLED = True
 # 子网项目方地址：启动时检查一次，此后每小时检查是否已满 7 天。
@@ -121,9 +125,16 @@ async def _auto_sync_exchanges() -> None:
 
 
 def _seed_default_event_subnet_watch() -> dict[str, Any] | None:
-    """把现有 SN1-SN128 地址库一次性加入事件监控。"""
+    """把现有 SN1-SN128 地址库一次性加入事件监控（默认关闭）。
+
+    1.0.28 起默认不执行：项目方库改由「选择地址库」弹窗默认预选、用户确认
+    后加入。后端强制 seed 会把用户取消的监控冲回去，故只在显式开启时运行。
+    """
 
     global DEFAULT_SUBNET_WATCH_RESULT
+    if not SEED_SUBNET_WATCH_ENABLED:
+        DEFAULT_SUBNET_WATCH_RESULT = {"seeded": False, "reason": "disabled_by_default"}
+        return DEFAULT_SUBNET_WATCH_RESULT
     if not EVENT_MONITOR.running or EVENT_MONITOR.context is None:
         return None
     try:

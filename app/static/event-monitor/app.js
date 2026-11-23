@@ -2504,12 +2504,16 @@ async function openSharedAddressPicker(reload) {
   search.type = "search";
   search.placeholder = "输入 SN 编号、地址库名，或地址后 4 位";
   search.setAttribute("aria-label", "按 SN 编号、地址库名或地址后四位搜索");
+  const selectAll = infoElement("button", "button ghost", "全选所有库");
+  selectAll.type = "button";
+  selectAll.title = "选中全部地址库中尚未监控的地址（项目方库默认已预选）";
   const selectVisible = infoElement("button", "button ghost", "全选筛选结果");
   selectVisible.type = "button";
-  const clear = infoElement("button", "button ghost", "清空选择");
+  const clear = infoElement("button", "button ghost", "一键清除");
   clear.type = "button";
+  clear.title = "清空所有勾选，包括项目方库的默认预选";
   const summary = infoElement("span", "shared-library-summary", "正在读取已知地址库…");
-  toolbar.append(search, selectVisible, clear, summary);
+  toolbar.append(search, selectAll, selectVisible, clear, summary);
   const list = infoElement("div", "shared-book-list");
   const actions = infoElement("div", "dialog-actions");
   const error = infoElement("span", "shared-library-error");
@@ -2674,6 +2678,23 @@ async function openSharedAddressPicker(reload) {
   };
 
   search.addEventListener("input", render);
+  // 一键全选所有库（1.0.28）：不受搜索筛选影响，选中全部尚未监控的地址。
+  // 按项目规则，批量全选前必须确认库数与地址数。
+  selectAll.addEventListener("click", () => {
+    const pending = groups.reduce(
+      (total, group) => total + groupState(group).selectable.length,
+      0,
+    );
+    if (!pending) {
+      render();
+      return;
+    }
+    if (!window.confirm(`将全选全部 ${groups.length} 个地址库、${pending} 个尚未监控的地址。\n请确认这些库确实都需要监控；项目方库已默认预选。`)) return;
+    for (const group of groups) setGroupChecked(group, true);
+    render();
+  });
+  // 一键清除：清空所有勾选（含项目方默认预选），用户可据此取消监控。
+  clear.addEventListener("click", () => { selected.clear(); render(); });
   selectVisible.addEventListener("click", () => {
     const groupsToSelect = visibleGroups();
     const pending = groupsToSelect.reduce(
@@ -2688,7 +2709,6 @@ async function openSharedAddressPicker(reload) {
     for (const group of groupsToSelect) setGroupChecked(group, true);
     render();
   });
-  clear.addEventListener("click", () => { selected.clear(); render(); });
   close.addEventListener("click", () => dialog.close());
   dialog.addEventListener("close", () => dialog.remove());
   confirm.addEventListener("click", async () => {
@@ -2740,6 +2760,19 @@ async function openSharedAddressPicker(reload) {
     groups = [...byBook.entries()]
       .map(([name, bookItems]) => ({ name, items: bookItems }))
       .sort((left, right) => compareBookNames(left.name, right.name));
+
+    // 项目方库默认预选（1.0.28）：SN1–SN128 命名库整库预选其「尚未监控」的地址。
+    // 判定按库名（与后端 SUBNET_BOOK / 项目规则一致），库内全部地址都算项目方库成员；
+    // 已监控的不重复选。用户可点「一键清除」或逐个取消，取消后不点确认就不会加入监控。
+    // 后端不再强制写监控名单（SEED_SUBNET_WATCH_ENABLED 默认关），
+    // 所以这里的预选是"待确认"状态，不是既成事实，也不写死。
+    for (const group of groups) {
+      const bookNumber = subnetBookNumber(group.name);
+      if (bookNumber == null || bookNumber < 1 || bookNumber > 128) continue;
+      for (const item of group.items) {
+        if (!watched.has(String(item.address))) selected.add(item.address);
+      }
+    }
     render();
   } catch (cause) {
     summary.textContent = "读取失败";

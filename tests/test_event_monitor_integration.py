@@ -58,23 +58,23 @@ def create_book(client, name: str, addresses: list[str]) -> None:
 def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     """断言静态资源 ?v= 与产品版本都要跟 VERSION 走。
 
-    版本断言从 1.0.25 直接跳到 1.0.27：1.0.26（出站代理增强）只改了
-    CHANGELOG/README/HTML 的 ?v=，漏改了本测试与 product_info.json，属于
-    升级流程漏项；1.0.27 一并补齐，避免测试长期落后于实际版本。
+    版本断言跟随 VERSION 走。1.0.26（出站代理增强）曾只改 CHANGELOG/
+    README/HTML 的 ?v=，漏改本测试与 product_info.json；1.0.27 首次补齐，
+    1.0.28 继续同步，避免测试长期落后于实际版本。
     """
     client, _ = merged_client
 
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/styles.css?v=1.0.27" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.27" in page.text
+    assert "/static/event-monitor/styles.css?v=1.0.28" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.28" in page.text
     assert main_module.EVENT_MONITOR.settings.static_dir == main_module.EVENT_MONITOR_STATIC
 
     floating = client.get("/event-monitor/floating?mode=window")
     assert floating.status_code == 200
-    assert "/static/event-monitor/floating.css?v=1.0.27" in floating.text
-    assert "/static/event-monitor/floating.js?v=1.0.27" in floating.text
+    assert "/static/event-monitor/floating.css?v=1.0.28" in floating.text
+    assert "/static/event-monitor/floating.js?v=1.0.28" in floating.text
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
     assert client.get("/event-monitor/floating?mode=window").status_code == 200
@@ -87,7 +87,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.27"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.28"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
