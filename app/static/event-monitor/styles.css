@@ -966,6 +966,11 @@ html.embedded h1 { font-size:clamp(22px, 5vw, 32px); }
 .shared-book-list {
   display: grid;
   gap: 8px;
+  /* 弹窗里最多有 100+ 个库卡片。grid 默认会把所有行均分到容器高度，
+     叠加下方的 flex:1 / min-height:0 后，每个卡片被压成 1~2px 的横线，
+     内容全部看不见。锁定行高为内容最小高度并顶部对齐，列表才会正常滚动。 */
+  grid-auto-rows: min-content;
+  align-content: start;
   max-height: min(55vh, 590px);
   overflow: auto;
   padding-right: 3px;
