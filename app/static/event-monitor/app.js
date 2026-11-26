@@ -2497,7 +2497,7 @@ async function openSharedAddressPicker(reload) {
   const note = infoElement(
     "p",
     "dialog-copy",
-    "一级勾选代表整个地址库；展开后可用二级勾选只监控库内部分地址。已知地址库与事件监控共用地址资料，但监控名单独立；移出监控不会删除已知地址库。批量选择前会再次确认地址库和地址数量。",
+    "一级勾选代表整个地址库；展开后可用二级勾选只监控库内部分地址。勾选表示「保存后要监控」：全选 / 一键清除只改勾选，点「保存设置」才真正写入监控名单。清空全部勾选后保存，会移出全部监控地址并保持清空，事件流不再显示地址类转账 / 交易。移出监控不会删除已知地址库。",
   );
   const toolbar = infoElement("div", "shared-library-toolbar");
   const search = infoElement("input");
@@ -2511,16 +2511,18 @@ async function openSharedAddressPicker(reload) {
   selectVisible.type = "button";
   const clear = infoElement("button", "button ghost", "一键清除");
   clear.type = "button";
-  clear.title = "清空所有勾选，包括项目方库的默认预选";
+  clear.title = "清空所有勾选，包括项目方库的默认预选；点保存设置后才会移出监控";
+  const saveToolbar = infoElement("button", "button primary", "保存设置");
+  saveToolbar.type = "button";
+  saveToolbar.title = "把当前勾选保存为监控名单；空勾选表示清空并锁定监控名单";
   const summary = infoElement("span", "shared-library-summary", "正在读取已知地址库…");
-  toolbar.append(search, selectAll, selectVisible, clear, summary);
+  toolbar.append(search, selectAll, selectVisible, clear, saveToolbar, summary);
   const list = infoElement("div", "shared-book-list");
   const actions = infoElement("div", "dialog-actions");
   const error = infoElement("span", "shared-library-error");
   error.setAttribute("role", "alert");
-  const confirm = infoElement("button", "button primary", "确认加入监控");
+  const confirm = infoElement("button", "button primary", "保存设置");
   confirm.type = "button";
-  confirm.disabled = true;
   actions.append(error, confirm);
   dialog.append(head, note, toolbar, list, actions);
   document.body.append(dialog);
@@ -2528,13 +2530,17 @@ async function openSharedAddressPicker(reload) {
   let items = [];
   let unbookedCount = 0;
   let groups = [];
+  let addressListLocked = false;
   const watched = new Map(state.watchedAddresses.map((item) => [String(item.address), item]));
   const selected = new Set();
   const expanded = new Set();
 
   const updateConfirm = () => {
-    confirm.disabled = selected.size === 0;
-    confirm.textContent = selected.size ? `确认加入监控 (${selected.size} 个地址)` : "确认加入监控";
+    const clearing = selected.size === 0;
+    confirm.textContent = clearing ? "保存设置（清空监控）" : `保存设置 (${selected.size} 个地址)`;
+    confirm.disabled = false;
+    saveToolbar.disabled = false;
+    saveToolbar.textContent = clearing ? "保存设置（清空监控）" : "保存设置";
   };
   const needleValue = () => search.value.trim().toLocaleLowerCase("zh-CN");
   const addressMatches = (item, needle) => {
@@ -2558,17 +2564,18 @@ async function openSharedAddressPicker(reload) {
         return compareBookNames(left.name, right.name);
       });
   };
+  // 勾选代表「保存后要监控」的目标状态（含当前已监控地址），这样全选能显示整库勾选，
+  // 一键清除能真正取消全部监控；点保存设置才把目标状态写入监控名单。
   const groupState = (group) => {
-    const selectable = group.items.filter((item) => !watched.has(String(item.address)));
-    const selectedCount = selectable.filter((item) => selected.has(item.address)).length;
-    const watchedCount = group.items.length - selectable.length;
+    const selectable = group.items;
+    const selectedCount = selectable.filter((item) => selected.has(String(item.address))).length;
+    const watchedCount = group.items.filter((item) => watched.has(String(item.address))).length;
     return { selectable, selectedCount, watchedCount };
   };
   const setGroupChecked = (group, checked) => {
-    const { selectable } = groupState(group);
-    for (const item of selectable) {
-      if (checked) selected.add(item.address);
-      else selected.delete(item.address);
+    for (const item of group.items) {
+      if (checked) selected.add(String(item.address));
+      else selected.delete(String(item.address));
     }
   };
 
@@ -2601,16 +2608,10 @@ async function openSharedAddressPicker(reload) {
       const checkbox = infoElement("input");
       checkbox.type = "checkbox";
       checkbox.className = "shared-book-checkbox";
-      const fullyWatched = state.selectable.length === 0;
-      checkbox.disabled = fullyWatched;
-      // 全库已监控时不要勾上 checkbox：那会让「一键清除」后仍有 100+ 个勾选框
-      // 显示为已选，用户以为清除没生效。已监控状态用文字和样式表达，不用 checked。
-      checkbox.checked = !fullyWatched && state.selectedCount === state.selectable.length;
-      checkbox.indeterminate = !fullyWatched && state.selectedCount > 0 && state.selectedCount < state.selectable.length;
-      checkbox.setAttribute("aria-label", fullyWatched
-        ? `${group.name} 已全部监控，无需选择`
-        : `整库选择 ${group.name}`);
-      if (fullyWatched) checkbox.classList.add("shared-book-fully-watched");
+      checkbox.disabled = !state.selectable.length;
+      checkbox.checked = state.selectable.length > 0 && state.selectedCount === state.selectable.length;
+      checkbox.indeterminate = state.selectedCount > 0 && state.selectedCount < state.selectable.length;
+      checkbox.setAttribute("aria-label", `整库选择 ${group.name}，其中 ${state.watchedCount} 个当前已监控`);
       checkbox.addEventListener("change", () => {
         setGroupChecked(group, checkbox.checked);
         render();
@@ -2648,11 +2649,10 @@ async function openSharedAddressPicker(reload) {
           const childCheckbox = infoElement("input");
           childCheckbox.type = "checkbox";
           childCheckbox.value = item.address;
-          childCheckbox.disabled = already;
-          childCheckbox.checked = already || selected.has(item.address);
+          childCheckbox.checked = selected.has(String(item.address));
           childCheckbox.addEventListener("change", () => {
-            if (childCheckbox.checked) selected.add(item.address);
-            else selected.delete(item.address);
+            if (childCheckbox.checked) selected.add(String(item.address));
+            else selected.delete(String(item.address));
             render();
           });
           const body = infoElement("div", "shared-address-body");
@@ -2684,70 +2684,80 @@ async function openSharedAddressPicker(reload) {
   };
 
   search.addEventListener("input", render);
-  // 一键全选所有库（1.0.28）：不受搜索筛选影响，选中全部尚未监控的地址。
-  // 按项目规则，批量全选前必须确认库数与地址数。
+  // 一键全选所有库：不受搜索筛选影响，勾选全部地址库的全部地址（含已监控）。
+  // 按项目规则，批量全选前必须确认库数与地址数；全选只改勾选，保存才生效。
   selectAll.addEventListener("click", () => {
     const pending = groups.reduce(
-      (total, group) => total + groupState(group).selectable.length,
+      (total, group) => total + group.items.filter((item) => !selected.has(String(item.address))).length,
       0,
     );
     if (!pending) {
       render();
       return;
     }
-    if (!window.confirm(`将全选全部 ${groups.length} 个地址库、${pending} 个尚未监控的地址。\n请确认这些库确实都需要监控；项目方库已默认预选。`)) return;
+    if (!window.confirm(`将全选全部 ${groups.length} 个地址库、${pending} 个尚未勾选的地址。\n点「保存设置」后才会写入监控名单。`)) return;
     for (const group of groups) setGroupChecked(group, true);
     render();
   });
-  // 一键清除：清空所有勾选（含项目方默认预选），用户可据此取消监控。
+  // 一键清除：清空所有勾选（含项目方默认预选与当前已监控），保存后才会移出监控。
   clear.addEventListener("click", () => { selected.clear(); render(); });
   selectVisible.addEventListener("click", () => {
     const groupsToSelect = visibleGroups();
     const pending = groupsToSelect.reduce(
-      (total, group) => total + groupState(group).selectable.length,
+      (total, group) => total + group.items.filter((item) => !selected.has(String(item.address))).length,
       0,
     );
     if (!pending) {
       render();
       return;
     }
-    if (!window.confirm(`将选择 ${groupsToSelect.length} 个地址库、${pending} 个尚未监控的地址。\n请确认这些地址库确实都需要监控。`)) return;
+    if (!window.confirm(`将选择 ${groupsToSelect.length} 个地址库、${pending} 个尚未勾选的地址。\n点「保存设置」后才会写入监控名单。`)) return;
     for (const group of groupsToSelect) setGroupChecked(group, true);
     render();
   });
   close.addEventListener("click", () => dialog.close());
   dialog.addEventListener("close", () => dialog.remove());
-  confirm.addEventListener("click", async () => {
-    if (!selected.size) return;
+  // 保存设置：把当前勾选整体写为监控名单。空勾选 = 移出全部并锁定清空，
+  // 全选 = 按勾选重建名单并解锁。弹窗工具栏与底部按钮共用同一逻辑。
+  const saveSettings = async (closeAfter) => {
     confirm.disabled = true;
+    saveToolbar.disabled = true;
     error.textContent = "";
-    let added = 0;
-    let skipped = 0;
+    const chosen = items.filter((entry) => selected.has(entry.address));
     try {
-      for (const item of items.filter((entry) => selected.has(entry.address))) {
-        const response = await request("/event-api/addresses", {
-          method: "POST",
-          body: JSON.stringify({
-            network: "finney",
-            addresses: [item.address],
+      const result = await request("/event-api/addresses/settings", {
+        method: "POST",
+        body: JSON.stringify({
+          network: "finney",
+          addresses: chosen.map((item) => ({
+            address: item.address,
             label: String(item.label || maskAddress(item.address)).slice(0, 120),
             library_book: item.book,
             address_role: item.source === "bittensor:SubtensorModule.SubnetOwner" ? "project_owner" : "",
-            min_transfer_tao: "0",
-          }),
-        });
-        added += Number(response.created || 0);
-        skipped += Number(response.skipped || 0);
-      }
-      dialog.close();
+          })),
+          lock: chosen.length === 0,
+        }),
+      });
+      if (closeAfter) dialog.close();
       await reload();
-      showToast(`已加入事件监控 ${added} 个地址${skipped ? `，跳过 ${skipped} 个` : ""}`);
+      // 历史地址事件在锁定状态下会被后端过滤，立即刷新事件流避免旧数据残留。
+      await loadEvents(1);
+      watched.clear();
+      for (const item of state.watchedAddresses) watched.set(String(item.address), item);
+      addressListLocked = Boolean(result.locked);
+      showToast(Number(result.removed || 0)
+        ? `监控设置已保存：移出 ${Number(result.removed)} 个，保留 ${Number(result.created || 0)} 个${result.locked ? "，已保持清空" : ""}`
+        : `监控设置已保存：监控 ${Number(result.created || 0)} 个地址${result.locked ? "，已保持清空" : ""}`);
+      if (!closeAfter) render();
     } catch (cause) {
       error.textContent = cause.message;
-      confirm.disabled = false;
+      showToast(cause.message);
+    } finally {
       updateConfirm();
     }
-  });
+  };
+  confirm.addEventListener("click", () => saveSettings(true));
+  saveToolbar.addEventListener("click", () => saveSettings(false));
 
   dialog.showModal();
   try {
@@ -2756,27 +2766,31 @@ async function openSharedAddressPicker(reload) {
     if (!response.ok) throw new Error(payload.detail || `读取已知地址库失败 (${response.status})`);
     items = payload.items || [];
     unbookedCount = Number(payload.unbooked_count || 0);
+    addressListLocked = Boolean(payload.address_list_locked);
     const byBook = new Map();
     for (const item of items) {
       const name = String(item.book || "").trim();
       if (!name) continue;
       if (!byBook.has(name)) byBook.set(name, []);
       byBook.get(name).push(item);
+      // 勾选表示保存后的目标状态：当前已监控的地址默认保持勾选，
+      // 否则点保存会误把它们当成要移出的地址。
+      if (watched.has(String(item.address))) selected.add(String(item.address));
     }
     groups = [...byBook.entries()]
       .map(([name, bookItems]) => ({ name, items: bookItems }))
       .sort((left, right) => compareBookNames(left.name, right.name));
 
     // 项目方库默认预选（1.0.29）：SN1–SN160 命名库整库预选其「尚未监控」的地址。
-    // 判定按库名（与后端 SUBNET_BOOK / 项目规则一致），库内全部地址都算项目方库成员；
-    // 已监控的不重复选。用户可点「一键清除」或逐个取消，取消后不点确认就不会加入监控。
-    // 后端不再强制写监控名单（SEED_SUBNET_WATCH_ENABLED 默认关），
-    // 所以这里的预选是"待确认"状态，不是既成事实，也不写死。
-    for (const group of groups) {
-      const bookNumber = subnetBookNumber(group.name);
-      if (bookNumber == null || bookNumber < 1 || bookNumber > 160) continue;
-      for (const item of group.items) {
-        if (!watched.has(String(item.address))) selected.add(item.address);
+    // 用户已保存「清空并保持」时不再预选，否则每次打开弹窗又默认勾上项目方库，
+    // 与保持清空冲突。用户仍可手动全选后保存来解除保持。
+    if (!addressListLocked) {
+      for (const group of groups) {
+        const bookNumber = subnetBookNumber(group.name);
+        if (bookNumber == null || bookNumber < 1 || bookNumber > 160) continue;
+        for (const item of group.items) {
+          if (!watched.has(String(item.address))) selected.add(item.address);
+        }
       }
     }
     render();

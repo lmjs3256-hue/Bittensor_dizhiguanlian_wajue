@@ -279,6 +279,8 @@ def _ensure_subnet_owner_watched(netuid: int, *, source_items: list[dict[str, An
         and item.get("source") == SUBNET_OWNER_SOURCE
     ]
     store = EVENT_MONITOR.context.store
+    if store.address_list_locked():
+        return 0
     added = 0
     for item in owners:
         address = str(item.get("address") or "").strip()
@@ -1304,10 +1306,18 @@ def event_monitor_shared_library(
         return (1, 0, name)
 
     books.sort(key=book_order)
+    locked = False
+    if EVENT_MONITOR.running and EVENT_MONITOR.context is not None:
+        try:
+            locked = bool(EVENT_MONITOR.context.store.address_list_locked())
+        except Exception:  # noqa: BLE001 - 读取锁定状态失败不应影响候选列表
+            locked = False
     return {
         "items": books,
         # 未归入命名地址库的单条资料不直接作为监控对象；用户应先建立地址库。
         "unbooked_count": len(items) - len(books),
+        # 弹窗据此决定是否在打开时默认预选项目方库；锁定清空时不预选。
+        "address_list_locked": locked,
     }
 
 

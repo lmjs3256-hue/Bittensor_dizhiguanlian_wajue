@@ -60,21 +60,21 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
 
     版本断言跟随 VERSION 走。1.0.26（出站代理增强）曾只改 CHANGELOG/
     README/HTML 的 ?v=，漏改本测试与 product_info.json；1.0.27 首次补齐，
-    1.0.29 继续同步，避免测试长期落后于实际版本。
+    1.0.30 继续同步，避免测试长期落后于实际版本。
     """
     client, _ = merged_client
 
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/styles.css?v=1.0.29" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.29" in page.text
+    assert "/static/event-monitor/styles.css?v=1.0.30" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.30" in page.text
     assert main_module.EVENT_MONITOR.settings.static_dir == main_module.EVENT_MONITOR_STATIC
 
     floating = client.get("/event-monitor/floating?mode=window")
     assert floating.status_code == 200
-    assert "/static/event-monitor/floating.css?v=1.0.29" in floating.text
-    assert "/static/event-monitor/floating.js?v=1.0.29" in floating.text
+    assert "/static/event-monitor/floating.css?v=1.0.30" in floating.text
+    assert "/static/event-monitor/floating.js?v=1.0.30" in floating.text
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
     assert client.get("/event-monitor/floating?mode=window").status_code == 200
@@ -87,7 +87,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.29"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.30"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):
@@ -473,7 +473,7 @@ def test_frontend_uses_address_book_first_and_second_level_selection():
     assert "移出整库" in app_js
     assert "/event-api/addresses/book" in app_js
     assert "全选筛选结果" in app_js
-    assert "请确认这些地址库确实都需要监控" in app_js
+    assert "点「保存设置」后才会写入监控名单" in app_js
     assert "pollEventLibrarySync" in app_js
     assert "刷新同步" in app_js
     assert "global-transfer-filter" in app_js
@@ -570,7 +570,7 @@ def test_legacy_subnet_profiles_are_inherited_once(tmp_path):
 
 def test_default_sn1_to_sn160_books_are_seeded_once_without_resurrection(tmp_path):
     store = Store(tmp_path / "event_monitor.db")
-    # 1.0.29：上限从 128 提到 160。SN160 应入选，SN161 才被忽略。
+    # 1.0.30：上限从 128 提到 160。SN160 应入选，SN161 才被忽略。
     items = [
         {"book": "SN1 Apex", "address": "5Gy8difKxYXC32zqk7kufGHpxsSBuGozbZ7Zo1iySsQCjEbt", "label": "SN1"},
         {"book": "SN2 DaniLabs", "address": "5DceuTr7XPqw67PNHW9ewzzo2cZ7Cm8HgfjwUqEpd8Mh8QNg", "label": "SN2"},
@@ -661,3 +661,82 @@ def test_auto_import_rows_sync_only_monitored_books_and_respect_exclusions(merge
     assert manual.status_code == 201
     watched = client.get("/event-api/addresses").json()["addresses"]
     assert {item["address"] for item in watched} == {ADDRESS, ADDRESS_TWO}
+
+
+def test_save_empty_selection_clears_and_locks_watchlist(merged_client):
+    """一键清除后点保存：监控名单清空并锁定，手动新增也被拒绝。"""
+    client, _ = merged_client
+    created = client.post(
+        "/event-api/addresses",
+        json={
+            "network": "finney",
+            "addresses": [ADDRESS, ADDRESS_TWO],
+            "label": "SN1 Apex",
+            "library_book": "SN1 Apex",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    saved = client.post(
+        "/event-api/addresses/settings",
+        json={"network": "finney", "addresses": []},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json() == {"network": "finney", "created": 0, "removed": 2, "locked": True}
+    assert client.get("/event-api/addresses").json()["addresses"] == []
+    assert client.get("/api/event-monitor/library").json()["address_list_locked"] is True
+
+    blocked = client.post(
+        "/event-api/addresses",
+        json={"network": "finney", "address": ADDRESS},
+    )
+    assert blocked.status_code == 409, "锁定清空后手动新增不得绕过"
+
+
+def test_save_full_selection_unlocks_and_restores_watchlist(merged_client):
+    """全选后点保存：按勾选重建名单、解锁，弹窗不再默认预选被抑制。"""
+    client, _ = merged_client
+    client.post(
+        "/event-api/addresses/settings",
+        json={"network": "finney", "addresses": []},
+    )
+    saved = client.post(
+        "/event-api/addresses/settings",
+        json={
+            "network": "finney",
+            "addresses": [
+                {
+                    "address": ADDRESS,
+                    "label": "SN1 Apex",
+                    "library_book": "SN1 Apex",
+                    "address_role": "project_owner",
+                }
+            ],
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["locked"] is False
+    watched = client.get("/event-api/addresses").json()["addresses"]
+    assert {item["address"] for item in watched} == {ADDRESS}
+    assert watched[0]["address_role"] == "project_owner"
+    assert client.get("/api/event-monitor/library").json()["address_list_locked"] is False
+
+
+def test_frontend_save_settings_button_is_wired() -> None:
+    """弹窗必须有保存设置按钮，且全选/一键清除后走 settings 接口才落库。"""
+    app_js = (Path(__file__).resolve().parents[1] / "app" / "static" / "event-monitor" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    assert 'infoElement("button", "button primary", "保存设置")' in app_js
+    assert '"/event-api/addresses/settings"' in app_js
+    assert "lock: chosen.length === 0" in app_js
+    assert "address_list_locked" in app_js, "弹窗要读取锁定状态，锁定后不再默认预选项目方库"
+    assert "await loadEvents(1);" in app_js, "保存后要立即刷新事件流，避免旧地址事件残留"
+
+
+def test_sse_stream_skips_address_events_while_locked() -> None:
+    server_py = (Path(__file__).resolve().parents[1] / "app" / "event_monitor" / "server.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'get("source") or "") == "address"' in server_py
+    assert "address_list_locked()" in server_py

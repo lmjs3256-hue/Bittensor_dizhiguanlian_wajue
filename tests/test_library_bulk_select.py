@@ -53,19 +53,24 @@ class TestSharedLibraryBulkActions:
         assert "bookNumber > 160" in APP_JS, "项目方预选应限制在 SN1–SN160"
         assert "!watched.has(String(item.address))" in APP_JS, "默认预选只能包含尚未监控的地址"
 
-    def test_fully_watched_books_do_not_show_as_checked(self):
-        """全库已监控的 checkbox 不得显示 checked，否则一键清除后仍有 100+ 勾选框。
+    def test_checkbox_shows_desired_state_and_clear_unchecks_all(self):
+        """勾选表示「保存后要监控」的目标状态：全选能勾上整库，一键清除能全部取消。
 
-        1.0.29 线上现象：点「一键清除」后统计显示「已选 0」，但 120 个全监控库
-        的 checkbox 依然是勾选态（旧逻辑 selectable.length===0 时强制 checked=true），
-        用户以为清除没生效。已监控状态改由文字和 aria-label 表达。
+        1.0.30 新口径：1.0.29 用 unchecked 表达「已监控完成」，导致全选后整库
+        勾选框看起来没勾上、一键清除只清待选清不掉监控名单。现在已监控地址
+        默认进入 selected，全库勾选 = 整库保持监控，清空勾选 = 保存后移出全部。
         """
 
-        assert "const fullyWatched = state.selectable.length === 0" in APP_JS
-        assert "checkbox.checked = !fullyWatched && state.selectedCount === state.selectable.length" in APP_JS, (
-            "全库已监控时 checkbox 必须 unchecked，不能借用 checked 表达「已完成」"
+        assert "const selectable = group.items;" in APP_JS, "一级勾选应作用于整库全部地址"
+        assert "checkbox.checked = state.selectable.length > 0 && state.selectedCount === state.selectable.length" in APP_JS, (
+            "整库全部勾选时必须显示 checked，否则用户以为全选没效果"
         )
-        assert "shared-book-fully-watched" in APP_JS, "全监控库应有独立 class 用于样式区分"
+        assert "if (watched.has(String(item.address))) selected.add(String(item.address));" in APP_JS, (
+            "当前已监控地址必须默认进入目标状态，点保存才不会被误移出"
+        )
+        assert "childCheckbox.checked = selected.has(String(item.address));" in APP_JS, (
+            "二级勾选也必须反映目标状态，且允许取消已监控地址"
+        )
 
     def test_only_selected_addresses_are_submitted(self):
         """取消勾选的地址不在 selected 里，确认时不会被提交（= 不会被监控）。"""

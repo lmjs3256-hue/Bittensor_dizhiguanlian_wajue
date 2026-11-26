@@ -18,6 +18,9 @@ def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
+ADDRESS_LIST_LOCK_STATE = "watch:address-list-lock"
+
+
 def _decode_watched_address(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
     item["enabled"] = bool(item["enabled"])
@@ -59,6 +62,7 @@ def _event_summary_with_subnet_prefix(
 
 def _event_filter_clause(
     filters: dict[str, Any], *, address_transfer_threshold_tao: float = 0.0,
+    hide_address_events: bool = False,
 ) -> tuple[str, list[Any]]:
     where: list[str] = []
     params: list[Any] = []
@@ -90,6 +94,8 @@ def _event_filter_clause(
             "CAST(json_extract(e.details_json,'$.tao_amount') AS REAL),0) < ?)"
         )
         params.append(float(address_transfer_threshold_tao))
+    if hide_address_events:
+        where.append("COALESCE(e.source,'') != 'address'")
     return (" WHERE " + " AND ".join(where) if where else ""), params
 
 
@@ -608,6 +614,7 @@ class Store:
         clause, params = _event_filter_clause(
             filters,
             address_transfer_threshold_tao=self.get_global_transfer_threshold(),
+            hide_address_events=self.address_list_locked(),
         )
         direction = "ASC" if ascending else "DESC"
         with self.connect() as db:
@@ -652,6 +659,7 @@ class Store:
         clause, params = _event_filter_clause(
             filters,
             address_transfer_threshold_tao=self.get_global_transfer_threshold(),
+            hide_address_events=self.address_list_locked(),
         )
         with self.connect() as db:
             row = db.execute(
@@ -1263,6 +1271,86 @@ class Store:
         )
         return threshold
 
+    def address_list_locked(self) -> bool:
+        """监控名单是否被用户保存为「清空并保持」。"""
+        state = self.get_cursor(ADDRESS_LIST_LOCK_STATE) or {}
+        return bool(state.get("locked"))
+
+    def set_address_list_lock(self, locked: bool) -> None:
+        self.set_collector_state(
+            ADDRESS_LIST_LOCK_STATE,
+            {"locked": bool(locked), "updated_at": now_iso()},
+        )
+
+    def replace_watched_addresses(
+        self, network: str, items: list[dict[str, Any]], *, lock: bool,
+    ) -> dict[str, Any]:
+        """整体替换监控名单，并在同一事务内写排除表与置/解锁状态。
+
+        「选择地址库」弹窗的保存设置走这里：空列表 = 清空全部监控并锁定，
+        非空列表 = 按勾选重建名单并解锁。所有自动加回路径统一在
+        add_watched_address 处受锁约束。
+        """
+        network = str(network or "finney")
+        stamp = now_iso()
+        desired: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in items or []:
+            address = str(item.get("address") or "").strip()
+            if not address or address in seen:
+                continue
+            seen.add(address)
+            role = str(item.get("address_role") or "").strip()[:40]
+            desired.append({
+                "address": address,
+                "label": str(item.get("label") or "").strip()[:120] or address,
+                "library_book": str(item.get("library_book") or "").strip()[:80],
+                "address_role": role if role in {"", "project_owner"} else "",
+            })
+        with self.connect() as db:
+            old = db.execute(
+                "SELECT address FROM watched_addresses WHERE network=?", (network,)
+            ).fetchall()
+            for row in old:
+                db.execute(
+                    """INSERT OR REPLACE INTO watched_address_exclusions
+                       (network,address,created_at) VALUES(?,?,?)""",
+                    (network, row["address"], stamp),
+                )
+            db.execute("DELETE FROM watched_addresses WHERE network=?", (network,))
+            for item in desired:
+                db.execute(
+                    "DELETE FROM watched_address_exclusions WHERE network=? AND address=?",
+                    (network, item["address"]),
+                )
+                db.execute(
+                    """INSERT INTO watched_addresses
+                       (network,address,label,min_transfer_tao,library_book,manual_note,address_role,enabled,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        network, item["address"], item["label"], 0.0,
+                        item["library_book"], "", item["address_role"], 1, stamp, stamp,
+                    ),
+                )
+            db.execute(
+                "INSERT OR REPLACE INTO collector_state(collector,state_json,updated_at) VALUES(?,?,?)",
+                (
+                    ADDRESS_LIST_LOCK_STATE,
+                    json_text({
+                        "locked": bool(lock),
+                        "updated_at": stamp,
+                        "address_count": len(desired),
+                    }),
+                    stamp,
+                ),
+            )
+        return {
+            "network": network,
+            "created": len(desired),
+            "removed": len(old),
+            "locked": bool(lock),
+        }
+
     def watched_addresses_with_global_threshold(
         self, network: str, *, enabled_only: bool = False,
     ) -> list[dict[str, Any]]:
@@ -1290,11 +1378,22 @@ class Store:
         self, network: str, address: str, label: str,
         min_transfer_tao: float = 0, library_book: str = "",
         manual_note: str = "", address_role: str = "", *,
-        clear_exclusion: bool = False,
+        clear_exclusion: bool = False, force: bool = False,
     ) -> dict[str, Any]:
         stamp = now_iso()
         try:
             with self.connect() as db:
+                lock_row = db.execute(
+                    "SELECT state_json FROM collector_state WHERE collector=?",
+                    (ADDRESS_LIST_LOCK_STATE,),
+                ).fetchone()
+                if lock_row:
+                    try:
+                        locked = bool(json.loads(lock_row["state_json"]).get("locked"))
+                    except (TypeError, ValueError):
+                        locked = False
+                    if locked and not force:
+                        raise ValueError("监控名单已保存为清空状态，请在事件监控中重新保存监控设置")
                 excluded = db.execute(
                     "SELECT 1 FROM watched_address_exclusions WHERE network=? AND address=?",
                     (network, address),

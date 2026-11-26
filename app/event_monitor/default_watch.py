@@ -31,6 +31,14 @@ def eligible_default_subnet_items(items: list[dict[str, Any]]) -> list[dict[str,
 def seed_default_subnet_watch(store: Any, items: list[dict[str, Any]]) -> dict[str, Any]:
     state = store.get_cursor(DEFAULT_SUBNET_WATCH_STATE) or {}
     seeded_books = {str(name) for name in state.get("seeded_books", []) if str(name).strip()}
+    if getattr(store, "address_list_locked", lambda: False)():
+        return {
+            "seeded": False,
+            "reason": "address_list_locked",
+            "seeded_books": sorted(seeded_books),
+            "added": 0,
+            "skipped": 0,
+        }
     by_book: dict[str, list[dict[str, Any]]] = {}
     for item in eligible_default_subnet_items(items):
         book = str(item.get("book") or "").strip()

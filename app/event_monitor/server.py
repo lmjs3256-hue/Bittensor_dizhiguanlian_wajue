@@ -428,6 +428,12 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                 if not event:
                     self._error(404, "事件不存在")
                     return
+                if (
+                    str(event.get("source") or "") == "address"
+                    and self.server.context.store.address_list_locked()
+                ):
+                    self._error(404, "事件不存在")
+                    return
                 watched = self.server.context.store.list_watched_addresses(
                     str(event.get("network") or "finney")
                 )
@@ -502,7 +508,50 @@ class MonitorHandler(SimpleHTTPRequestHandler):
             if path == "/api/repositories":
                 self._add_repository(body)
                 return
+            if path == "/api/addresses/settings":
+                network = str(body.get("network") or "finney")
+                raw_items = body.get("addresses")
+                if not isinstance(raw_items, list):
+                    raise ValueError("addresses 必须是数组")
+                chosen: list[dict[str, str]] = []
+                seen: set[str] = set()
+                for entry in raw_items:
+                    if not isinstance(entry, dict):
+                        continue
+                    address = str(entry.get("address") or "").strip()
+                    if not address or address in seen:
+                        continue
+                    seen.add(address)
+                    role = str(entry.get("address_role") or "").strip()[:40]
+                    if role not in {"", "project_owner"}:
+                        role = ""
+                    chosen.append({
+                        "address": address,
+                        "label": str(entry.get("label") or "").strip()[:120],
+                        "library_book": str(
+                            entry.get("library_book") or entry.get("book") or ""
+                        ).strip()[:80],
+                        "address_role": role,
+                    })
+                invalid = [
+                    item["address"] for item in chosen
+                    if not is_valid_ss58_address(item["address"])
+                ]
+                if invalid:
+                    raise ValueError(f"无效的 SS58 地址：{_mask_address(invalid[0])}")
+                lock = bool(body.get("lock", not chosen))
+                result = self.server.context.store.replace_watched_addresses(
+                    network, chosen, lock=lock,
+                )
+                self._json(result)
+                return
             if path == "/api/addresses":
+                if self.server.context.store.address_list_locked():
+                    self._error(
+                        409,
+                        "监控名单已保存为清空状态，请在事件监控中重新保存监控设置后再添加地址",
+                    )
+                    return
                 raw_addresses = body.get("addresses")
                 address_values = (
                     raw_addresses if isinstance(raw_addresses, list)
@@ -839,6 +888,12 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                     continue
                 if payload is None:
                     break
+                if str((payload.get("event") or {}).get("source") or "") == "address":
+                    try:
+                        if self.server.context.store.address_list_locked():
+                            continue
+                    except Exception:  # noqa: BLE001 - SSE 不因状态读取失败中断
+                        pass
                 data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
                 self.wfile.write(f"id: {payload['id']}\nevent: event\ndata: {data}\n\n".encode("utf-8"))
                 self.wfile.flush()
