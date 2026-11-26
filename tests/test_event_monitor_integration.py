@@ -60,21 +60,21 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
 
     版本断言跟随 VERSION 走。1.0.26（出站代理增强）曾只改 CHANGELOG/
     README/HTML 的 ?v=，漏改本测试与 product_info.json；1.0.27 首次补齐，
-    1.0.29 继续同步，避免测试长期落后于实际版本。
+    1.0.30 继续同步，避免测试长期落后于实际版本。
     """
     client, _ = merged_client
 
     page = client.get("/event-monitor?embed=1")
     assert page.status_code == 200
     assert "监控地址" in page.text
-    assert "/static/event-monitor/styles.css?v=1.0.29" in page.text
-    assert "/static/event-monitor/app.js?v=1.0.29" in page.text
+    assert "/static/event-monitor/styles.css?v=1.0.30" in page.text
+    assert "/static/event-monitor/app.js?v=1.0.30" in page.text
     assert main_module.EVENT_MONITOR.settings.static_dir == main_module.EVENT_MONITOR_STATIC
 
     floating = client.get("/event-monitor/floating?mode=window")
     assert floating.status_code == 200
-    assert "/static/event-monitor/floating.css?v=1.0.29" in floating.text
-    assert "/static/event-monitor/floating.js?v=1.0.29" in floating.text
+    assert "/static/event-monitor/floating.css?v=1.0.30" in floating.text
+    assert "/static/event-monitor/floating.js?v=1.0.30" in floating.text
     assert client.get("/static/event-monitor/styles.css").status_code == 200
     assert client.get("/static/event-monitor/app.js").status_code == 200
     assert client.get("/event-monitor/floating?mode=window").status_code == 200
@@ -87,7 +87,7 @@ def test_event_monitor_page_assets_and_proxy_are_merged(merged_client):
     assert runtime["port"] > 0
     assert runtime["settings"]["database"].endswith("event_monitor.db")
     assert client.get("/api/health").json()["event_monitor"]["running"] is True
-    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.29"
+    assert client.get("/event-api/product").json()["product"]["version"] == "1.0.30"
 
 
 def test_address_event_api_uses_current_manual_note_without_rewriting_summary(merged_client):

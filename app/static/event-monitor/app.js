@@ -69,6 +69,8 @@ function rewriteEventLink(link) {
 
 const UI_KEYS = {
   panelCleared: "subnetPulse.panelCleared",
+  panelHeld: "subnetPulse.panelHeld",
+  heldUpdates: "subnetPulse.heldUpdates",
   eventFontSize: "subnetPulse.eventFontSize",
   addressBookPageSize: "subnetPulse.addressBookPageSize",
   floatingMode: "subnetPulse.floatingMode.v2",
@@ -95,6 +97,8 @@ const state = {
   subnetFilter: null,
   eventFontSize: readStoredEventFontSize(),
   panelCleared: readStoredPanelCleared(),
+  panelHeld: readStoredPanelHeld(),
+  heldUpdates: readStoredHeldUpdates(),
   selectedId: null,
   paused: false,
   pending: [],
@@ -173,6 +177,7 @@ const el = {
   refresh: document.querySelector("#refresh-button"),
   simulationButton: document.querySelector("#simulation-button"),
   clearPanelButton: document.querySelector("#clear-panel-button"),
+  holdPanelButton: document.querySelector("#hold-panel-button"),
   floatingDialog: document.querySelector("#floating-dialog"),
   floatingForm: document.querySelector("#floating-form"),
   floatingClose: document.querySelector("#floating-close"),
@@ -247,6 +252,22 @@ function readStoredPanelCleared() {
   }
 }
 
+function readStoredPanelHeld() {
+  try {
+    return localStorage.getItem(UI_KEYS.panelHeld) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function readStoredHeldUpdates() {
+  try {
+    return Math.max(0, Number(localStorage.getItem(UI_KEYS.heldUpdates)) || 0);
+  } catch {
+    return 0;
+  }
+}
+
 function readStoredAddressBookPageSize() {
   try {
     const size = Number(localStorage.getItem(UI_KEYS.addressBookPageSize));
@@ -298,6 +319,7 @@ function applyEventFontSize(value, options = {}) {
 
 function setPanelCleared(cleared, options = {}) {
   state.panelCleared = Boolean(cleared);
+  if (!state.panelCleared) state.heldUpdates = 0;
   if (options.persist !== false) {
     try {
       localStorage.setItem(UI_KEYS.panelCleared, state.panelCleared ? "true" : "false");
@@ -309,11 +331,45 @@ function setPanelCleared(cleared, options = {}) {
   if (options.render !== false) render();
 }
 
+// 1.0.30「保存清空状态」：把清空面板锁住。held 为真时，SSE 新事件
+// 既不撤销清空、也不重新拉取列表，地址类转账/交易不再弹回事件流。
+//  Database records are untouched; this only freezes the visible stream.
+function setPanelHeld(held, options = {}) {
+  state.panelHeld = Boolean(held);
+  if (state.panelHeld && !state.panelCleared) setPanelCleared(true, { broadcast: false });
+  if (!state.panelHeld) {
+    state.heldUpdates = 0;
+    try { localStorage.setItem(UI_KEYS.heldUpdates, "0"); } catch {}
+  }
+  if (options.persist !== false) {
+    try {
+      localStorage.setItem(UI_KEYS.panelHeld, state.panelHeld ? "true" : "false");
+    } catch {
+      // The in-memory state still applies to this tab.
+    }
+  }
+  if (options.broadcast !== false) broadcastUi("panel-held", state.panelHeld);
+  if (options.render !== false) render();
+}
+
+function countHeldUpdate() {
+  state.heldUpdates += 1;
+  try { localStorage.setItem(UI_KEYS.heldUpdates, String(state.heldUpdates)); } catch {}
+  if (state.route.kind === "home") render();
+}
+
 function applyExternalUiState(type, value) {
   if (type === "event-font-size") {
     applyEventFontSize(value, { persist: false, broadcast: false });
   } else if (type === "panel-cleared") {
+    // 保持状态下不接受浮窗/其他标签页的「恢复显示」，否则地址事件又会弹回。
+    if (state.panelHeld && !value) return;
     state.panelCleared = Boolean(value);
+    if (!state.panelCleared) state.heldUpdates = 0;
+    render();
+  } else if (type === "panel-held") {
+    state.panelHeld = Boolean(value);
+    if (!state.panelHeld) state.heldUpdates = 0;
     render();
   }
 }
@@ -696,6 +752,14 @@ function render() {
 }
 
 function renderClearedPanel() {
+  if (state.panelHeld) {
+    el.emptyTitle.textContent = "清空状态已保存";
+    el.emptyCopy.textContent = state.heldUpdates
+      ? `新事件已停止弹回事件流，期间挡下 ${state.heldUpdates} 条。本地数据库记录没有被删除。点「取消保持」可恢复实时推送。`
+      : "新事件不再弹回事件流，地址类转账、交易信息也不会推送进来。本地数据库记录没有被删除。点「取消保持」可恢复实时推送。";
+    el.emptyHeartbeat.textContent = "已保持清空 · 原始记录仍保留";
+    return;
+  }
   el.emptyTitle.textContent = "首页面板显示已清空";
   el.emptyCopy.textContent = "本地数据库记录没有被删除。输入子网编号查询，或调整筛选条件，即可重新显示事件。";
   el.emptyHeartbeat.textContent = "仅清除当前显示 · 原始记录仍保留";
@@ -1016,6 +1080,9 @@ function configurePageCopy() {
   el.infoView.hidden = !isInfo;
   el.simulationButton.hidden = state.route.kind !== "home";
   el.clearPanelButton.hidden = state.route.kind !== "home";
+  el.holdPanelButton.hidden = state.route.kind !== "home";
+  el.holdPanelButton.textContent = state.panelHeld ? "取消保持" : "保存清空状态";
+  el.holdPanelButton.setAttribute("aria-pressed", String(state.panelHeld));
   el.floatingButton.hidden = state.route.kind !== "home";
   el.subnetFilter.closest(".subnet-query").hidden = state.route.kind === "subnet";
   if (state.route.kind === "subnet") {
@@ -1278,7 +1345,11 @@ function connectStream() {
   });
   stream.addEventListener("event", (message) => {
     const payload = JSON.parse(message.data);
-    if (payload.change_type === "deleted") {
+    // 1.0.30：保存清空状态后，任何新事件（含地址类转账/交易）都不弹回事件流。
+    // 只累计被挡下的条数供界面提示，不撤销清空、不重新拉取列表。
+    if (state.panelHeld && state.panelCleared) {
+      countHeldUpdate();
+    } else if (payload.change_type === "deleted") {
       loadEvents(state.currentPage).catch((error) => showToast(error.message));
     } else if (state.paused) {
       state.pending.push(payload);
@@ -1308,6 +1379,11 @@ function connectStream() {
 function flushPending() {
   const hadPending = state.pending.length > 0;
   state.pending = [];
+  if (state.panelHeld && state.panelCleared) {
+    state.heldUpdates += hadPending ? 1 : 0;
+    render();
+    return;
+  }
   if (hadPending && state.panelCleared) setPanelCleared(false, { render: false });
   loadEvents(1).catch((error) => showToast(error.message));
 }
@@ -3179,6 +3255,8 @@ const inlineResizeObserver = "ResizeObserver" in window ? new ResizeObserver(() 
 }) : null;
 
 const revealPanel = () => {
+  // 用户主动搜索/筛选/查子网是明确想看事件，视为解除保持。
+  if (state.panelHeld) setPanelHeld(false, { render: false });
   setPanelCleared(false, { render: false });
 };
 el.search.addEventListener("input", () => {
@@ -3230,8 +3308,27 @@ el.clearPanelButton.addEventListener("click", () => {
   state.pending = [];
   el.pause.checked = false;
   state.currentPage = 1;
+  // 「清空显示」是临时操作：若此前已保存，先解除保持，避免新事件再被挡住。
+  if (state.panelHeld) setPanelHeld(false, { render: false });
   setPanelCleared(true);
   showToast("首页显示已清空，本地记录仍保留");
+});
+el.holdPanelButton.addEventListener("click", () => {
+  closeDetail();
+  if (state.panelHeld) {
+    setPanelHeld(false);
+    setPanelCleared(false, { render: false });
+    loadEvents(state.currentPage).catch((error) => showToast(error.message));
+    showToast("已取消保持，事件流恢复实时推送");
+    return;
+  }
+  state.paused = false;
+  state.pending = [];
+  el.pause.checked = false;
+  state.currentPage = 1;
+  setPanelCleared(true, { render: false });
+  setPanelHeld(true);
+  showToast("清空状态已保存，新事件不再弹回事件流");
 });
 el.pause.addEventListener("change", () => {
   state.paused = el.pause.checked;
@@ -3327,10 +3424,12 @@ uiChannel?.addEventListener("message", (event) => {
 window.addEventListener("storage", (event) => {
   if (event.key === UI_KEYS.eventFontSize) applyExternalUiState("event-font-size", event.newValue);
   if (event.key === UI_KEYS.panelCleared) applyExternalUiState("panel-cleared", event.newValue === "true");
+  if (event.key === UI_KEYS.panelHeld) applyExternalUiState("panel-held", event.newValue === "true");
 });
 window.addEventListener("message", (event) => {
   if (event.origin !== location.origin || event.data?.source !== "subnet-pulse-floating") return;
   if (event.data.type === "panel-cleared") applyExternalUiState("panel-cleared", Boolean(event.data.value));
+  if (event.data.type === "panel-held") applyExternalUiState("panel-held", Boolean(event.data.value));
   if (event.data.type === "event-font-size") applyExternalUiState("event-font-size", event.data.value);
 });
 applyEventFontSize(state.eventFontSize, { persist: false, broadcast: false });
@@ -3389,6 +3488,7 @@ el.simulationForm.addEventListener("submit", async (event) => {
     el.typeFilter.value = "";
     el.statusFilter.value = "";
     el.sourceFilter.value = "";
+    if (state.panelHeld) setPanelHeld(false, { render: false });
     setPanelCleared(false, { render: false });
     await loadEvents(1);
     showToast(`已发送并显示：${eventSummaryText(response.event)}`);
@@ -3450,6 +3550,13 @@ el.profileForm.addEventListener("submit", async (event) => {
     el.profileError.textContent = error.message;
   }
 });
+
+// 保持状态必须与清空状态一致：异常残留（held=true / cleared=false）会让
+// SSE 拦截条件失效，导致用户以为已保存却在刷新后又收到地址事件。
+if (state.panelHeld && !state.panelCleared) {
+  state.panelCleared = true;
+  try { localStorage.setItem(UI_KEYS.panelCleared, "true"); } catch {}
+}
 
 Promise.all([loadEvents(), loadStatus(), loadProduct(), loadSimulationSignals()])
   .then(() => {

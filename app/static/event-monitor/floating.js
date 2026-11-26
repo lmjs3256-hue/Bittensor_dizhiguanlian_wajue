@@ -2,6 +2,7 @@
 
 const UI_KEYS = {
   panelCleared: "subnetPulse.panelCleared",
+  panelHeld: "subnetPulse.panelHeld",
   eventFontSize: "subnetPulse.eventFontSize",
   floatingCompact: "subnetPulse.floatingCompact",
 };
@@ -22,6 +23,7 @@ const toolbar = document.querySelector("#floating-toolbar");
 const toolbarToggle = document.querySelector("#toolbar-toggle");
 let streamState = "connecting";
 let panelCleared = false;
+let panelHeld = false;
 let statusReceivedAt = null;
 let statusErrorAt = null;
 let worker = null;
@@ -338,6 +340,10 @@ function readPanelCleared() {
   try { return localStorage.getItem(UI_KEYS.panelCleared) === "true"; } catch { return false; }
 }
 
+function readPanelHeld() {
+  try { return localStorage.getItem(UI_KEYS.panelHeld) === "true"; } catch { return false; }
+}
+
 function updatePanelButtons(cleared) {
   clearHome.disabled = cleared;
   restoreHome.disabled = !cleared;
@@ -361,12 +367,24 @@ function applyPanelCleared(value, options = {}) {
 
 function setPanelCleared(value, options = {}) {
   const cleared = Boolean(value);
+  // 保持状态下，浮窗也不接受「恢复显示」；要恢复须由首页点「取消保持」，
+  // 或在浮窗点「恢复首页显示」明确解除保持（见 restoreHome 的点击处理）。
+  if (panelHeld && !cleared && options.release !== true) return;
   applyPanelCleared(cleared, { reload: false });
   if (options.persist !== false) {
     try { localStorage.setItem(UI_KEYS.panelCleared, cleared ? "true" : "false"); } catch {}
   }
   if (options.broadcast !== false) postUi("panel-cleared", cleared);
   if (!cleared && options.reload !== false) loadEvents().catch(() => {});
+}
+
+function setPanelHeld(held, options = {}) {
+  panelHeld = Boolean(held);
+  if (options.persist !== false) {
+    try { localStorage.setItem(UI_KEYS.panelHeld, panelHeld ? "true" : "false"); } catch {}
+  }
+  if (panelHeld && !panelCleared) applyPanelCleared(true, { reload: false });
+  if (options.broadcast !== false) postUi("panel-held", panelHeld);
 }
 
 async function loadEvents() {
@@ -532,19 +550,26 @@ document.querySelector("#refresh").addEventListener("click", () => {
 });
 fontInput.addEventListener("input", () => applyFont(fontInput.value));
 clearHome.addEventListener("click", () => setPanelCleared(true));
-restoreHome.addEventListener("click", () => setPanelCleared(false));
+restoreHome.addEventListener("click", () => {
+  // 浮窗里点「恢复首页显示」也算用户主动解除保持，并同步给首页。
+  if (panelHeld) setPanelHeld(false);
+  setPanelCleared(false, { release: true });
+});
 channel?.addEventListener("message", (event) => {
   if (event.data?.type === "event-font-size") applyFont(event.data.value, { persist: false, broadcast: false });
-  if (event.data?.type === "panel-cleared") applyPanelCleared(Boolean(event.data.value));
+  if (event.data?.type === "panel-held") setPanelHeld(Boolean(event.data.value), { persist: false, broadcast: false });
+  if (event.data?.type === "panel-cleared") setPanelCleared(Boolean(event.data.value), { persist: false, broadcast: false });
 });
 window.addEventListener("storage", (event) => {
   if (event.key === UI_KEYS.eventFontSize) applyFont(event.newValue, { persist: false, broadcast: false });
-  if (event.key === UI_KEYS.panelCleared) applyPanelCleared(event.newValue === "true");
+  if (event.key === UI_KEYS.panelHeld) setPanelHeld(event.newValue === "true", { persist: false, broadcast: false });
+  if (event.key === UI_KEYS.panelCleared) setPanelCleared(event.newValue === "true", { persist: false, broadcast: false });
 });
 
 applyCompact(readCompact(), { persist: false });
 applyFont(readFont(), { persist: false, broadcast: false });
 panelCleared = readPanelCleared();
+panelHeld = readPanelHeld();
 updatePanelButtons(panelCleared);
 if (panelCleared) applyPanelCleared(true, { reload: false });
 else loadEvents().catch(() => {});
