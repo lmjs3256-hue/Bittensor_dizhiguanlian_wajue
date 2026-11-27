@@ -1834,5 +1834,57 @@ class ServerTests(unittest.TestCase):
                 server.server_close()
 
 
+class GitHubCollectorStartupResilienceTests(unittest.TestCase):
+    """GitHub 采集线程在启动写库失败时不得崩溃（1.0.31 回归）。"""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.temp.name) / "events.db")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _make_collector(self) -> GitHubCollector:
+        return GitHubCollector(
+            store=self.store,
+            publish=lambda payload: None,
+            status=lambda name, state, details=None: None,
+            client=GitHubClient(),
+            interval_seconds=60,
+        )
+
+    def test_run_survives_startup_cleanup_failure(self) -> None:
+        """启动时 resolve_alert_family 抛异常（如 db 短暂只读）不得让线程崩溃。
+
+        1.0.30 线上现象：event-monitor-github 线程在 run() 第一行
+        resolve_alert_family("github:") 报 sqlite3.OperationalError（readonly），
+        因该行在 try 之外直接让线程退出，GitHub 事件流从此停摆且永不自愈。
+        1.0.31 把启动清理放进 try/except，失败不致命，线程继续进入轮询循环。
+        """
+        collector = self._make_collector()
+        with patch.object(
+            self.store, "resolve_alert_family", side_effect=sqlite3.OperationalError("readonly database")
+        ):
+            stop = threading.Event()
+            thread = threading.Thread(target=collector.run, args=(stop,), daemon=True)
+            thread.start()
+            # 线程未崩溃即可存活到我们主动停下。
+            self.assertTrue(thread.is_alive())
+            stop.set()
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive(), "GitHub 线程应能正常退出而非崩溃")
+
+    def test_poll_error_does_not_kill_thread(self) -> None:
+        """单次轮询失败（含 add_alert 写库失败）只降级、不崩溃。"""
+        collector = self._make_collector()
+        stop = threading.Event()
+        thread = threading.Thread(target=collector.run, args=(stop,), daemon=True)
+        thread.start()
+        self.assertTrue(thread.is_alive())
+        stop.set()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -440,15 +440,25 @@ class GitHubCollector:
         return summary
 
     def run(self, stop: Any) -> None:
-        self.store.resolve_alert_family("github:")
-        self.store.resolve_alerts("github")
+        # 启动时清掉上一轮未解决的 github 告警。这里若数据库短暂只读（多实例重启、
+        # WAL 文件被扫描工具短暂占用等）会抛 OperationalError，历史上曾让整个
+        # github 采集线程在第一行就崩溃退出、再也不会重试，导致 GitHub 事件流彻底
+        # 停摆。与 chain.run 一致，把启动清理放进容错里：失败不致命，下轮重试。
+        try:
+            self.store.resolve_alert_family("github:")
+            self.store.resolve_alerts("github")
+        except Exception:
+            LOG.exception("GitHub collector startup cleanup failed (will retry)")
         while not stop.is_set():
             try:
                 self.poll_once()
             except Exception as exc:
                 LOG.exception("GitHub collector error")
                 self.status("github", "degraded", {"error": str(exc), "updated_at": now_iso()})
-                self.store.add_alert("github", "critical", f"GitHub 监听失败：{exc}"[:400])
+                try:
+                    self.store.add_alert("github", "critical", f"GitHub 监听失败：{exc}"[:400])
+                except Exception:
+                    pass
             stop.wait(self.interval_seconds)
 
 

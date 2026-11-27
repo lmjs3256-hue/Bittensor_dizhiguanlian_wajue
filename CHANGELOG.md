@@ -1,5 +1,24 @@
 # 变更记录
 
+## 1.0.31 · 修复 GitHub 采集线程启动崩溃导致事件流停摆 · 2026-11-27
+
+### 现象与根因
+
+用户反馈：事件监控里 GitHub 事件流不再推送，但只是没有监控地址库（与地址监控无关）。
+
+根因：`event-monitor-github` 线程在 `run()` 的第一行 `resolve_alert_family("github:")` 写库时抛 `sqlite3.OperationalError: attempt to write a readonly database`，而这两行启动清理位于 `try/except` **之外**，异常直接让整个线程崩溃退出，且无任何重试机制。GitHub 采集从此停摆，GitHub 事件不再产生、也不再推送。
+
+对比 `chain` 线程的 `run()` 用 `while not stop.is_set(): try: ... except Exception: ...` 把整个循环体包进容错，单次失败只降级、线程不退出——GitHub 线程缺的就是这层保护。
+
+### 改动
+
+- `github.py` 的 `run()` 把启动清理（`resolve_alert_family` / `resolve_alerts`）放进 `try/except`，失败记日志、不致命，下轮重试；`add_alert` 也加保护，写库失败不再让线程崩。
+
+### 验证
+
+- 新增 `GitHubCollectorStartupResilienceTests`（2 条）：启动写库抛只读异常时线程存活、可正常退出；单次轮询失败不崩。
+- 全量 pytest **861 passed**（1.0.30 基线 859，净增 2）。
+
 ## 1.0.30 · 保存设置真正移出监控并保持清空 · 2026-11-26
 
 ### 现象与根因

@@ -1,11 +1,20 @@
 {
   "product": {
     "name": "Wallet Link · 事件监控",
-    "version": "1.0.30",
-    "released_at": "2026-11-26",
+    "version": "1.0.31",
+    "released_at": "2026-11-27",
     "status": "合并稳定版"
   },
   "releases": [
+    {
+      "version": "1.0.31",
+      "date": "2026-11-27",
+      "title": "修复 GitHub 采集线程启动崩溃导致事件流停摆",
+      "changes": [
+        "修复 event-monitor-github 线程在启动第一行写库报只读时崩溃退出、GitHub 事件流停摆的问题。",
+        "把启动清理（resolve_alert_family/resolve_alerts）放进容错，失败不致命、下轮重试，与 chain 线程一致。"
+      ]
+    },
     {
       "version": "1.0.30",
       "date": "2026-11-26",
